@@ -170,3 +170,24 @@ The source code is available under the [MIT Licence](LICENSE).
 PDKPASS is an independent fan project and is not affiliated with or endorsed by
 Formula 1, the FIA, or FoloToy. Formula 1 and related marks belong to their
 respective owners.
+
+## Reliability and debug builds
+
+Standings are checked again 30 minutes after the recorded race end; failed
+synchronization retries after five minutes. The displayed standings date refers
+to the source race, not the day an old classification was downloaded. Current
+weekends take priority over historical backfill. API availability and rate limits
+can delay publication beyond these local retry intervals.
+
+Setup uses a new random password each time it starts. Wait for an in-flight
+connection test to finish before submitting another network. `NTP ERR` means
+Wi-Fi connected but time synchronization is still retrying. A clock successfully
+synchronized during this boot remains usable across reconnects; a restored NVS
+time is only an offline estimate and does not account for power-off duration.
+
+Normal firmware disables the USB screenshot worker to save resources. Enable
+`CONFIG_PDKPASS_SCREENSHOT` in menuconfig for device screenshot debugging; capture
+has a two-second output deadline. The native simulator remains available for
+screenshots. Screen-off stops the UI idle timer, but this build does not enable
+automatic Light-sleep; ADC-button wake behavior and battery current still require
+board validation.

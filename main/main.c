@@ -5,6 +5,9 @@
 #include "bsp_pins.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
 #include "pdkpass_network.h"
 #include "pdkpass_results.h"
 #include "pdkpass_screenshot.h"
@@ -38,14 +41,41 @@ static void on_results(size_t race_index)
     bsp_lvgl_unlock();
 }
 
-// Button callbacks run outside the LVGL task. Keep the callback lightweight and
-// hold the BSP LVGL lock for the complete UI state transition.
+typedef struct { bsp_btn_t button; bsp_btn_ev_t event; } key_event_t;
+static QueueHandle_t s_keys;
+
+// Sampling and button dispatch share one small worker. Callbacks only enqueue;
+// slow I2C never runs in the LVGL timer or button driver's context.
+static void ui_worker(void *arg)
+{
+    bool battery_available = (bool)(uintptr_t)arg;
+    TickType_t next_battery = xTaskGetTickCount();
+    for (;;) {
+        TickType_t now = xTaskGetTickCount();
+        if ((int32_t)(now - next_battery) >= 0) {
+            int soc = battery_available ? bsp_battery_soc() : -1;
+            if (bsp_lvgl_lock(500)) {
+                pdkpass_ui_battery_update(soc);
+                bsp_lvgl_unlock();
+            }
+            next_battery = xTaskGetTickCount() + pdMS_TO_TICKS(60000);
+        }
+        key_event_t key;
+        now = xTaskGetTickCount();
+        TickType_t wait = (int32_t)(next_battery - now) > 0 ? next_battery - now : 1;
+        if (xQueueReceive(s_keys, &key, wait) == pdTRUE && bsp_lvgl_lock(500)) {
+            pdkpass_ui_key(key.button, key.event);
+            bsp_lvgl_unlock();
+        }
+    }
+}
+
 static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 {
     (void)user;
-    if (!bsp_lvgl_lock(500)) return;
-    pdkpass_ui_key(btn, ev);
-    bsp_lvgl_unlock();
+    if (!s_keys || (ev != BSP_BTN_CLICK && ev != BSP_BTN_LONG)) return;
+    key_event_t key = {.button = btn, .event = ev};
+    xQueueSend(s_keys, &key, 0);
 }
 
 void app_main(void)
@@ -79,6 +109,11 @@ void app_main(void)
         bsp_lvgl_unlock();
     }
 
+    s_keys = xQueueCreate(12, sizeof(key_event_t));
+    if (!s_keys || xTaskCreate(ui_worker, "pdk_ui_io", 3072,
+                              (void *)(uintptr_t)battery_available, 3, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "UI worker failed to start");
+    }
     if (bsp_button_init(on_key, NULL) != ESP_OK) {
         ESP_LOGE(TAG, "Button init failed; the current screen remains readable");
     }

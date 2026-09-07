@@ -56,6 +56,11 @@ run_static_checks() {
         tests/test_pdkpass_wifi_form.c main/pdkpass_wifi_form.c \
         -o "${test_dir}/test_pdkpass_wifi_form"
     "${test_dir}/test_pdkpass_wifi_form"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_pdkpass_json_stream.c main/pdkpass_json_stream.c \
+        -o "${test_dir}/test_pdkpass_json_stream"
+    "${test_dir}/test_pdkpass_json_stream"
+    python3 tests/test_pdkpass_services.py
     python3 tests/test_verify_firmware.py
     rm -rf "${test_dir}"
     echo "Host tests: PASS"

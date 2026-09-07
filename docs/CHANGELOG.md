@@ -6,6 +6,20 @@
 
 ## Unreleased
 
+- Fixed standings scheduling at race end + 30 minutes and bounded retries after
+  failed synchronization; retained confirmed schedules after partial downloads.
+- Prioritized current-weekend results, isolated historical retry deadlines,
+  migrated result cache v2 to v3 without discarding podiums, and serialized
+  season/results transactions to prevent stale writes during season changes.
+- Streamed season JSON one object at a time, grew bounded small-response buffers
+  on demand, and shared HTTP rate-limit backoff across the two data services.
+- Made setup passwords random, rejected overlapping provisioning submissions,
+  committed only the tested credentials, and kept a clock synchronized during
+  this boot usable across Wi-Fi reconnects; added an NTP error state.
+- Reused visible calendar/standings rows, sampled battery data outside LVGL,
+  dispatched buttons through a queue, stopped idle timer polling after screen-off,
+  and made bounded USB screenshot capture an opt-in debug feature.
+
 - Reworked the bilingual GitHub project READMEs around the PDKPASS experience,
   added production-UI simulator captures for three contrasting rounds, and
   surfaced the controls, app-free setup, simulator, build path, documentation,

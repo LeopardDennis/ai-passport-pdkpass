@@ -6,6 +6,8 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_random.h"
+#include "esp_timer.h"
 #include "esp_netif.h"
 #include "esp_sntp.h"
 #include "esp_wifi.h"
@@ -23,7 +25,7 @@
 #define NETWORK_TASK_STACK 4096
 #define NETWORK_TASK_PRIORITY 4
 #define WIFI_RETRY_LIMIT 5
-#define FORM_BODY_LIMIT 256
+#define FORM_BODY_LIMIT 320
 #define VALID_TIME_MIN 1767225600LL
 #define VALID_TIME_MAX 4102444800LL
 #define SNTP_SYNC_INTERVAL_MS (6U * 60U * 60U * 1000U)
@@ -64,6 +66,25 @@ static bool s_have_working_credentials;
 static bool s_testing_candidate;
 static bool s_in_setup;
 static bool s_sntp_started;
+static bool s_candidate_busy; // protected by s_candidate_lock, includes queued attempts
+static bool s_time_synced_boot;
+static bool s_has_ip;
+static int64_t s_candidate_deadline;
+static int64_t s_sync_deadline;
+static char s_attempt_ssid[33];
+static char s_attempt_password[65];
+
+static void finish_candidate(void)
+{
+    xSemaphoreTake(s_candidate_lock, portMAX_DELAY);
+    s_candidate_busy = false;
+    memset(s_candidate_password, 0, sizeof(s_candidate_password));
+    xSemaphoreGive(s_candidate_lock);
+    s_testing_candidate = false;
+    s_candidate_deadline = 0;
+    memset(s_attempt_password, 0, sizeof(s_attempt_password));
+}
+
 
 static bool current_time_valid(void)
 {
@@ -169,6 +190,12 @@ static void start_sntp_once(void)
     }
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
     esp_sntp_setservername(0, "pool.ntp.org");
+#if CONFIG_LWIP_SNTP_MAX_SERVERS > 1
+    esp_sntp_setservername(1, "time.cloudflare.com");
+#endif
+#if CONFIG_LWIP_SNTP_MAX_SERVERS > 2
+    esp_sntp_setservername(2, "time.google.com");
+#endif
     esp_sntp_set_sync_interval(SNTP_SYNC_INTERVAL_MS);
     esp_sntp_set_time_sync_notification_cb(time_sync_notification);
     esp_sntp_init();
@@ -216,6 +243,12 @@ static esp_err_t save_post(httpd_req_t *request)
                             "Please try again");
         return ESP_FAIL;
     }
+    if (s_candidate_busy) {
+        xSemaphoreGive(s_candidate_lock);
+        httpd_resp_set_status(request, "409 Conflict");
+        return httpd_resp_sendstr(request, "A connection is already being tested. Please wait.");
+    }
+    s_candidate_busy = true;
     memcpy(s_candidate_ssid, ssid, sizeof(s_candidate_ssid));
     memcpy(s_candidate_password, password, sizeof(s_candidate_password));
     xSemaphoreGive(s_candidate_lock);
@@ -278,8 +311,14 @@ static esp_err_t start_setup(void)
     if (err != ESP_OK) return err;
     snprintf(s_setup_ssid, sizeof(s_setup_ssid), "PDKPASS-%02X%02X",
              mac[4], mac[5]);
-    snprintf(s_setup_password, sizeof(s_setup_password), "Pdk%02X%02X%02X%02X",
-             mac[2], mac[3], mac[4], mac[5]);
+    // Wi-Fi is running here, so the hardware RNG has an active entropy source.
+    uint8_t random_bytes[12];
+    esp_fill_random(random_bytes, sizeof(random_bytes));
+    static const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    for (size_t i = 0; i < sizeof(random_bytes); i++) {
+        s_setup_password[i] = alphabet[random_bytes[i] & 31U];
+    }
+    s_setup_password[sizeof(random_bytes)] = '\0';
 
     wifi_config_t config = { 0 };
     memcpy(config.ap.ssid, s_setup_ssid, strlen(s_setup_ssid));
@@ -302,20 +341,34 @@ static esp_err_t start_setup(void)
     return ESP_OK;
 }
 
+static esp_err_t disconnect_station(void)
+{
+    esp_err_t err = esp_wifi_disconnect();
+    if (err == ESP_OK) {
+        EventBits_t stopped = xEventGroupWaitBits(s_events, EVENT_DISCONNECTED,
+                                                 pdTRUE, pdFALSE, pdMS_TO_TICKS(3000));
+        if (!(stopped & EVENT_DISCONNECTED)) return ESP_ERR_TIMEOUT;
+    } else if (err != ESP_ERR_WIFI_NOT_CONNECT) return err;
+    s_has_ip = false;
+    xEventGroupClearBits(s_events, EVENT_CONNECTED | EVENT_DISCONNECTED);
+    return ESP_OK;
+}
+
 static esp_err_t test_candidate(void)
 {
-    char ssid[33];
-    char password[65];
-    if (xSemaphoreTake(s_candidate_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
-        return ESP_ERR_TIMEOUT;
-    }
-    memcpy(ssid, s_candidate_ssid, sizeof(ssid));
-    memcpy(password, s_candidate_password, sizeof(password));
+    xSemaphoreTake(s_candidate_lock, portMAX_DELAY);
+    memcpy(s_attempt_ssid, s_candidate_ssid, sizeof(s_attempt_ssid));
+    memcpy(s_attempt_password, s_candidate_password, sizeof(s_attempt_password));
     xSemaphoreGive(s_candidate_lock);
 
-    esp_err_t err = configure_station(ssid, password);
+    // Drain the old connection before applying a new configuration. The form
+    // remains busy until this immutable attempt succeeds, fails or times out.
+    esp_err_t err = disconnect_station();
+    if (err != ESP_OK) return err;
+    err = configure_station(s_attempt_ssid, s_attempt_password);
     if (err == ESP_OK) {
         s_testing_candidate = true;
+        s_candidate_deadline = esp_timer_get_time() + 30000000LL;
         publish_state(PDKPASS_NETWORK_CONNECTING);
         err = esp_wifi_connect();
     }
@@ -327,10 +380,15 @@ static esp_err_t accept_candidate(void)
     if (xSemaphoreTake(s_candidate_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
-    esp_err_t err = save_credentials(s_candidate_ssid, s_candidate_password);
+    wifi_ap_record_t ap;
+    esp_err_t err = esp_wifi_sta_get_ap_info(&ap);
+    if (err == ESP_OK && strncmp((const char *)ap.ssid, s_attempt_ssid, 32) != 0) {
+        err = ESP_ERR_INVALID_STATE;
+    }
+    if (err == ESP_OK) err = save_credentials(s_attempt_ssid, s_attempt_password);
     if (err == ESP_OK) {
-        memcpy(s_working_ssid, s_candidate_ssid, sizeof(s_working_ssid));
-        memcpy(s_working_password, s_candidate_password,
+        memcpy(s_working_ssid, s_attempt_ssid, sizeof(s_working_ssid));
+        memcpy(s_working_password, s_attempt_password,
                sizeof(s_working_password));
         s_have_working_credentials = true;
     }
@@ -339,7 +397,7 @@ static esp_err_t accept_candidate(void)
 
     stop_http_server();
     s_in_setup = false;
-    s_testing_candidate = false;
+    finish_candidate();
     return esp_wifi_set_mode(WIFI_MODE_STA);
 }
 
@@ -410,58 +468,74 @@ static void network_task(void *arg)
         EventBits_t bits = xEventGroupWaitBits(
             s_events, EVENT_CONNECTED | EVENT_DISCONNECTED | EVENT_CANDIDATE |
                           EVENT_TIME_SYNCED,
-            pdTRUE, pdFALSE, pdMS_TO_TICKS(1000));
+            pdTRUE, pdFALSE, pdMS_TO_TICKS(30000));
 
         if (bits & EVENT_CANDIDATE) {
-            xEventGroupClearBits(s_events,
-                                 EVENT_CONNECTED | EVENT_DISCONNECTED);
             err = test_candidate();
             if (err != ESP_OK) {
-                ESP_LOGW(TAG, "Candidate connection could not start: %s",
-                         esp_err_to_name(err));
-                s_testing_candidate = false;
+                ESP_LOGW(TAG, "Candidate start failed: %s", esp_err_to_name(err));
+                finish_candidate();
                 publish_state(PDKPASS_NETWORK_SETUP);
             }
+            // These bits were sampled before the new attempt was started.
+            bits &= ~(EVENT_CONNECTED | EVENT_DISCONNECTED);
         }
-
-        if (bits & EVENT_CONNECTED) {
-            retries = 0;
-            if (s_testing_candidate) {
-                err = accept_candidate();
-                if (err != ESP_OK) {
-                    ESP_LOGE(TAG, "Connected credentials were not saved: %s",
-                             esp_err_to_name(err));
-                    publish_state(PDKPASS_NETWORK_SETUP);
-                    continue;
-                }
-            }
-            publish_state(PDKPASS_NETWORK_SYNCING);
-            start_sntp_once();
-        }
-
-        if (bits & EVENT_TIME_SYNCED) {
-            save_current_time();
-            publish_state(PDKPASS_NETWORK_ONLINE);
-        }
-
         if (bits & EVENT_DISCONNECTED) {
+            s_has_ip = false;
+            s_sync_deadline = 0;
             if (s_testing_candidate) {
-                s_testing_candidate = false;
+                finish_candidate();
                 publish_state(PDKPASS_NETWORK_SETUP);
             } else if (!s_in_setup && s_have_working_credentials) {
                 retries++;
                 if (retries >= WIFI_RETRY_LIMIT) {
                     err = start_setup();
-                    if (err != ESP_OK) {
-                        ESP_LOGE(TAG, "Wi-Fi setup failed: %s",
-                                 esp_err_to_name(err));
-                        publish_state(PDKPASS_NETWORK_OFFLINE);
-                    }
+                    if (err != ESP_OK) publish_state(PDKPASS_NETWORK_OFFLINE);
                 } else {
                     publish_state(PDKPASS_NETWORK_CONNECTING);
-                    esp_wifi_connect();
+                    if (esp_wifi_connect() != ESP_OK) publish_state(PDKPASS_NETWORK_OFFLINE);
                 }
             }
+            bits &= ~EVENT_CONNECTED;
+        }
+        if (bits & EVENT_CONNECTED) {
+            wifi_ap_record_t ap;
+            if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) continue;
+            s_has_ip = true;
+            retries = 0;
+            if (s_testing_candidate) {
+                err = accept_candidate();
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Credentials not saved: %s", esp_err_to_name(err));
+                    disconnect_station();
+                    finish_candidate();
+                    s_has_ip = false;
+                    publish_state(PDKPASS_NETWORK_SETUP);
+                    continue;
+                }
+            }
+            publish_state(s_time_synced_boot && current_time_valid()
+                              ? PDKPASS_NETWORK_ONLINE : PDKPASS_NETWORK_SYNCING);
+            start_sntp_once();
+            s_sync_deadline = esp_timer_get_time() + 60000000LL;
+        }
+        if (bits & EVENT_TIME_SYNCED) {
+            s_time_synced_boot = current_time_valid();
+            if (s_time_synced_boot) save_current_time();
+            s_sync_deadline = 0;
+            if (s_has_ip && !s_in_setup && s_time_synced_boot) publish_state(PDKPASS_NETWORK_ONLINE);
+        }
+        int64_t now_us = esp_timer_get_time();
+        if (s_testing_candidate && now_us >= s_candidate_deadline) {
+            disconnect_station();
+            finish_candidate();
+            s_has_ip = false;
+            publish_state(PDKPASS_NETWORK_SETUP);
+        }
+        if (s_has_ip && s_sync_deadline && now_us >= s_sync_deadline) {
+            if (!s_time_synced_boot) publish_state(PDKPASS_NETWORK_TIME_ERROR);
+            start_sntp_once();
+            s_sync_deadline = now_us + 300000000LL;
         }
     }
 }

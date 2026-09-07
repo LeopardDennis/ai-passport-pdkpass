@@ -119,3 +119,12 @@ void pdkpass_format_beijing_date(int64_t epoch_utc, char *output,
     snprintf(output, capacity, "%02u %s", parts.day,
              month_label(parts.month));
 }
+
+int64_t pdkpass_season_next_race_check(int64_t now_utc, int64_t race_end_utc)
+{
+    int64_t deadline = pdkpass_next_beijing_midnight(now_utc);
+    if (race_end_utc > now_utc && race_end_utc < deadline) deadline = race_end_utc;
+    int64_t standings_at = race_end_utc + 1800LL;
+    if (standings_at > now_utc && standings_at < deadline) deadline = standings_at;
+    return deadline;
+}

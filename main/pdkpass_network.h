@@ -10,6 +10,7 @@ typedef enum {
     PDKPASS_NETWORK_SYNCING,
     PDKPASS_NETWORK_ONLINE,
     PDKPASS_NETWORK_OFFLINE,
+    PDKPASS_NETWORK_TIME_ERROR,
 } pdkpass_network_state_t;
 
 typedef struct {

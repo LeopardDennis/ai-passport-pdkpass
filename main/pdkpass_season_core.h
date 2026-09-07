@@ -21,3 +21,6 @@ void pdkpass_format_beijing_session(const char *label, int64_t start_utc,
                                     char *output, size_t capacity);
 void pdkpass_format_beijing_date(int64_t epoch_utc, char *output,
                                  size_t capacity);
+
+// Next switch or delayed standings boundary, capped at Beijing midnight.
+int64_t pdkpass_season_next_race_check(int64_t now_utc, int64_t race_end_utc);

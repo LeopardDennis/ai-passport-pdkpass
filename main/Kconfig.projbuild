@@ -1,0 +1,8 @@
+menu "PDKPASS"
+    config PDKPASS_SCREENSHOT
+        bool "Enable USB screenshot debugging"
+        default n
+        help
+            Enables the FAP_SCREENSHOT_V1 command with bounded USB output.
+            Disabled in normal builds to save a task stack and USB resources.
+endmenu

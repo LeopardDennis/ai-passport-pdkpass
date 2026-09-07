@@ -5,6 +5,13 @@
 
 int main(void)
 {
+    int64_t race_end = 1788688800LL; // 2026-09-06 18:00 CST, synthetic boundary
+    assert(pdkpass_season_next_race_check(race_end - 1, race_end) == race_end);
+    assert(pdkpass_season_next_race_check(race_end, race_end) == race_end + 1800);
+    assert(pdkpass_season_next_race_check(race_end + 1799, race_end) == race_end + 1800);
+    assert(pdkpass_season_next_race_check(race_end + 1800, race_end) ==
+           pdkpass_next_beijing_midnight(race_end));
+
     // Beijing crosses into 2027 at 2026-12-31 16:00:00 UTC.
     assert(pdkpass_beijing_year(1798732799) == 2026);
     assert(pdkpass_beijing_year(1798732800) == 2027);

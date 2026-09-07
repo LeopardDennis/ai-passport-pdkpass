@@ -48,14 +48,19 @@ static lv_obj_t *s_battery;
 static lv_obj_t *s_network;
 static lv_obj_t *s_status_left;
 static lv_obj_t *s_status_right;
-static lv_timer_t *s_battery_timer;
+
 static lv_timer_t *s_idle_timer;
 static lv_timer_t *s_clock_timer;
 static pdkpass_state_t s_state;
 static pdkpass_season_snapshot_t s_season;
-static bool s_battery_available;
+
 static bool s_time_valid;
-static unsigned s_idle_seconds;
+static uint32_t s_last_activity;
+static bool s_needs_render;
+static int s_list_page = -1;
+static size_t s_list_start;
+static lv_obj_t *s_list_rows[STANDINGS_ROWS];
+static lv_obj_t *s_list_footer;
 static unsigned s_idle_stage;
 static uint32_t s_status_background = UI_SKY;
 static pdkpass_network_state_t s_network_state = PDKPASS_NETWORK_STARTING;
@@ -190,6 +195,9 @@ static void set_gradient(lv_obj_t *obj, uint32_t top, uint32_t bottom)
 
 static void content_reset(uint32_t top, uint32_t bottom)
 {
+    s_list_page = -1;
+    memset(s_list_rows, 0, sizeof(s_list_rows));
+    s_list_footer = NULL;
     lv_obj_clean(s_content);
     set_gradient(s_content, top, bottom);
 }
@@ -280,8 +288,9 @@ static void set_status(const char *text, uint32_t background)
 
 static void show_status_flags(void)
 {
-    lv_obj_remove_flag(s_status_left, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(s_status_right, LV_OBJ_FLAG_HIDDEN);
+    // The right-hand status area now carries the battery reading.
+    lv_obj_add_flag(s_status_left, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_status_right, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void set_hint(const char *text)
@@ -346,6 +355,7 @@ static const char *network_word(void)
     case PDKPASS_NETWORK_SYNCING: return "TIME...";
     case PDKPASS_NETWORK_ONLINE: return "ONLINE";
     case PDKPASS_NETWORK_OFFLINE: return "OFFLINE";
+    case PDKPASS_NETWORK_TIME_ERROR: return "NTP ERR";
     default: return "NET...";
     }
 }
@@ -446,9 +456,43 @@ static void render_home(void)
     set_hint("UP/DOWN BROWSE  OK DETAIL");
 }
 
+static bool update_list_selection(int page, size_t start, size_t selected,
+                                   size_t count)
+{
+    if (s_list_page != page || s_list_start != start || !s_list_footer) return false;
+    for (size_t row = 0; row < STANDINGS_ROWS; row++) {
+        lv_obj_t *card = s_list_rows[row];
+        if (!card || start + row >= count) continue;
+        size_t index = start + row;
+        uint32_t accent = page == PDKPASS_PAGE_CALENDAR
+            ? s_season.races[index].accent : s_season.drivers[index].accent;
+        uint32_t bg = index == selected ? accent : UI_PAPER;
+        uint32_t ink = index == selected ? contrast_color(bg) : UI_INK;
+        lv_obj_set_style_bg_color(card, lv_color_hex(bg), 0);
+        for (uint32_t child = 0; child < lv_obj_get_child_count(card); child++) {
+            lv_obj_set_style_text_color(lv_obj_get_child(card, child), lv_color_hex(ink), 0);
+        }
+    }
+    if (page == PDKPASS_PAGE_CALENDAR && selected < count) {
+        const pdkpass_race_t *race = &s_season.races[selected];
+        pdkpass_theme_t theme = theme_for_race(race);
+        ui_pixel_screen_set_theme(s_screen, theme.top, theme.bottom);
+        set_gradient(s_content, theme.top, theme.bottom);
+        char status[28];
+        snprintf(status, sizeof(status), "SEASON | %u RACES", (unsigned)count);
+        set_status(status, race->accent);
+        lv_label_set_text_fmt(s_list_footer, "%u / %u", (unsigned)(selected + 1U), (unsigned)count);
+    } else if (selected < count) {
+        lv_label_set_text(s_list_footer, s_season.drivers[selected].team);
+    }
+    return true;
+}
+
 static void render_calendar(void)
 {
     size_t start = (s_state.selected_race / CALENDAR_ROWS) * CALENDAR_ROWS;
+    if (update_list_selection(PDKPASS_PAGE_CALENDAR, start, s_state.selected_race,
+                              s_season.race_count)) return;
     const pdkpass_race_t *selected = s_state.selected_race < s_season.race_count
                                          ? &s_season.races[s_state.selected_race]
                                          : NULL;
@@ -475,6 +519,7 @@ static void render_calendar(void)
         uint32_t ink = selected ? contrast_color(bg) : UI_INK;
         int y = 18 + (int)row * 29;
         lv_obj_t *card = make_card(s_content, 1, y, 208, 26, bg, 2);
+        s_list_rows[row] = card;
         char round[6];
         snprintf(round, sizeof(round), "%02u", race->round);
         make_label(card, round, 5, 8, 20, &lv_font_unscii_8, ink);
@@ -488,8 +533,10 @@ static void render_calendar(void)
     snprintf(page, sizeof(page), "%u / %u",
              (unsigned)(s_state.selected_race + 1U),
              (unsigned)s_season.race_count);
-    make_center_label(s_content, page, 0, 165, INNER_W,
+    s_list_footer = make_center_label(s_content, page, 0, 165, INNER_W,
                       &lv_font_unscii_8, UI_PAPER);
+    s_list_page = PDKPASS_PAGE_CALENDAR;
+    s_list_start = start;
     set_hint("UP/DOWN SEL  OK  HOLD HOME");
 }
 
@@ -497,6 +544,8 @@ static void render_standings(void)
 {
     size_t start = (s_state.selected_driver / STANDINGS_ROWS) *
                    STANDINGS_ROWS;
+    if (update_list_selection(PDKPASS_PAGE_STANDINGS, start, s_state.selected_driver,
+                              s_season.driver_count)) return;
     char title[20];
     title_for_season(title, sizeof(title), "STANDINGS");
     set_title(title);
@@ -523,6 +572,7 @@ static void render_standings(void)
         uint32_t ink = selected ? contrast_color(bg) : UI_INK;
         int y = 2 + (int)row * 28;
         lv_obj_t *card = make_card(s_content, 1, y, 208, 25, bg, 2);
+        s_list_rows[row] = card;
         char position[5];
         char points[8];
         snprintf(position, sizeof(position), "%02u", driver->position);
@@ -544,8 +594,10 @@ static void render_standings(void)
     }
     const pdkpass_driver_t *selected =
         &s_season.drivers[s_state.selected_driver];
-    make_center_label(s_content, selected->team, 0, 170, INNER_W,
+    s_list_footer = make_center_label(s_content, selected->team, 0, 170, INNER_W,
                       &lv_font_unscii_8, UI_PAPER);
+    s_list_page = PDKPASS_PAGE_STANDINGS;
+    s_list_start = start;
     set_hint("UP/DOWN SCROLL  HOLD HOME");
 }
 
@@ -696,6 +748,8 @@ static void render_results(void)
 
 static void render(void)
 {
+    if (s_idle_stage == 2) { s_needs_render = true; return; }
+    s_needs_render = false;
     ui_pixel_screen_set_theme(s_screen, UI_SKY, UI_SKY_DARK);
     switch (s_state.page) {
     case PDKPASS_PAGE_HOME:
@@ -716,16 +770,15 @@ static void render(void)
     }
 }
 
-static void battery_tick(lv_timer_t *timer)
+void pdkpass_ui_battery_update(int soc)
 {
-    (void)timer;
-    int soc = s_battery_available ? bsp_battery_soc() : -1;
+    if (!s_battery) return;
     if (soc < 0) {
         lv_label_set_text(s_battery, "BAT --");
         lv_obj_set_style_text_color(s_battery,
             lv_color_hex(contrast_color(s_status_background)), 0);
     } else {
-        lv_label_set_text_fmt(s_battery, "BAT %d", soc);
+        lv_label_set_text_fmt(s_battery, "%d%%", soc);
         lv_obj_set_style_text_color(s_battery,
             lv_color_hex(soc < 20 ? UI_RED
                                   : contrast_color(s_status_background)), 0);
@@ -763,21 +816,24 @@ static void update_network_label(void)
 // button event restores full brightness and is consumed as the wake gesture.
 static void idle_tick(lv_timer_t *timer)
 {
-    (void)timer;
-    s_idle_seconds++;
-    if (s_idle_seconds == IDLE_DIM_SECONDS) {
-        bsp_display_backlight(25);
-        s_idle_stage = 1;
-    } else if (s_idle_seconds == IDLE_OFF_SECONDS) {
+    uint32_t elapsed = lv_tick_get() - s_last_activity;
+    if (elapsed >= IDLE_OFF_SECONDS * 1000U) {
         bsp_display_backlight(0);
         s_idle_stage = 2;
+        lv_timer_pause(timer);
+    } else if (elapsed >= IDLE_DIM_SECONDS * 1000U) {
+        bsp_display_backlight(25);
+        s_idle_stage = 1;
+        lv_timer_set_period(timer, IDLE_OFF_SECONDS * 1000U - elapsed);
+    } else {
+        lv_timer_set_period(timer, IDLE_DIM_SECONDS * 1000U - elapsed);
     }
 }
 
 void pdkpass_ui_enter(bool battery_available)
 {
-    s_battery_available = battery_available;
-    s_idle_seconds = 0;
+    (void)battery_available;
+    s_last_activity = lv_tick_get();
     s_idle_stage = 0;
     pdkpass_state_init(&s_state);
     if (!pdkpass_season_snapshot(&s_season)) {
@@ -789,11 +845,12 @@ void pdkpass_ui_enter(bool battery_available)
     s_screen = ui_pixel_screen_create(title);
     s_status = ui_pixel_ticket_create(s_screen, STATUS_X, STATUS_Y,
                                       STATUS_W, STATUS_H, UI_SKY, true);
-    s_network = make_center_label(s_status, "NET... | --.--", 28, 5, 162,
+    s_network = make_center_label(s_status, "NET... | --.--", 5, 5, 154,
                            &lv_font_unscii_8, UI_PAPER);
     s_battery = make_label(s_status, "BAT --", 168, 5, 48,
                            &lv_font_unscii_8, UI_PAPER);
-    lv_obj_add_flag(s_battery, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_text_font(s_battery, &lv_font_unscii_8, 0);
+    lv_obj_set_style_text_align(s_battery, LV_TEXT_ALIGN_RIGHT, 0);
     s_status_left = make_block(s_status, 5, 5, 13, 11, 0x009246);
     lv_obj_set_style_border_color(s_status_left, lv_color_hex(UI_INK), 0);
     lv_obj_set_style_border_width(s_status_left, 2, 0);
@@ -810,9 +867,8 @@ void pdkpass_ui_enter(bool battery_available)
                                &lv_font_unscii_8, UI_INK);
 
     render();
-    battery_tick(NULL);
-    s_battery_timer = lv_timer_create(battery_tick, 60000, NULL);
-    s_idle_timer = lv_timer_create(idle_tick, 1000, NULL);
+    pdkpass_ui_battery_update(-1);
+    s_idle_timer = lv_timer_create(idle_tick, IDLE_DIM_SECONDS * 1000U, NULL);
     s_clock_timer = lv_timer_create(clock_tick, CLOCK_FALLBACK_PERIOD_MS, NULL);
     lv_screen_load(s_screen);
 }
@@ -845,6 +901,7 @@ void pdkpass_ui_season_update(void)
     pdkpass_season_snapshot_t updated;
     if (!pdkpass_season_snapshot(&updated)) return;
     s_season = updated;
+    s_list_page = -1;
     if (s_state.selected_race >= s_season.race_count) {
         s_state.selected_race = s_season.race_count > 0U
                                     ? s_season.race_count - 1U
@@ -868,11 +925,17 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
 {
     bool was_off = s_idle_stage == 2;
     if (ev == BSP_BTN_CLICK || ev == BSP_BTN_LONG) {
-        s_idle_seconds = 0;
+        s_last_activity = lv_tick_get();
         s_idle_stage = 0;
+        lv_timer_set_period(s_idle_timer, IDLE_DIM_SECONDS * 1000U);
+        lv_timer_reset(s_idle_timer);
+        lv_timer_resume(s_idle_timer);
         bsp_display_backlight(100);
     }
-    if (was_off) return;
+    if (was_off) {
+        if (s_needs_render) render();
+        return;
+    }
 
     pdkpass_input_t input;
     if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
@@ -887,8 +950,10 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         input = PDKPASS_INPUT_OK;
     }
 
+    pdkpass_state_t previous = s_state;
     pdkpass_state_handle(&s_state, input,
                          s_season.race_count, s_season.driver_count);
+    if (memcmp(&previous, &s_state, sizeof(s_state)) == 0) return;
     render();
     if (s_state.page == PDKPASS_PAGE_RESULTS ||
         s_state.page == PDKPASS_PAGE_RACE_DETAIL) {

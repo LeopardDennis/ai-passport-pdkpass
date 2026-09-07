@@ -1,6 +1,7 @@
 #include "pdkpass_season.h"
 
 #include "cJSON.h"
+#include "pdkpass_http.h"
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -20,7 +21,7 @@
 
 #define SEASON_TASK_STACK 9216
 #define SEASON_TASK_PRIORITY 3
-#define SEASON_BODY_LIMIT 65536U
+#define SEASON_BODY_LIMIT 24576U
 #define SEASON_CACHE_MAGIC 0x50444B53U
 #define SEASON_CACHE_VERSION 1U
 #define SEASON_MIN_REPEAT_SECONDS (5LL * 60LL)
@@ -34,12 +35,7 @@ typedef struct {
     pdkpass_season_snapshot_t season;
 } season_cache_t;
 
-typedef struct {
-    char *data;
-    size_t length;
-    size_t capacity;
-    bool overflow;
-} response_buffer_t;
+
 
 typedef struct {
     pdkpass_race_t race;
@@ -61,64 +57,9 @@ static int64_t s_last_attempt_utc;
 _Static_assert(sizeof(season_cache_t) <= 6144,
                "Season snapshot no longer fits the NVS budget");
 
-static esp_err_t http_event(esp_http_client_event_t *event)
-{
-    if (event->event_id != HTTP_EVENT_ON_DATA || event->data_len <= 0) {
-        return ESP_OK;
-    }
-    response_buffer_t *buffer = event->user_data;
-    if (!buffer || buffer->overflow) return ESP_OK;
-    size_t incoming = (size_t)event->data_len;
-    if (incoming > buffer->capacity - buffer->length - 1U) {
-        buffer->overflow = true;
-        return ESP_OK;
-    }
-    memcpy(buffer->data + buffer->length, event->data, incoming);
-    buffer->length += incoming;
-    buffer->data[buffer->length] = '\0';
-    return ESP_OK;
-}
-
 static esp_err_t http_get_json(const char *url, char **json)
 {
-    if (!url || !json) return ESP_ERR_INVALID_ARG;
-    *json = NULL;
-    response_buffer_t response = {
-        .data = malloc(SEASON_BODY_LIMIT),
-        .capacity = SEASON_BODY_LIMIT,
-    };
-    if (!response.data) return ESP_ERR_NO_MEM;
-    response.data[0] = '\0';
-
-    esp_http_client_config_t config = {
-        .url = url,
-        .event_handler = http_event,
-        .user_data = &response,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms = 15000,
-        .buffer_size = 1024,
-        .user_agent = "PDKPASS/1.0",
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) {
-        free(response.data);
-        return ESP_ERR_NO_MEM;
-    }
-    esp_http_client_set_header(client, "Accept", "application/json");
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
-    if (err != ESP_OK || status != 200 || response.overflow) {
-        ESP_LOGW(TAG, "GET failed status=%d err=%s overflow=%d", status,
-                 esp_err_to_name(err), response.overflow);
-        free(response.data);
-        return response.overflow ? ESP_ERR_INVALID_SIZE
-                                 : (err == ESP_OK ? ESP_FAIL : err);
-    }
-    char *trimmed = realloc(response.data, response.length + 1U);
-    if (trimmed) response.data = trimmed;
-    *json = response.data;
-    return ESP_OK;
+    return pdkpass_http_get(url, SEASON_BODY_LIMIT, json);
 }
 
 static void copy_text(char *destination, size_t capacity, const char *source)
@@ -258,58 +199,56 @@ static bool is_grand_prix(const cJSON *meeting)
            !cJSON_IsTrue(cancelled);
 }
 
-static size_t parse_meetings(const char *body, race_build_t *build,
-                             size_t capacity)
-{
-    cJSON *root = cJSON_Parse(body);
-    if (!cJSON_IsArray(root)) {
-        cJSON_Delete(root);
-        return 0;
-    }
-    size_t count = 0;
-    const cJSON *meeting;
-    cJSON_ArrayForEach(meeting, root) {
-        if (count >= capacity || !is_grand_prix(meeting)) continue;
-        int meeting_key;
-        int circuit_key = 0;
-        const char *start_text = json_string(meeting, "date_start");
-        const char *end_text = json_string(meeting, "date_end");
-        const char *country = json_string(meeting, "country_name");
-        const char *circuit = json_string(meeting, "circuit_short_name");
-        int64_t start_utc;
-        int64_t end_utc;
-        if (!json_number(meeting, "meeting_key", &meeting_key) ||
-            !start_text || !end_text || !country || !circuit ||
-            !pdkpass_parse_iso8601_utc(start_text, &start_utc) ||
-            !pdkpass_parse_iso8601_utc(end_text, &end_utc) ||
-            end_utc <= start_utc) continue;
-        json_number(meeting, "circuit_key", &circuit_key);
+typedef struct {
+    race_build_t *build;
+    size_t count;
+    bool sprint_qualifying[PDKPASS_MAX_RACES];
+    int64_t now_utc;
+    int latest_race_session;
+    int64_t latest_race_end;
+} build_context_t;
 
-        race_build_t *entry = &build[count++];
-        memset(entry, 0, sizeof(*entry));
-        entry->start_utc = start_utc;
-        entry->meeting_end_utc = end_utc;
-        entry->race.meeting_key = meeting_key;
-        entry->race.switch_at_utc = end_utc;
-        entry->race.accent = accent_for_key(circuit_key);
-        copy_upper(entry->race.country, sizeof(entry->race.country), country);
-        copy_upper(entry->race.circuit, sizeof(entry->race.circuit), circuit);
-        copy_text(entry->race.api_country, sizeof(entry->race.api_country),
-                  country);
-        pdkpass_format_beijing_weekend(start_utc, end_utc,
-                                       entry->race.weekend,
-                                       sizeof(entry->race.weekend));
-        copy_text(entry->race.session_one_cn,
-                  sizeof(entry->race.session_one_cn), "SCHEDULE PENDING");
-        copy_text(entry->race.session_two_cn,
-                  sizeof(entry->race.session_two_cn), "SCHEDULE PENDING");
-        copy_text(entry->race.race_cn, sizeof(entry->race.race_cn),
-                  "RACE SCHEDULE TBD");
-    }
-    cJSON_Delete(root);
-    qsort(build, count, sizeof(build[0]), compare_races);
-    for (size_t i = 0; i < count; i++) build[i].race.round = (uint8_t)(i + 1U);
-    return count;
+static bool parse_meeting(const cJSON *meeting, void *user)
+{
+    build_context_t *context = user;
+    if (!is_grand_prix(meeting)) return true;
+    if (context->count >= PDKPASS_MAX_RACES) return false;
+    int meeting_key;
+    int circuit_key = 0;
+    const char *start_text = json_string(meeting, "date_start");
+    const char *end_text = json_string(meeting, "date_end");
+    const char *country = json_string(meeting, "country_name");
+    const char *circuit = json_string(meeting, "circuit_short_name");
+    int64_t start_utc;
+    int64_t end_utc;
+    if (!json_number(meeting, "meeting_key", &meeting_key) ||
+        !start_text || !end_text || !country || !circuit ||
+        !pdkpass_parse_iso8601_utc(start_text, &start_utc) ||
+        !pdkpass_parse_iso8601_utc(end_text, &end_utc) ||
+        end_utc <= start_utc || meeting_key <= 0) return false;
+    json_number(meeting, "circuit_key", &circuit_key);
+
+    race_build_t *entry = &context->build[context->count++];
+    memset(entry, 0, sizeof(*entry));
+    entry->start_utc = start_utc;
+    entry->meeting_end_utc = end_utc;
+    entry->race.meeting_key = meeting_key;
+    entry->race.switch_at_utc = end_utc;
+    entry->race.accent = accent_for_key(circuit_key);
+    copy_upper(entry->race.country, sizeof(entry->race.country), country);
+    copy_upper(entry->race.circuit, sizeof(entry->race.circuit), circuit);
+    copy_text(entry->race.api_country, sizeof(entry->race.api_country),
+              country);
+    pdkpass_format_beijing_weekend(start_utc, end_utc,
+                                   entry->race.weekend,
+                                   sizeof(entry->race.weekend));
+    copy_text(entry->race.session_one_cn,
+              sizeof(entry->race.session_one_cn), "SCHEDULE PENDING");
+    copy_text(entry->race.session_two_cn,
+              sizeof(entry->race.session_two_cn), "SCHEDULE PENDING");
+    copy_text(entry->race.race_cn, sizeof(entry->race.race_cn),
+              "RACE SCHEDULE TBD");
+    return true;
 }
 
 static race_build_t *find_meeting(race_build_t *build, size_t count,
@@ -329,65 +268,53 @@ static const char *session_short_label(pdkpass_session_kind_t kind)
     return kind < PDKPASS_SESSION_COUNT ? labels[kind] : "EVENT";
 }
 
-static int populate_sessions(const char *body, race_build_t *build,
-                             size_t count, int64_t now_utc)
+static bool populate_session(const cJSON *session, void *user)
 {
-    cJSON *root = cJSON_Parse(body);
-    if (!cJSON_IsArray(root)) {
-        cJSON_Delete(root);
-        return 0;
-    }
-    bool sprint_qualifying[PDKPASS_MAX_RACES] = {0};
-    int latest_race_session = 0;
-    int64_t latest_race_end = 0;
-    const cJSON *session;
-    cJSON_ArrayForEach(session, root) {
-        int meeting_key;
-        int session_key;
-        const char *name = json_string(session, "session_name");
-        const char *start_text = json_string(session, "date_start");
-        const char *end_text = json_string(session, "date_end");
-        const cJSON *cancelled =
-            cJSON_GetObjectItemCaseSensitive(session, "is_cancelled");
-        int64_t start_utc;
-        int64_t end_utc;
-        if (cJSON_IsTrue(cancelled) || !name || !start_text || !end_text ||
-            !json_number(session, "meeting_key", &meeting_key) ||
-            !json_number(session, "session_key", &session_key) ||
-            !pdkpass_parse_iso8601_utc(start_text, &start_utc) ||
-            !pdkpass_parse_iso8601_utc(end_text, &end_utc)) continue;
-        race_build_t *entry = find_meeting(build, count, meeting_key);
-        if (!entry) continue;
-        size_t index = (size_t)(entry - build);
-        pdkpass_session_kind_t kind = pdkpass_session_kind_from_name(name);
-        if (kind >= PDKPASS_SESSION_COUNT) continue;
+    build_context_t *context = user;
+    int meeting_key;
+    int session_key;
+    const char *name = json_string(session, "session_name");
+    const char *start_text = json_string(session, "date_start");
+    const char *end_text = json_string(session, "date_end");
+    const cJSON *cancelled =
+        cJSON_GetObjectItemCaseSensitive(session, "is_cancelled");
+    int64_t start_utc;
+    int64_t end_utc;
+    if (cJSON_IsTrue(cancelled) || !name || !start_text || !end_text ||
+        !json_number(session, "meeting_key", &meeting_key) ||
+        !json_number(session, "session_key", &session_key) ||
+        !pdkpass_parse_iso8601_utc(start_text, &start_utc) ||
+        !pdkpass_parse_iso8601_utc(end_text, &end_utc)) return true;
+    race_build_t *entry = find_meeting(context->build, context->count, meeting_key);
+    if (!entry) return true;
+    size_t index = (size_t)(entry - context->build);
+    pdkpass_session_kind_t kind = pdkpass_session_kind_from_name(name);
+    if (kind >= PDKPASS_SESSION_COUNT) return true;
 
-        char line[PDKPASS_SESSION_LINE_LEN];
-        pdkpass_format_beijing_session(session_short_label(kind), start_utc,
-                                       line, sizeof(line));
-        if (kind == PDKPASS_SESSION_FP1) {
-            copy_text(entry->race.session_one_cn,
-                      sizeof(entry->race.session_one_cn), line);
-        } else if (kind == PDKPASS_SESSION_SPRINT_QUALIFYING) {
-            sprint_qualifying[index] = true;
-            copy_text(entry->race.session_two_cn,
-                      sizeof(entry->race.session_two_cn), line);
-        } else if (kind == PDKPASS_SESSION_QUALIFYING &&
-                   !sprint_qualifying[index]) {
-            copy_text(entry->race.session_two_cn,
-                      sizeof(entry->race.session_two_cn), line);
-        } else if (kind == PDKPASS_SESSION_RACE) {
-            copy_text(entry->race.race_cn, sizeof(entry->race.race_cn), line);
-            entry->race.switch_at_utc = end_utc;
-            if (end_utc <= now_utc - PDKPASS_RESULT_DELAY_SECONDS &&
-                end_utc > latest_race_end) {
-                latest_race_end = end_utc;
-                latest_race_session = session_key;
-            }
+    char line[PDKPASS_SESSION_LINE_LEN];
+    pdkpass_format_beijing_session(session_short_label(kind), start_utc,
+                                   line, sizeof(line));
+    if (kind == PDKPASS_SESSION_FP1) {
+        copy_text(entry->race.session_one_cn,
+                  sizeof(entry->race.session_one_cn), line);
+    } else if (kind == PDKPASS_SESSION_SPRINT_QUALIFYING) {
+        context->sprint_qualifying[index] = true;
+        copy_text(entry->race.session_two_cn,
+                  sizeof(entry->race.session_two_cn), line);
+    } else if (kind == PDKPASS_SESSION_QUALIFYING &&
+               !context->sprint_qualifying[index]) {
+        copy_text(entry->race.session_two_cn,
+                  sizeof(entry->race.session_two_cn), line);
+    } else if (kind == PDKPASS_SESSION_RACE) {
+        copy_text(entry->race.race_cn, sizeof(entry->race.race_cn), line);
+        entry->race.switch_at_utc = end_utc;
+        if (end_utc <= context->now_utc - PDKPASS_RESULT_DELAY_SECONDS &&
+            end_utc > context->latest_race_end) {
+            context->latest_race_end = end_utc;
+            context->latest_race_session = session_key;
         }
     }
-    cJSON_Delete(root);
-    return latest_race_session;
+    return true;
 }
 
 static bool same_text(const char *left, const char *right)
@@ -496,6 +423,7 @@ static bool fetch_standings(int session_key, int64_t now_utc,
         output->driver_number = (uint8_t)number;
         output->position = (uint8_t)position;
         double tenths = points->valuedouble * 10.0;
+        if (tenths < 0.0) tenths = 0.0;
         output->points_tenths =
             tenths > 65535.0 ? 65535U : (uint16_t)(tenths + 0.5);
         const cJSON *driver = find_driver_number(drivers, number);
@@ -529,54 +457,57 @@ static bool fetch_standings(int session_key, int64_t now_utc,
 
 static bool build_candidate(unsigned year, int64_t now_utc,
                             const pdkpass_season_snapshot_t *current,
-                            pdkpass_season_snapshot_t *candidate)
+                            pdkpass_season_snapshot_t *candidate,
+                            bool *retry)
 {
     char url[128];
-    char *meetings_body = NULL;
-    snprintf(url, sizeof(url),
-             "https://api.openf1.org/v1/meetings?year=%u", year);
-    if (http_get_json(url, &meetings_body) != ESP_OK) return false;
-
     race_build_t *build = calloc(PDKPASS_MAX_RACES, sizeof(*build));
-    if (!build) {
-        free(meetings_body);
-        return false;
-    }
-    size_t count = parse_meetings(meetings_body, build, PDKPASS_MAX_RACES);
-    free(meetings_body);
-    if (!pdkpass_season_candidate_valid(current->year, year, count)) {
+    if (!build) return false;
+    build_context_t context = {.build = build, .now_utc = now_utc};
+    snprintf(url, sizeof(url), "https://api.openf1.org/v1/meetings?year=%u", year);
+    if (pdkpass_http_array(url, parse_meeting, &context) != ESP_OK ||
+        !pdkpass_season_candidate_valid(current->year, year, context.count)) {
         free(build);
         return false;
     }
-
+    qsort(build, context.count, sizeof(build[0]), compare_races);
+    for (size_t i = 0; i < context.count; i++) {
+        build[i].race.round = (uint8_t)(i + 1U);
+        // A successful but incomplete sessions response must not erase known
+        // times for the same meeting. An explicit cancellation is handled below.
+        if (year != current->year) continue;
+        for (size_t j = 0; j < current->race_count; j++) {
+            const pdkpass_race_t *known = &current->races[j];
+            if (known->meeting_key <= 0 || known->meeting_key != build[i].race.meeting_key) continue;
+            copy_text(build[i].race.session_one_cn, sizeof(build[i].race.session_one_cn), known->session_one_cn);
+            copy_text(build[i].race.session_two_cn, sizeof(build[i].race.session_two_cn), known->session_two_cn);
+            copy_text(build[i].race.race_cn, sizeof(build[i].race.race_cn), known->race_cn);
+            build[i].race.switch_at_utc = known->switch_at_utc;
+            break;
+        }
+    }
+    snprintf(url, sizeof(url), "https://api.openf1.org/v1/sessions?year=%u", year);
+    if (pdkpass_http_array(url, populate_session, &context) != ESP_OK) {
+        free(build);
+        return false;
+    }
     memset(candidate, 0, sizeof(*candidate));
     candidate->year = (uint16_t)year;
-    candidate->race_count = (uint8_t)count;
+    candidate->race_count = (uint8_t)context.count;
     if (year == current->year) {
         candidate->driver_count = current->driver_count;
-        memcpy(candidate->drivers, current->drivers,
-               current->driver_count * sizeof(current->drivers[0]));
-        copy_text(candidate->standings_as_of,
-                  sizeof(candidate->standings_as_of),
-                  current->standings_as_of);
+        memcpy(candidate->drivers, current->drivers, sizeof(candidate->drivers));
+        copy_text(candidate->standings_as_of, sizeof(candidate->standings_as_of), current->standings_as_of);
     } else {
-        copy_text(candidate->standings_as_of,
-                  sizeof(candidate->standings_as_of), "PENDING");
+        copy_text(candidate->standings_as_of, sizeof(candidate->standings_as_of), "PENDING");
     }
-
-    int latest_race_session = 0;
-    char *sessions_body = NULL;
-    snprintf(url, sizeof(url),
-             "https://api.openf1.org/v1/sessions?year=%u", year);
-    if (http_get_json(url, &sessions_body) == ESP_OK) {
-        latest_race_session =
-            populate_sessions(sessions_body, build, count, now_utc);
-        free(sessions_body);
-    }
-    for (size_t i = 0; i < count; i++) candidate->races[i] = build[i].race;
+    for (size_t i = 0; i < context.count; i++) candidate->races[i] = build[i].race;
     free(build);
     preserve_track_details(candidate, current);
-    fetch_standings(latest_race_session, now_utc, candidate);
+    if (context.latest_race_session > 0 &&
+        !fetch_standings(context.latest_race_session, context.latest_race_end, candidate)) {
+        *retry = true;
+    }
     return snapshot_valid(candidate);
 }
 
@@ -597,10 +528,8 @@ static int64_t next_sync_deadline(int64_t now_utc)
     for (size_t i = 0; i < count; i++) {
         pdkpass_race_t race;
         if (!pdkpass_season_race_get(i, &race)) continue;
-        if (race.switch_at_utc > now_utc && race.switch_at_utc < deadline) {
-            deadline = race.switch_at_utc;
-            break;
-        }
+        int64_t next = pdkpass_season_next_race_check(now_utc, race.switch_at_utc);
+        if (next < deadline) deadline = next;
     }
     return deadline;
 }
@@ -620,18 +549,21 @@ static bool synchronize(int64_t now_utc)
         return false;
     }
     unsigned target_year = pdkpass_beijing_year(now_utc);
-    bool updated = build_candidate(target_year, now_utc, current, candidate) &&
-                   memcmp(current, candidate, sizeof(*candidate)) != 0;
+    bool retry = false;
+    bool success = build_candidate(target_year, now_utc, current, candidate, &retry);
+    bool updated = success && memcmp(current, candidate, sizeof(*candidate)) != 0;
     if (updated) {
         esp_err_t err = save_cache(candidate);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Season cache save failed: %s", esp_err_to_name(err));
             updated = false;
+            success = false;
         } else if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(2000)) == pdTRUE) {
             s_season = *candidate;
             xSemaphoreGive(s_lock);
         } else {
             updated = false;
+            success = false;
         }
     }
     if (updated) {
@@ -641,7 +573,7 @@ static bool synchronize(int64_t now_utc)
     }
     free(current);
     free(candidate);
-    return updated;
+    return success && !retry;
 }
 
 static void season_task(void *arg)
@@ -655,13 +587,24 @@ static void season_task(void *arg)
             continue;
         }
         int64_t now_utc = (int64_t)time(NULL);
-        if (s_last_attempt_utc == 0 ||
-            now_utc - s_last_attempt_utc >= SEASON_MIN_REPEAT_SECONDS) {
-            s_last_attempt_utc = now_utc;
-            synchronize(now_utc);
+        if (s_last_attempt_utc != 0 && now_utc >= s_last_attempt_utc &&
+            now_utc - s_last_attempt_utc < SEASON_MIN_REPEAT_SECONDS) {
+            delay = pdMS_TO_TICKS((uint32_t)(s_last_attempt_utc + SEASON_MIN_REPEAT_SECONDS - now_utc) * 1000U);
+            continue;
         }
+        pdkpass_http_begin();
+        now_utc = (int64_t)time(NULL);
+        s_last_attempt_utc = now_utc;
+        bool success = synchronize(now_utc);
+        pdkpass_http_end();
+        int64_t finished = (int64_t)time(NULL);
+        // Compute from the attempt start so a due boundary crossed while HTTP
+        // was active is not silently skipped.
         int64_t deadline = next_sync_deadline(now_utc);
-        int64_t seconds = deadline > now_utc ? deadline - now_utc : 1LL;
+        if (!success && deadline > finished + SEASON_MIN_REPEAT_SECONDS) {
+            deadline = finished + SEASON_MIN_REPEAT_SECONDS;
+        }
+        int64_t seconds = deadline > finished ? deadline - finished : 1LL;
         delay = pdMS_TO_TICKS((uint32_t)seconds * 1000U);
     }
 }
@@ -669,6 +612,7 @@ static void season_task(void *arg)
 esp_err_t pdkpass_season_start(pdkpass_season_callback_t callback)
 {
     if (s_events) return ESP_ERR_INVALID_STATE;
+    if (pdkpass_http_init() != ESP_OK) return ESP_ERR_NO_MEM;
     s_lock = xSemaphoreCreateMutex();
     s_events = xEventGroupCreate();
     if (!s_lock || !s_events) return ESP_ERR_NO_MEM;

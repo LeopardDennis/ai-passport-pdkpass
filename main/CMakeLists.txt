@@ -5,6 +5,8 @@ idf_component_register(
          "pdkpass_data.c"
          "pdkpass_model.c"
          "pdkpass_network.c"
+         "pdkpass_http.c"
+         "pdkpass_json_stream.c"
          "pdkpass_results.c"
          "pdkpass_results_core.c"
          "pdkpass_schedule.c"
@@ -18,5 +20,5 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES bsp esp_event esp_http_client esp_http_server esp_hw_support
              esp_netif esp_wifi esp_driver_usb_serial_jtag json lwip mbedtls
-             nvs_flash
+             nvs_flash esp_timer
 )

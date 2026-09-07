@@ -1,7 +1,12 @@
 #include "pdkpass_screenshot.h"
+#include "sdkconfig.h"
 
 #include "bsp_display.h"
-#include "driver/usb_serial_jtag_vfs.h"
+#include "driver/usb_serial_jtag.h"
+#include "esp_timer.h"
+#include <stdarg.h>
+
+#ifdef CONFIG_PDKPASS_SCREENSHOT
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -23,17 +28,24 @@ static bool s_capture_active;
 static bool s_capture_failed;
 static size_t s_capture_bytes;
 static int32_t s_next_row;
+static int64_t s_capture_deadline;
+
+static int quiet_log(const char *format, va_list args)
+{
+    (void)format; (void)args; return 0;
+}
 
 static bool write_all(const uint8_t *data, size_t length)
 {
     while (length > 0) {
-        ssize_t written = write(STDOUT_FILENO, data, length);
+        if (esp_timer_get_time() >= s_capture_deadline) return false;
+        int written = usb_serial_jtag_write_bytes(data, length, pdMS_TO_TICKS(20));
         if (written > 0) {
             data += written;
             length -= (size_t)written;
             continue;
         }
-        if (written < 0 && (errno == EAGAIN || errno == EINTR)) {
+        if (written == 0) {
             vTaskDelay(pdMS_TO_TICKS(1));
             continue;
         }
@@ -77,10 +89,10 @@ static void capture_current_screen(void)
 {
     if (!bsp_lvgl_lock(2000)) return;
 
-    // Raw RGB565 payloads may contain 0x0a, so disable newline translation.
-    // Suppress logs only while binary bytes follow the response header.
-    usb_serial_jtag_vfs_set_tx_line_endings(ESP_LINE_ENDINGS_LF);
-    esp_log_level_set("*", ESP_LOG_NONE);
+    // The driver API writes binary data directly without newline translation.
+    // Restore the original log hook only after draining the queued pixels.
+    vprintf_like_t previous_log = esp_log_set_vprintf(quiet_log);
+    s_capture_deadline = esp_timer_get_time() + 2000000LL;
 
     static const char header[] =
         "FAP_SCREENSHOT_V1 240 320 RGB565LE 153600\n";
@@ -94,9 +106,11 @@ static void capture_current_screen(void)
         lv_refr_now(s_display);
     }
     s_capture_active = false;
-    fsync(STDOUT_FILENO);
-
-    esp_log_level_set("*", ESP_LOG_INFO);
+    int64_t remaining_us = s_capture_deadline - esp_timer_get_time();
+    TickType_t remaining_ticks = remaining_us > 0
+        ? pdMS_TO_TICKS((uint32_t)(remaining_us / 1000LL)) : 0;
+    if (usb_serial_jtag_wait_tx_done(remaining_ticks) != ESP_OK) s_capture_failed = true;
+    esp_log_set_vprintf(previous_log);
     bsp_lvgl_unlock();
 
     if (s_capture_failed || s_capture_bytes != SCREENSHOT_BYTES ||
@@ -115,11 +129,8 @@ static void screenshot_task(void *arg)
 
     while (true) {
         uint8_t byte;
-        ssize_t received = read(STDIN_FILENO, &byte, 1);
-        if (received != 1) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
-        }
+        int received = usb_serial_jtag_read_bytes(&byte, 1, portMAX_DELAY);
+        if (received != 1) continue;
 
         if (byte == '\r') continue;
         if (byte == '\n') {
@@ -141,13 +152,33 @@ esp_err_t pdkpass_screenshot_start(lv_display_t *display)
     if (!display) return ESP_ERR_INVALID_ARG;
     if (s_display) return ESP_ERR_INVALID_STATE;
 
+    usb_serial_jtag_driver_config_t usb = {.tx_buffer_size = 1024, .rx_buffer_size = 256};
+    esp_err_t err = usb_serial_jtag_driver_install(&usb);
+    if (err != ESP_OK) return err;
+    if (!bsp_lvgl_lock(2000)) {
+        usb_serial_jtag_driver_uninstall();
+        return ESP_ERR_TIMEOUT;
+    }
     s_display = display;
     lv_display_add_event_cb(display, on_flush_start, LV_EVENT_FLUSH_START, NULL);
+    bsp_lvgl_unlock();
     BaseType_t created = xTaskCreate(screenshot_task, "fap_capture",
                                      SCREENSHOT_TASK_STACK, NULL, 3, NULL);
     if (created != pdPASS) {
+        if (bsp_lvgl_lock(2000)) {
+            lv_display_remove_event_cb_with_user_data(display, on_flush_start, NULL);
+            bsp_lvgl_unlock();
+        }
         s_display = NULL;
+        usb_serial_jtag_driver_uninstall();
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
 }
+
+#else
+esp_err_t pdkpass_screenshot_start(lv_display_t *display)
+{
+    return display ? ESP_OK : ESP_ERR_INVALID_ARG;
+}
+#endif

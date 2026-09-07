@@ -22,3 +22,6 @@ void pdkpass_ui_results_update(size_t race_index);
 // Reload the atomically published season snapshot and redraw the active page.
 // The caller must hold the BSP LVGL lock.
 void pdkpass_ui_season_update(void);
+
+// Publish a worker-sampled SOC; caller holds the LVGL lock. No I2C in UI timers.
+void pdkpass_ui_battery_update(int soc);
