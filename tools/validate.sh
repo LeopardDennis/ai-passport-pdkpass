@@ -57,6 +57,10 @@ run_static_checks() {
         -o "${test_dir}/test_pdkpass_wifi_form"
     "${test_dir}/test_pdkpass_wifi_form"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_pdkpass_wifi_profiles.c main/pdkpass_wifi_profiles.c \
+        -o "${test_dir}/test_pdkpass_wifi_profiles"
+    "${test_dir}/test_pdkpass_wifi_profiles"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_pdkpass_json_stream.c main/pdkpass_json_stream.c \
         -o "${test_dir}/test_pdkpass_json_stream"
     "${test_dir}/test_pdkpass_json_stream"

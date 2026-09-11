@@ -6,6 +6,10 @@
 
 ## Unreleased
 
+- Remember up to five Wi-Fi networks across power cycles, prefer the last
+  successful network, and try alternatives after disconnection. Import legacy
+  credentials and retry saved networks while setup has no connected phone.
+- Added host tests for Wi-Fi profile validation, updates, eviction and retry order.
 - Fixed standings scheduling at race end + 30 minutes and bounded retries after
   failed synchronization; retained confirmed schedules after partial downloads.
 - Prioritized current-weekend results, isolated historical retry deadlines,

@@ -1,6 +1,7 @@
 #include "pdkpass_network.h"
 
 #include "pdkpass_wifi_form.h"
+#include "pdkpass_wifi_profiles.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
@@ -24,7 +25,8 @@
 
 #define NETWORK_TASK_STACK 4096
 #define NETWORK_TASK_PRIORITY 4
-#define WIFI_RETRY_LIMIT 5
+#define SAVED_CONNECT_TIMEOUT_US 15000000LL
+#define SAVED_RETRY_INTERVAL_US 60000000LL
 #define FORM_BODY_LIMIT 320
 #define VALID_TIME_MIN 1767225600LL
 #define VALID_TIME_MAX 4102444800LL
@@ -43,7 +45,8 @@ static const char *SETUP_PAGE =
     "margin:3rem auto;padding:0 1rem}input,button{box-sizing:border-box;width:100%;"
     "font:inherit;padding:.8rem;margin:.35rem 0}button{font-weight:700}</style></head>"
     "<body><h1>PDKPASS Wi-Fi</h1><p>Connect this pass to a 2.4 GHz network for "
-    "automatic Beijing time.</p><form method=post action=/save>"
+    "automatic Beijing time. Remembers up to 5 networks; a sixth replaces "
+    "the least recently connected network.</p><form method=post action=/save>"
     "<label>Wi-Fi name<input name=ssid maxlength=32 required></label>"
     "<label>Password<input name=password type=password maxlength=63></label>"
     "<button type=submit>Connect</button></form></body></html>";
@@ -58,6 +61,11 @@ static esp_event_handler_instance_t s_wifi_handler;
 static esp_event_handler_instance_t s_ip_handler;
 static char s_working_ssid[33];
 static char s_working_password[65];
+// Owned exclusively by the network worker; HTTP only queues candidates.
+static pdkpass_wifi_profiles_t s_profiles = {.version = 1};
+static unsigned s_saved_attempt;
+static int64_t s_saved_deadline;
+static int64_t s_saved_retry_at;
 static char s_candidate_ssid[33];
 static char s_candidate_password[65];
 static char s_setup_ssid[33];
@@ -110,27 +118,42 @@ static bool load_credentials(void)
     size_t ssid_size = sizeof(s_working_ssid);
     size_t password_size = sizeof(s_working_password);
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return false;
+    size_t blob_size = sizeof(s_profiles);
+    esp_err_t blob_err = nvs_get_blob(handle, "profiles", &s_profiles, &blob_size);
+    if (blob_err == ESP_OK && blob_size == sizeof(s_profiles) &&
+        pdkpass_wifi_profiles_valid(&s_profiles) && s_profiles.count) {
+        nvs_close(handle);
+        memcpy(s_working_ssid, s_profiles.entries[0].ssid, sizeof(s_working_ssid));
+        memcpy(s_working_password, s_profiles.entries[0].password, sizeof(s_working_password));
+        return true;
+    }
+    // Old firmware stored one SSID/password pair. Import without erasing it;
+    // the first successful connection commits the versioned multi-network blob.
+    memset(&s_profiles, 0, sizeof(s_profiles));
+    s_profiles.version = 1;
     esp_err_t err = nvs_get_str(handle, "ssid", s_working_ssid, &ssid_size);
     if (err == ESP_OK) {
         err = nvs_get_str(handle, "password", s_working_password,
                           &password_size);
     }
     nvs_close(handle);
-    size_t password_length = strlen(s_working_password);
-    return err == ESP_OK && ssid_size >= 2 && ssid_size <= sizeof(s_working_ssid) &&
-           (password_length == 0 ||
-            (password_length >= 8 && password_length <= 63));
+    return err == ESP_OK && pdkpass_wifi_profiles_remember(
+        &s_profiles, s_working_ssid, s_working_password);
 }
 
 static esp_err_t save_credentials(const char *ssid, const char *password)
 {
+    pdkpass_wifi_profiles_t next = s_profiles;
+    if (!pdkpass_wifi_profiles_remember(&next, ssid, password)) return ESP_ERR_INVALID_ARG;
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) return err;
-    err = nvs_set_str(handle, "ssid", ssid);
-    if (err == ESP_OK) err = nvs_set_str(handle, "password", password);
+    // One blob avoids partially saved SSID/password pairs. Only publish the new
+    // in-memory list after NVS commits successfully, preserving old credentials.
+    err = nvs_set_blob(handle, "profiles", &next, sizeof(next));
     if (err == ESP_OK) err = nvs_commit(handle);
     nvs_close(handle);
+    if (err == ESP_OK) s_profiles = next;
     return err;
 }
 
@@ -306,6 +329,12 @@ static esp_err_t configure_station(const char *ssid, const char *password)
 
 static esp_err_t start_setup(void)
 {
+    s_saved_deadline = 0;
+    s_saved_retry_at = esp_timer_get_time() + SAVED_RETRY_INTERVAL_US;
+    if (s_in_setup) {
+        publish_state(PDKPASS_NETWORK_SETUP);
+        return ESP_OK;
+    }
     uint8_t mac[6];
     esp_err_t err = esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
     if (err != ESP_OK) return err;
@@ -356,6 +385,8 @@ static esp_err_t disconnect_station(void)
 
 static esp_err_t test_candidate(void)
 {
+    s_saved_deadline = 0;
+    s_saved_retry_at = esp_timer_get_time() + SAVED_RETRY_INTERVAL_US;
     xSemaphoreTake(s_candidate_lock, portMAX_DELAY);
     memcpy(s_attempt_ssid, s_candidate_ssid, sizeof(s_attempt_ssid));
     memcpy(s_attempt_password, s_candidate_password, sizeof(s_attempt_password));
@@ -399,6 +430,23 @@ static esp_err_t accept_candidate(void)
     s_in_setup = false;
     finish_candidate();
     return esp_wifi_set_mode(WIFI_MODE_STA);
+}
+
+// Start one bounded saved-network attempt. Run only from the worker, after
+// draining the previous station. Setup stays available during background retry.
+static esp_err_t connect_saved(void)
+{
+    size_t index = pdkpass_wifi_profile_for_attempt(s_profiles.count, s_saved_attempt);
+    if (index >= s_profiles.count) return start_setup();
+    memcpy(s_working_ssid, s_profiles.entries[index].ssid, sizeof(s_working_ssid));
+    memcpy(s_working_password, s_profiles.entries[index].password, sizeof(s_working_password));
+    esp_err_t err = configure_station(s_working_ssid, s_working_password);
+    s_saved_deadline = esp_timer_get_time() + SAVED_CONNECT_TIMEOUT_US;
+    if (!s_in_setup) publish_state(PDKPASS_NETWORK_CONNECTING);
+    if (err == ESP_OK) err = esp_wifi_connect();
+    // Immediate driver errors use the same bounded fallback path.
+    if (err != ESP_OK) s_saved_deadline = esp_timer_get_time();
+    return ESP_OK;
 }
 
 static esp_err_t prepare_network(void)
@@ -446,8 +494,7 @@ static esp_err_t prepare_network(void)
     if (err != ESP_OK) return err;
 
     if (s_have_working_credentials) {
-        publish_state(PDKPASS_NETWORK_CONNECTING);
-        return esp_wifi_connect();
+        return connect_saved();
     }
     return start_setup();
 }
@@ -455,7 +502,6 @@ static esp_err_t prepare_network(void)
 static void network_task(void *arg)
 {
     (void)arg;
-    unsigned retries = 0;
     esp_err_t err = prepare_network();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Network startup failed: %s", esp_err_to_name(err));
@@ -468,7 +514,7 @@ static void network_task(void *arg)
         EventBits_t bits = xEventGroupWaitBits(
             s_events, EVENT_CONNECTED | EVENT_DISCONNECTED | EVENT_CANDIDATE |
                           EVENT_TIME_SYNCED,
-            pdTRUE, pdFALSE, pdMS_TO_TICKS(30000));
+            pdTRUE, pdFALSE, pdMS_TO_TICKS(1000));
 
         if (bits & EVENT_CANDIDATE) {
             err = test_candidate();
@@ -486,23 +532,24 @@ static void network_task(void *arg)
             if (s_testing_candidate) {
                 finish_candidate();
                 publish_state(PDKPASS_NETWORK_SETUP);
-            } else if (!s_in_setup && s_have_working_credentials) {
-                retries++;
-                if (retries >= WIFI_RETRY_LIMIT) {
-                    err = start_setup();
-                    if (err != ESP_OK) publish_state(PDKPASS_NETWORK_OFFLINE);
-                } else {
-                    publish_state(PDKPASS_NETWORK_CONNECTING);
-                    if (esp_wifi_connect() != ESP_OK) publish_state(PDKPASS_NETWORK_OFFLINE);
-                }
+            } else if (s_have_working_credentials && (!s_in_setup || s_saved_deadline)) {
+                // A dropped working link restarts at the most recent network;
+                // a failed connection advances through the bounded attempt list.
+                if (s_saved_deadline) ++s_saved_attempt;
+                else s_saved_attempt = 0;
+                err = connect_saved();
+                if (err != ESP_OK) publish_state(PDKPASS_NETWORK_OFFLINE);
             }
             bits &= ~EVENT_CONNECTED;
         }
         if (bits & EVENT_CONNECTED) {
             wifi_ap_record_t ap;
             if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) continue;
+            if (!s_testing_candidate && (!s_saved_deadline ||
+                strncmp((const char *)ap.ssid, s_working_ssid, 32) != 0)) continue;
             s_has_ip = true;
-            retries = 0;
+            s_saved_deadline = 0;
+            s_saved_attempt = 0;
             if (s_testing_candidate) {
                 err = accept_candidate();
                 if (err != ESP_OK) {
@@ -513,6 +560,13 @@ static void network_task(void *arg)
                     publish_state(PDKPASS_NETWORK_SETUP);
                     continue;
                 }
+            } else {
+                // Also persists the legacy import; NVS skips unchanged blobs.
+                err = save_credentials(s_working_ssid, s_working_password);
+                if (err != ESP_OK) ESP_LOGW(TAG, "Wi-Fi order not saved: %s", esp_err_to_name(err));
+                stop_http_server();
+                s_in_setup = false;
+                esp_wifi_set_mode(WIFI_MODE_STA);
             }
             publish_state(s_time_synced_boot && current_time_valid()
                               ? PDKPASS_NETWORK_ONLINE : PDKPASS_NETWORK_SYNCING);
@@ -526,6 +580,28 @@ static void network_task(void *arg)
             if (s_has_ip && !s_in_setup && s_time_synced_boot) publish_state(PDKPASS_NETWORK_ONLINE);
         }
         int64_t now_us = esp_timer_get_time();
+        if (s_saved_deadline && now_us >= s_saved_deadline) {
+            err = disconnect_station();
+            if (err == ESP_OK) {
+                ++s_saved_attempt;
+                err = connect_saved();
+            } else {
+                s_saved_deadline = 0;
+                err = start_setup();
+            }
+            if (err != ESP_OK) publish_state(PDKPASS_NETWORK_OFFLINE);
+        }
+        // Retry saved networks after a minute without an active phone. Keep
+        // the AP/password stable and let a submitted form preempt this cycle.
+        if (s_in_setup && !s_testing_candidate && !s_saved_deadline &&
+            s_profiles.count && now_us >= s_saved_retry_at) {
+            wifi_sta_list_t clients;
+            s_saved_retry_at = now_us + SAVED_RETRY_INTERVAL_US;
+            if (esp_wifi_ap_get_sta_list(&clients) == ESP_OK && clients.num == 0) {
+                s_saved_attempt = 0;
+                connect_saved();
+            }
+        }
         if (s_testing_candidate && now_us >= s_candidate_deadline) {
             disconnect_station();
             finish_candidate();

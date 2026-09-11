@@ -216,6 +216,58 @@ int main(void) {
 '''
         compile_run(code)
 
+    def test_wifi_profile_persistence_and_legacy_import(self):
+        source = (ROOT / 'main/pdkpass_network.c').read_text()
+        code = PRELUDE + r'''
+#include "pdkpass_wifi_profiles.h"
+#define NVS_NAMESPACE "test"
+#define NVS_READONLY 0
+#define NVS_READWRITE 1
+#define ESP_ERR_INVALID_ARG 2
+typedef int nvs_handle_t;
+static pdkpass_wifi_profiles_t s_profiles={.version=1}, persisted, pending;
+static char s_working_ssid[33], s_working_password[65];
+static bool have_blob, fail_commit;
+static int nvs_open(const char *name,int mode,nvs_handle_t *handle) {
+ (void)name;(void)mode;*handle=1;return ESP_OK;
+}
+static void nvs_close(nvs_handle_t handle) {(void)handle;}
+static int nvs_get_blob(nvs_handle_t handle,const char *key,void *out,size_t *size) {
+ (void)handle;(void)key;if(!have_blob)return ESP_FAIL;
+ assert(*size>=sizeof(persisted));memcpy(out,&persisted,sizeof(persisted));
+ *size=sizeof(persisted);return ESP_OK;
+}
+static int nvs_get_str(nvs_handle_t handle,const char *key,char *out,size_t *size) {
+ (void)handle;const char *value=strcmp(key,"ssid")==0?"Legacy":"test-only";
+ assert(*size>strlen(value));strcpy(out,value);*size=strlen(value)+1;return ESP_OK;
+}
+static int nvs_set_blob(nvs_handle_t handle,const char *key,const void *data,size_t size) {
+ (void)handle;(void)key;assert(size==sizeof(pending));memcpy(&pending,data,size);return ESP_OK;
+}
+static int nvs_commit(nvs_handle_t handle) {
+ (void)handle;if(fail_commit)return ESP_FAIL;persisted=pending;have_blob=true;return ESP_OK;
+}
+'''
+        code += function(source, 'static bool load_credentials(')
+        code += function(source, 'static esp_err_t save_credentials(')
+        code += r'''
+int main(void) {
+ assert(load_credentials());assert(s_profiles.count==1);
+ assert(strcmp(s_profiles.entries[0].ssid,"Legacy")==0);
+ assert(save_credentials(s_working_ssid,s_working_password)==ESP_OK);
+ assert(have_blob);assert(save_credentials("Second","test-only")==ESP_OK);
+ pdkpass_wifi_profiles_t before=s_profiles;
+ fail_commit=true;assert(save_credentials("Third","test-only")==ESP_FAIL);
+ assert(memcmp(&before,&s_profiles,sizeof(before))==0);
+ memset(&s_profiles,0,sizeof(s_profiles));assert(load_credentials());
+ assert(s_profiles.count==2);assert(strcmp(s_working_ssid,"Second")==0);
+ persisted.count=6;assert(load_credentials());assert(s_profiles.count==1);
+ assert(strcmp(s_working_ssid,"Legacy")==0);
+ puts("Wi-Fi legacy migration, reload and failed commit preservation: PASS");
+}
+'''
+        compile_run(code, ['main/pdkpass_wifi_profiles.c'])
+
     def test_provisioning_uses_one_immutable_attempt(self):
         source = (ROOT / 'main/pdkpass_network.c').read_text()
         code = PRELUDE + r'''
@@ -239,7 +291,8 @@ typedef struct {unsigned char ssid[33];} wifi_ap_record_t;
 static int s_candidate_lock, s_events;
 static bool s_candidate_busy, s_testing_candidate, s_has_ip, s_in_setup=true;
 static bool s_have_working_credentials;
-static int64_t s_candidate_deadline;
+static int64_t s_candidate_deadline, s_saved_deadline, s_saved_retry_at;
+#define SAVED_RETRY_INTERVAL_US 60000000LL
 static char s_candidate_ssid[33],s_candidate_password[65],s_attempt_ssid[33],s_attempt_password[65];
 static char s_working_ssid[33],s_working_password[65],saved_ssid[33],saved_password[65];
 static char connected_ssid[33];
@@ -296,13 +349,16 @@ int main(void) {
         code = PRELUDE + r'''
 #include <setjmp.h>
 #include "pdkpass_network.h"
+#include "pdkpass_wifi_profiles.h"
 #define ESP_LOGE(...) ((void)0)
 #define EVENT_CONNECTED 1
 #define EVENT_DISCONNECTED 2
 #define EVENT_CANDIDATE 4
 #define EVENT_TIME_SYNCED 8
 #define pdFALSE 0
-#define WIFI_RETRY_LIMIT 5
+#define SAVED_RETRY_INTERVAL_US 60000000LL
+#define SAVED_CONNECT_TIMEOUT_US 15000000LL
+#define WIFI_MODE_STA 1
 static jmp_buf finished;
 typedef unsigned EventBits_t;
 typedef struct {unsigned char ssid[33];} wifi_ap_record_t;
@@ -310,6 +366,12 @@ static int s_events;
 static bool s_time_synced_boot, s_has_ip, s_in_setup, s_testing_candidate;
 static bool s_have_working_credentials=true;
 static int64_t s_candidate_deadline, s_sync_deadline, now_us;
+static int64_t s_saved_deadline, s_saved_retry_at;
+static unsigned s_saved_attempt;
+static pdkpass_wifi_profiles_t s_profiles = {.version=1};
+static char s_working_ssid[33], s_working_password[65], connected_ssid[33];
+typedef struct {int num;} wifi_sta_list_t;
+static int phone_count, connection_count, setup_count;
 static int online_count, time_error_count, sync_count, cursor, event_count;
 static unsigned script[8];
 static int64_t times[8];
@@ -318,13 +380,19 @@ static unsigned xEventGroupWaitBits(int e,unsigned bits,int clear,int all,unsign
  if(cursor>=event_count) longjmp(finished,1);
  now_us=times[cursor];return script[cursor++];
 }
-static int prepare_network(void) {return ESP_OK;}
+static int connect_saved(void);
+static int prepare_network(void) {return connect_saved();}
 static void vTaskDelete(void *task) {(void)task;}
 static int test_candidate(void) {return ESP_OK;}
 static void finish_candidate(void) {s_testing_candidate=false;}
-static int start_setup(void) {return ESP_OK;}
-static int esp_wifi_connect(void) {return ESP_OK;}
-static int esp_wifi_sta_get_ap_info(wifi_ap_record_t *ap) {(void)ap;return ESP_OK;}
+static int start_setup(void) {s_in_setup=true;s_saved_deadline=0;s_saved_retry_at=now_us+60000000LL;setup_count++;return ESP_OK;}
+static int esp_wifi_connect(void) {connection_count++;return ESP_OK;}
+static int configure_station(const char *ssid,const char *password) {(void)password;strcpy(connected_ssid,ssid);return ESP_OK;}
+static int esp_wifi_sta_get_ap_info(wifi_ap_record_t *ap) {strcpy((char *)ap->ssid,connected_ssid);return ESP_OK;}
+static int esp_wifi_ap_get_sta_list(wifi_sta_list_t *clients) {clients->num=phone_count;return ESP_OK;}
+static int esp_wifi_set_mode(int mode) {(void)mode;return ESP_OK;}
+static void stop_http_server(void) {}
+static int save_credentials(const char *ssid,const char *password) {return pdkpass_wifi_profiles_remember(&s_profiles,ssid,password)?ESP_OK:1;}
 static int accept_candidate(void) {return ESP_OK;}
 static int disconnect_station(void) {return ESP_OK;}
 static bool current_time_valid(void) {return true;}
@@ -336,9 +404,11 @@ static void publish_state(pdkpass_network_state_t state) {
  if(state==PDKPASS_NETWORK_TIME_ERROR) time_error_count++;
 }
 '''
+        code += function(source, 'static esp_err_t connect_saved(')
         code += function(source, 'static void network_task(')
         code += r'''
 int main(void) {
+ assert(pdkpass_wifi_profiles_remember(&s_profiles,"TestA","test-only"));
  // A plausible NVS time alone cannot authorize a new HTTPS season sync.
  script[0]=EVENT_CONNECTED;times[0]=1;
  script[1]=0;times[1]=61000001;event_count=2;
@@ -353,10 +423,25 @@ int main(void) {
  script[4]=0;times[4]=61000005;
  if(setjmp(finished)==0) network_task(NULL);
  assert(online_count==2);assert(time_error_count==0);assert(s_time_synced_boot);
+ // Real worker fallback: two attempts per network, then setup. No phone
+ // means background recovery; an attached phone defers that recovery cycle.
+ assert(pdkpass_wifi_profiles_remember(&s_profiles,"TestB","test-only"));
+ cursor=0;event_count=4;now_us=0;s_saved_attempt=0;
+ s_sync_deadline=0;s_has_ip=false;connection_count=0;
+ for(int i=0;i<4;i++){script[i]=EVENT_DISCONNECTED;times[i]=i+1;}
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(connection_count==4);assert(setup_count==1);assert(s_in_setup);
+ assert(strcmp(connected_ssid,"TestA")==0);
+ cursor=0;event_count=1;script[0]=0;times[0]=60000005;phone_count=1;
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(connection_count==4);
+ cursor=0;times[0]=120000006;phone_count=0;
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(connection_count==5);assert(strcmp(connected_ssid,"TestB")==0);
  puts("NTP cold boot and trusted reconnect: PASS");
 }
 '''
-        compile_run(code)
+        compile_run(code, ['main/pdkpass_wifi_profiles.c'])
 
 if __name__ == '__main__':
     unittest.main()

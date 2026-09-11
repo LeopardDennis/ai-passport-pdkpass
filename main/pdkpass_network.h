@@ -26,5 +26,6 @@ typedef void (*pdkpass_network_callback_t)(const pdkpass_network_update_t *updat
 
 // Start the long-lived Wi-Fi, provisioning, and network-time worker. On first
 // use it exposes a temporary browser-based setup network; credentials are only
-// committed after the station receives an IP address.
+// committed after the station receives an IP address. Remembers up to five
+// networks, trying the most recently successful first after disconnection.
 esp_err_t pdkpass_network_start(pdkpass_network_callback_t callback);

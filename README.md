@@ -67,8 +67,17 @@ a temporary Wi-Fi name, password, and `192.168.4.1` on its home screen:
 3. Enter a 2.4 GHz Wi-Fi name and password, then press **Connect**.
 
 PDKPASS tests the connection before saving it. A wrong password leaves the setup
-page available for another attempt. After five failed attempts to reconnect to a
-previously saved network, setup becomes available again automatically.
+page available for another attempt without replacing saved credentials. Up to five
+networks survive power-off; the last successfully connected network is tried first.
+On disconnection, each saved network gets two attempts (up to 15 seconds each)
+before falling back to setup. While in setup, saved networks are retried after
+60 seconds if no phone is connected to the setup hotspot. A healthy connection
+is not interrupted just because another network has a stronger signal.
+
+To add a network, take the device somewhere its saved networks are unavailable
+and use the setup page. Saving the same Wi-Fi name updates its password; a sixth
+name replaces the least recently connected network. The single network saved by
+older firmware is imported automatically. No phone app is required.
 
 The top status changes through `SETUP`, `WIFI...`, `TIME...`, and `ONLINE`.
 After time synchronization, the device keeps counting locally. It rechecks the
