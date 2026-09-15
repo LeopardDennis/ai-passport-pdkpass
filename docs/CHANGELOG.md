@@ -6,6 +6,12 @@
 
 ## Unreleased
 
+- Replaced battery text with a rounded, level-filled icon and inset percentage
+  digits; unknown readings show an empty outline. At 0–20% the outline, terminal
+  and remaining fill turn red; 21–100% uses the normal theme color.
+  Simulator battery defaults to a synthetic 88 and supports `--battery -1..100`.
+- Centered network text, date and battery inside the status background, excluding
+  borders and shadows; added simulator pixel regression checks.
 - Remember up to five Wi-Fi networks across power cycles, prefer the last
   successful network, and try alternatives after disconnection. Import legacy
   credentials and retry saved networks while setup has no connected phone.

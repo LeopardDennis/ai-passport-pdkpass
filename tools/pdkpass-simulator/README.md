@@ -52,6 +52,17 @@ home selection with, for example:
 
 ## Controls
 
+Battery is simulated (88 by default), not the Mac or device battery. Use
+`--battery 15` for low charge, `--battery 0` for empty, or `--battery -1` for an
+unknown reading. The production icon shows inset digits with no percent sign
+or BAT label; unknown readings show only the outline.
+Network text, date and battery are vertically centered in the colored status
+area, excluding the black border and drop shadow. On hardware the existing
+worker still supplies real battery readings; the UI does not poll the sensor.
+
+After building, run `python3 tools/pdkpass-simulator/test_status.py` (requires
+Pillow) to check pixel centering, battery states and invalid preview arguments.
+
 | Mac input | Device action |
 | --- | --- |
 | Up / Down | Browse |

@@ -88,9 +88,11 @@ static BOOL save_framebuffer_png(NSString *path)
     return [png writeToFile:path atomically:YES];
 }
 
+static int s_simulator_battery = 88;
+
 int bsp_battery_soc(void)
 {
-    return 88;
+    return s_simulator_battery;
 }
 
 void bsp_display_backlight(uint8_t percent)
@@ -571,6 +573,7 @@ static void simulator_initialize(void)
                            LV_DISPLAY_RENDER_MODE_FULL);
     lv_display_set_flush_cb(display, display_flush);
     pdkpass_ui_enter(true);
+    pdkpass_ui_battery_update(bsp_battery_soc());
     simulator_set_network(PDKPASS_NETWORK_ONLINE);
 }
 
@@ -772,7 +775,7 @@ static void simulator_initialize(void)
 static void print_usage(const char *program)
 {
     printf("Usage: %s [--race 1-23] [--sync-results] "
-           "[--screenshot FILE.png]\n", program);
+           "[--battery -1..100] [--screenshot FILE.png]\n", program);
     printf("\nKeyboard: Up/Down browse, Return/Space select, hold Return or Esc back,\n");
     printf("          1-5 network states, S or Command-S screenshot.\n");
 }
@@ -783,6 +786,16 @@ int main(int argc, const char *argv[])
         NSString *screenshotPath = nil;
         BOOL syncResults = NO;
         for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--battery") == 0 && i + 1 < argc) {
+                char *end;
+                long value = strtol(argv[++i], &end, 10);
+                if (!argv[i][0] || *end || value < -1 || value > 100) {
+                    fprintf(stderr, "--battery must be -1 (unknown) or 0..100\n");
+                    return 2;
+                }
+                s_simulator_battery = (int)value;
+                continue;
+            }
             if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
                 print_usage(argv[0]);
                 return 0;

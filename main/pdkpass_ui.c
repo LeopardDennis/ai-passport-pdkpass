@@ -45,6 +45,9 @@ static lv_obj_t *s_content;
 static lv_obj_t *s_hint_box;
 static lv_obj_t *s_hint;
 static lv_obj_t *s_battery;
+static lv_obj_t *s_battery_fill;
+static lv_obj_t *s_battery_tip;
+static int s_battery_soc = -1;
 static lv_obj_t *s_network;
 static lv_obj_t *s_status_left;
 static lv_obj_t *s_status_right;
@@ -280,8 +283,7 @@ static void set_status(const char *text, uint32_t background)
     lv_label_set_text(s_network, text);
     lv_obj_set_style_text_color(s_network,
         lv_color_hex(contrast_color(background)), 0);
-    lv_obj_set_style_text_color(s_battery,
-        lv_color_hex(contrast_color(background)), 0);
+    pdkpass_ui_battery_update(s_battery_soc);
     lv_obj_add_flag(s_status_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_status_right, LV_OBJ_FLAG_HIDDEN);
 }
@@ -770,19 +772,63 @@ static void render(void)
     }
 }
 
+// Tiny 3x5 digits keep the compact battery silhouette, without loading a font.
+// Draw after the level so each pixel contrasts with its actual background.
+static void battery_draw_digits(lv_event_t *event)
+{
+    int soc = s_battery_soc;
+    if (soc < 0) return;
+    // Keep the drawing boundary explicit, including for the target compiler.
+    if (soc > 100) soc = 100;
+    static const uint8_t digits[10][5] = {
+        {7, 5, 5, 5, 7}, {2, 6, 2, 2, 7}, {7, 1, 7, 4, 7},
+        {7, 1, 7, 1, 7}, {5, 5, 7, 1, 1}, {7, 4, 7, 1, 7},
+        {7, 4, 7, 5, 7}, {7, 1, 2, 2, 2}, {7, 5, 7, 5, 7},
+        {7, 5, 7, 1, 7},
+    };
+    char text[4];
+    snprintf(text, sizeof(text), "%d", soc);
+    int length = (int)strlen(text);
+    lv_area_t body, level;
+    lv_obj_get_coords(s_battery, &body);
+    lv_obj_get_coords(s_battery_fill, &level);
+    int left = body.x1 + (23 - (length * 4 - 1)) / 2;
+    uint32_t ink = contrast_color(s_status_background);
+    uint32_t fill = soc <= 20 ? UI_RED : ink;
+    lv_draw_rect_dsc_t rect;
+    lv_draw_rect_dsc_init(&rect);
+    rect.bg_opa = LV_OPA_COVER;
+    lv_layer_t *layer = lv_event_get_layer(event);
+    for (int i = 0; i < length; ++i) {
+        for (int y = 0; y < 5; ++y) {
+            for (int x = 0; x < 3; ++x) {
+                if (!(digits[text[i] - '0'][y] & (4 >> x))) continue;
+                int px = left + i * 4 + x;
+                int py = body.y1 + 3 + y;
+                bool filled = soc > 0 && px >= level.x1 && px <= level.x2;
+                rect.bg_color = lv_color_hex(filled ? contrast_color(fill) : ink);
+                lv_area_t pixel = {px, py, px, py};
+                lv_draw_rect(layer, &rect, &pixel);
+            }
+        }
+    }
+}
+
 void pdkpass_ui_battery_update(int soc)
 {
     if (!s_battery) return;
-    if (soc < 0) {
-        lv_label_set_text(s_battery, "BAT --");
-        lv_obj_set_style_text_color(s_battery,
-            lv_color_hex(contrast_color(s_status_background)), 0);
-    } else {
-        lv_label_set_text_fmt(s_battery, "%d%%", soc);
-        lv_obj_set_style_text_color(s_battery,
-            lv_color_hex(soc < 20 ? UI_RED
-                                  : contrast_color(s_status_background)), 0);
-    }
+    s_battery_soc = soc < 0 ? -1 : (soc > 100 ? 100 : soc);
+    uint32_t ink = contrast_color(s_status_background);
+    uint32_t fill = s_battery_soc >= 0 && s_battery_soc <= 20 ? UI_RED : ink;
+    // Include the outline and terminal so 0% still has a visible red warning.
+    lv_obj_set_style_border_color(s_battery, lv_color_hex(fill), 0);
+    lv_obj_set_style_bg_color(s_battery_tip, lv_color_hex(fill), 0);
+    lv_obj_set_style_bg_color(s_battery_fill, lv_color_hex(fill), 0);
+    int width = s_battery_soc > 0 ? (19 * s_battery_soc + 99) / 100 : 0;
+    lv_obj_set_width(s_battery_fill, width > 0 ? width : 1);
+    if (width) lv_obj_remove_flag(s_battery_fill, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(s_battery_fill, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_invalidate(s_battery);
 }
 
 static void clock_tick(lv_timer_t *timer)
@@ -847,10 +893,20 @@ void pdkpass_ui_enter(bool battery_available)
                                       STATUS_W, STATUS_H, UI_SKY, true);
     s_network = make_center_label(s_status, "NET... | --.--", 5, 5, 154,
                            &lv_font_unscii_8, UI_PAPER);
-    s_battery = make_label(s_status, "BAT --", 168, 5, 48,
-                           &lv_font_unscii_8, UI_PAPER);
-    lv_obj_set_style_text_font(s_battery, &lv_font_unscii_8, 0);
-    lv_obj_set_style_text_align(s_battery, LV_TEXT_ALIGN_RIGHT, 0);
+    // Center in the gray content area only; exclude border and drop shadow.
+    // UNSCII visible capitals and the battery share its pixel center (y=63).
+    lv_obj_align(s_network, LV_ALIGN_LEFT_MID, 5, 0);
+    s_battery = make_block(s_status, 188, 5, 23, 11, UI_SKY);
+    lv_obj_set_style_radius(s_battery, 3, 0);
+    lv_obj_set_style_bg_opa(s_battery, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_battery, 1, 0);
+    lv_obj_align(s_battery, LV_ALIGN_LEFT_MID, 188, 0);
+    s_battery_fill = make_block(s_battery, 1, 1, 19, 7, UI_PAPER);
+    lv_obj_set_style_radius(s_battery_fill, 1, 0);
+    lv_obj_add_event_cb(s_battery, battery_draw_digits, LV_EVENT_DRAW_POST_END, NULL);
+    s_battery_tip = make_block(s_status, 212, 8, 2, 5, UI_PAPER);
+    lv_obj_set_style_radius(s_battery_tip, 1, 0);
+    lv_obj_align(s_battery_tip, LV_ALIGN_LEFT_MID, 212, 0);
     s_status_left = make_block(s_status, 5, 5, 13, 11, 0x009246);
     lv_obj_set_style_border_color(s_status_left, lv_color_hex(UI_INK), 0);
     lv_obj_set_style_border_width(s_status_left, 2, 0);
