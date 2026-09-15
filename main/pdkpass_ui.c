@@ -793,8 +793,8 @@ static void battery_draw_digits(lv_event_t *event)
     lv_obj_get_coords(s_battery, &body);
     lv_obj_get_coords(s_battery_fill, &level);
     int left = body.x1 + (23 - (length * 4 - 1)) / 2;
-    uint32_t ink = contrast_color(s_status_background);
-    uint32_t fill = soc <= 20 ? UI_RED : ink;
+    uint32_t ink = soc <= 20 ? UI_RED : contrast_color(s_status_background);
+    uint32_t fill = ink;
     lv_draw_rect_dsc_t rect;
     lv_draw_rect_dsc_init(&rect);
     rect.bg_opa = LV_OPA_COVER;
@@ -820,9 +820,13 @@ void pdkpass_ui_battery_update(int soc)
     s_battery_soc = soc < 0 ? -1 : (soc > 100 ? 100 : soc);
     uint32_t ink = contrast_color(s_status_background);
     uint32_t fill = s_battery_soc >= 0 && s_battery_soc <= 20 ? UI_RED : ink;
-    // Include the outline and terminal so 0% still has a visible red warning.
-    lv_obj_set_style_border_color(s_battery, lv_color_hex(fill), 0);
-    lv_obj_set_style_bg_color(s_battery_tip, lv_color_hex(fill), 0);
+    // A light interior separates the red warning from red page themes.
+    // Keep the silhouette contrasted with the status bar, including at 0%.
+    bool low = s_battery_soc >= 0 && s_battery_soc <= 20;
+    lv_obj_set_style_bg_color(s_battery, lv_color_hex(UI_PAPER), 0);
+    lv_obj_set_style_bg_opa(s_battery, low ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_color(s_battery, lv_color_hex(ink), 0);
+    lv_obj_set_style_bg_color(s_battery_tip, lv_color_hex(ink), 0);
     lv_obj_set_style_bg_color(s_battery_fill, lv_color_hex(fill), 0);
     int width = s_battery_soc > 0 ? (19 * s_battery_soc + 99) / 100 : 0;
     lv_obj_set_width(s_battery_fill, width > 0 ? width : 1);

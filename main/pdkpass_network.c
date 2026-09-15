@@ -499,6 +499,28 @@ static esp_err_t prepare_network(void)
     return start_setup();
 }
 
+// Sleep until the next active deadline; Wi-Fi, form and SNTP events wake us
+// immediately. An idle, synchronized connection needs no periodic polling.
+static TickType_t network_wait_ticks(int64_t now_us)
+{
+    const int64_t deadlines[] = {
+        s_saved_deadline,
+        s_testing_candidate ? s_candidate_deadline : 0,
+        s_has_ip ? s_sync_deadline : 0,
+        s_in_setup && !s_testing_candidate && !s_saved_deadline && s_profiles.count
+            ? s_saved_retry_at : 0,
+    };
+    int64_t next = 0;
+    for (size_t i = 0; i < sizeof(deadlines) / sizeof(deadlines[0]); ++i) {
+        if (deadlines[i] && (!next || deadlines[i] < next)) next = deadlines[i];
+    }
+    if (!next) return portMAX_DELAY;
+    if (next <= now_us) return 1;
+    // Round up to milliseconds and retain at least one RTOS tick.
+    TickType_t ticks = pdMS_TO_TICKS((next - now_us + 999) / 1000);
+    return ticks ? ticks : 1;
+}
+
 static void network_task(void *arg)
 {
     (void)arg;
@@ -514,7 +536,7 @@ static void network_task(void *arg)
         EventBits_t bits = xEventGroupWaitBits(
             s_events, EVENT_CONNECTED | EVENT_DISCONNECTED | EVENT_CANDIDATE |
                           EVENT_TIME_SYNCED,
-            pdTRUE, pdFALSE, pdMS_TO_TICKS(1000));
+            pdTRUE, pdFALSE, network_wait_ticks(esp_timer_get_time()));
 
         if (bits & EVENT_CANDIDATE) {
             err = test_candidate();

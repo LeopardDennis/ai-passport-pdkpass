@@ -216,6 +216,47 @@ int main(void) {
 '''
         compile_run(code)
 
+    def test_battery_warning_has_contrasting_background(self):
+        source = (ROOT / 'main/pdkpass_ui.c').read_text()
+        code = PRELUDE + r'''
+#define UI_RED 0xE53935
+#define UI_PAPER 0xFFF9E8
+#define LV_OPA_COVER 255
+#define LV_OPA_TRANSP 0
+#define LV_OBJ_FLAG_HIDDEN 1
+typedef struct {uint32_t bg, border; int opa, width; bool hidden;} lv_obj_t;
+static lv_obj_t body, level, tip;
+static lv_obj_t *s_battery=&body, *s_battery_fill=&level, *s_battery_tip=&tip;
+static int s_battery_soc;
+static uint32_t s_status_background;
+static uint32_t lv_color_hex(uint32_t x) {return x;}
+static uint32_t contrast_color(uint32_t x) {(void)x;return 0xFFFFFF;}
+static void lv_obj_set_style_bg_color(lv_obj_t *o,uint32_t x,int sel) {(void)sel;o->bg=x;}
+static void lv_obj_set_style_border_color(lv_obj_t *o,uint32_t x,int sel) {(void)sel;o->border=x;}
+static void lv_obj_set_style_bg_opa(lv_obj_t *o,int x,int sel) {(void)sel;o->opa=x;}
+static void lv_obj_set_width(lv_obj_t *o,int x) {o->width=x;}
+static void lv_obj_add_flag(lv_obj_t *o,int x) {(void)x;o->hidden=true;}
+static void lv_obj_remove_flag(lv_obj_t *o,int x) {(void)x;o->hidden=false;}
+static void lv_obj_invalidate(lv_obj_t *o) {(void)o;}
+'''
+        code += function(source, 'void pdkpass_ui_battery_update(')
+        code += r'''
+int main(void) {
+ s_status_background=UI_RED;
+ for(int soc=0;soc<=20;soc++) {
+  pdkpass_ui_battery_update(soc);
+  assert(body.border!=s_status_background && tip.bg!=s_status_background);
+  assert(body.opa==LV_OPA_COVER && body.bg!=UI_RED);
+  assert(level.bg==UI_RED && level.hidden==(soc==0));
+ }
+ pdkpass_ui_battery_update(21);assert(body.opa==LV_OPA_TRANSP);
+ assert(level.bg!=UI_RED);
+ pdkpass_ui_battery_update(-1);assert(body.opa==LV_OPA_TRANSP && level.hidden);
+ puts("Battery warning contrast and recovery: PASS");
+}
+'''
+        compile_run(code)
+
     def test_wifi_profile_persistence_and_legacy_import(self):
         source = (ROOT / 'main/pdkpass_network.c').read_text()
         code = PRELUDE + r'''
@@ -358,6 +399,7 @@ int main(void) {
 #define pdFALSE 0
 #define SAVED_RETRY_INTERVAL_US 60000000LL
 #define SAVED_CONNECT_TIMEOUT_US 15000000LL
+#define portMAX_DELAY UINT32_MAX
 #define WIFI_MODE_STA 1
 static jmp_buf finished;
 typedef unsigned EventBits_t;
@@ -405,10 +447,26 @@ static void publish_state(pdkpass_network_state_t state) {
 }
 '''
         code += function(source, 'static esp_err_t connect_saved(')
+        code += function(source, 'static TickType_t network_wait_ticks(')
         code += function(source, 'static void network_task(')
         code += r'''
 int main(void) {
+ // Deadline selection must not poll an idle connection or miss a pending form.
+ assert(network_wait_ticks(0)==portMAX_DELAY);
+ s_saved_deadline=15000000;assert(network_wait_ticks(0)==15000);
+ s_testing_candidate=true;s_candidate_deadline=10000000;
+ assert(network_wait_ticks(0)==10000);
+ assert(network_wait_ticks(10000000)==1);
+ s_saved_deadline=0;s_testing_candidate=false;
+ s_has_ip=true;s_sync_deadline=60000000;
+ assert(network_wait_ticks(0)==60000);
+ s_has_ip=false;s_sync_deadline=0;
  assert(pdkpass_wifi_profiles_remember(&s_profiles,"TestA","test-only"));
+ s_in_setup=true;s_saved_retry_at=60000000;
+ assert(network_wait_ticks(0)==60000);
+ s_testing_candidate=true;s_candidate_deadline=30000000;
+ assert(network_wait_ticks(0)==30000);
+ s_testing_candidate=false;s_in_setup=false;
  // A plausible NVS time alone cannot authorize a new HTTPS season sync.
  script[0]=EVENT_CONNECTED;times[0]=1;
  script[1]=0;times[1]=61000001;event_count=2;
