@@ -79,3 +79,7 @@ cmake --build build/pdkpass-simulator -j
 ./build/pdkpass-simulator/pdkpass-simulator --race 1 --sync-results \
   --screenshot /tmp/pdkpass-australia-fp1.png
 ```
+
+模拟器从 `sdkconfig.defaults` 读取 LVGL 内存池大小。构建后运行
+`ctest --test-dir build/pdkpass-simulator --output-on-failure`，验证启动、配网、
+积分榜、赛历、成绩、电量状态和唤醒过程不超出预算。此测试不测量设备系统堆或 Wi-Fi/TLS 内存。

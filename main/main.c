@@ -101,11 +101,16 @@ void app_main(void)
     }
     bsp_display_backlight(100);
 
-    // Battery support is optional. The UI renders BAT -- when the fuel gauge is
-    // not installed or cannot be read.
+    // Battery support is optional; unavailable readings use an empty outline.
     bool battery_available = bsp_battery_init() == ESP_OK;
     if (bsp_lvgl_lock(1000)) {
         pdkpass_ui_enter(battery_available);
+        lv_mem_monitor_t memory;
+        lv_mem_monitor(&memory);
+        ESP_LOGI(TAG, "UI objects ready; LVGL peak=%u free=%u largest=%u heap=%lu",
+                 (unsigned)memory.max_used, (unsigned)memory.free_size,
+                 (unsigned)memory.free_biggest_size,
+                 (unsigned long)esp_get_free_heap_size());
         bsp_lvgl_unlock();
     }
 

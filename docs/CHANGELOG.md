@@ -6,6 +6,9 @@
 
 ## Unreleased
 
+- Fix startup rendering stalls by budgeting 64 KB for LVGL objects and temporary
+  text-transform layers; use the same budget in the native UI memory regression.
+
 - Keep low-battery warnings visible on red status bars using a contrasting outline
   and light interior; sleep the network worker until an event or active deadline.
 

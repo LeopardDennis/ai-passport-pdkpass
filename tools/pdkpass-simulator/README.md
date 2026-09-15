@@ -86,3 +86,8 @@ window:
 ./build/pdkpass-simulator/pdkpass-simulator --race 1 --sync-results \
   --screenshot /tmp/pdkpass-australia-fp1.png
 ```
+
+The simulator uses the LVGL pool size from `sdkconfig.defaults`. After building,
+run `ctest --test-dir build/pdkpass-simulator --output-on-failure` to check startup,
+setup, standings, calendar, results, battery states and wake-up within that pool.
+This does not measure the device system heap or Wi-Fi/TLS memory.
