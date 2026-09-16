@@ -100,81 +100,29 @@ void bsp_display_backlight(uint8_t percent)
     (void)percent;
 }
 
-// The simulator supplies a complete offline season so it never depends on a
-// Mac network connection. Rounds already bundled by the firmware keep their
-// exact dates, distances, lap counts, and session labels.
+// Use the firmware calendar verbatim. Only completion boundaries are shifted
+// for the simulator's explicitly selected preview round.
 bool pdkpass_season_snapshot(pdkpass_season_snapshot_t *snapshot)
 {
-    static const char *circuits[] = {
-        "MELBOURNE", "SHANGHAI", "SUZUKA", "MIAMI", "MONTREAL", "MONACO",
-        "BARCELONA", "SPIELBERG", "SILVERSTONE", "SPA-FRANCORCHAMPS",
-        "HUNGARORING", "ZANDVOORT", "MONZA", "MADRING", "BAKU", "SEPANG",
-        "MARINA BAY", "COTA", "MEXICO CITY", "INTERLAGOS", "LAS VEGAS",
-        "LUSAIL", "YAS MARINA",
-    };
-    static const char *countries[] = {
-        "AUSTRALIA", "CHINA", "JAPAN", "USA", "CANADA", "MONACO", "SPAIN",
-        "AUSTRIA", "BRITAIN", "BELGIUM", "HUNGARY", "NETHERLANDS", "ITALY",
-        "SPAIN", "AZERBAIJAN", "MALAYSIA", "SINGAPORE", "USA", "MEXICO",
-        "BRAZIL", "LAS VEGAS", "QATAR", "ABU DHABI",
-    };
-    static const char *api_countries[] = {
-        "Australia", "China", "Japan", "United States", "Canada", "Monaco",
-        "Spain", "Austria", "Great Britain", "Belgium", "Hungary",
-        "Netherlands", "Italy", "Spain", "Azerbaijan", "Malaysia",
-        "Singapore", "United States", "Mexico", "Brazil", "United States",
-        "Qatar", "United Arab Emirates",
-    };
-    static const uint32_t accents[] = {
-        0x229971, 0xF2A900, 0x229971, 0xD3208B, 0xFF8700, 0x229971,
-        0xFF7A00, 0xD3208B, 0x00A6C8, 0xD3208B, 0x8A3FFC, 0xD3208B,
-        0xFFD928, 0xF2A900, 0x00A6C8, 0xFF7A00, 0x8A3FFC, 0x0057B8,
-        0x00843D, 0xFFCC29, 0xD3208B, 0x8A1538, 0x00A9A5,
-    };
-
     if (!snapshot) return false;
     memset(snapshot, 0, sizeof(*snapshot));
     snapshot->year = 2026;
-    snapshot->race_count = (uint8_t)(sizeof(circuits) / sizeof(circuits[0]));
+    snapshot->race_count = (uint8_t)pdkpass_race_count;
     snapshot->driver_count = (uint8_t)pdkpass_driver_count;
     snprintf(snapshot->standings_as_of, sizeof(snapshot->standings_as_of),
              "31 AUG");
-
+    memcpy(snapshot->races, pdkpass_races,
+           pdkpass_race_count * sizeof(snapshot->races[0]));
     time_t now = time(NULL);
     for (size_t i = 0; i < snapshot->race_count; i++) {
-        pdkpass_race_t *race = &snapshot->races[i];
-        race->switch_at_utc = i < s_home_race_index
-                                  ? now - (int64_t)(s_home_race_index - i) * 86400
-                                  : now + (int64_t)(i - s_home_race_index + 1U) * 86400;
-        race->accent = accents[i];
-        race->circuit_length_m = 5000U;
-        race->round = (uint8_t)(i + 1U);
-        race->laps = 60U;
-        snprintf(race->country, sizeof(race->country), "%s", countries[i]);
-        snprintf(race->circuit, sizeof(race->circuit), "%s", circuits[i]);
-        snprintf(race->api_country, sizeof(race->api_country), "%s",
-                 api_countries[i]);
-        snprintf(race->weekend, sizeof(race->weekend), "2026 SEASON");
-        snprintf(race->session_one_cn, sizeof(race->session_one_cn),
-                 "SCHEDULE PENDING");
-        snprintf(race->session_two_cn, sizeof(race->session_two_cn),
-                 "SCHEDULE PENDING");
-        snprintf(race->race_cn, sizeof(race->race_cn),
-                 "RACE SCHEDULE TBD");
+        snapshot->races[i].switch_at_utc = i < s_home_race_index
+            ? now - (int64_t)(s_home_race_index - i) * 86400
+            : now + (int64_t)(i - s_home_race_index + 1U) * 86400;
     }
-
-    for (size_t i = 0; i < pdkpass_race_count; i++) {
-        size_t index = pdkpass_races[i].round - 1U;
-        int64_t switch_at = snapshot->races[index].switch_at_utc;
-        snapshot->races[index] = pdkpass_races[i];
-        snapshot->races[index].switch_at_utc = switch_at;
-    }
-
     memcpy(snapshot->drivers, pdkpass_drivers,
            pdkpass_driver_count * sizeof(snapshot->drivers[0]));
     return true;
 }
-
 static NSString *results_cache_path(void)
 {
     NSFileManager *manager = NSFileManager.defaultManager;

@@ -137,6 +137,16 @@ static int stored_index(const results_store_t *stored, size_t index,
                          const race_cache_t *race)
 {
     if (race->meeting_key == 0) {
+        // The old offline calendar stored R13-R23 at indexes 0-10. Shift
+        // only its unkeyed cache; keyed API results still match by identity.
+        if (stored->year == 2026U && stored->race_count == 11U &&
+            pdkpass_season_race_count() == 23U && index >= 12U) {
+            bool legacy = true;
+            for (size_t i = 0; i < stored->race_count; i++) {
+                if (stored->races[i].meeting_key != 0) legacy = false;
+            }
+            if (legacy) return (int)(index - 12U);
+        }
         return index < stored->race_count && stored->races[index].meeting_key == 0
                    ? (int)index : -1;
     }

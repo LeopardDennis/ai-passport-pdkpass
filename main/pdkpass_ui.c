@@ -510,7 +510,7 @@ static void render_calendar(void)
     ui_pixel_screen_set_theme(s_screen, theme.top, theme.bottom);
     content_reset(theme.top, theme.bottom);
 
-    make_center_label(s_content, "UPCOMING RACES", 0, 3, INNER_W,
+    make_center_label(s_content, "SEASON CALENDAR", 0, 3, INNER_W,
                       &lv_font_unscii_8, 0xFFFFFF);
     for (size_t row = 0; row < CALENDAR_ROWS; row++) {
         size_t index = start + row;

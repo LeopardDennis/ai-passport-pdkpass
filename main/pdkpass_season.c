@@ -157,6 +157,9 @@ static void load_cache(void)
         stored->version == SEASON_CACHE_VERSION &&
         snapshot_valid(&stored->season)) {
         s_season = stored->season;
+        s_season.race_count = (uint8_t)pdkpass_restore_legacy_calendar(
+            s_season.year, s_season.races, s_season.race_count,
+            PDKPASS_MAX_RACES);
         ESP_LOGI(TAG, "Loaded %u season: %u races, %u drivers",
                  s_season.year, s_season.race_count, s_season.driver_count);
     }

@@ -66,6 +66,46 @@ bool pdkpass_season_race_get(size_t i, pdkpass_race_t *race) {
 '''
 
 class Services(unittest.TestCase):
+    def test_season_legacy_calendar_load(self):
+        source = (ROOT / 'main/pdkpass_season.c').read_text()
+        defines = '\n'.join(x for x in source.splitlines()
+                            if x.startswith('#define SEASON_CACHE_'))
+        types = source[source.index('typedef struct {'):
+                       source.index('} season_cache_t;') + len('} season_cache_t;')]
+        code = PRELUDE + defines + '\n' + types + r'''
+#define NVS_READONLY 0
+typedef int nvs_handle_t;
+static const char *NVS_NAMESPACE="test", *NVS_KEY="test";
+static pdkpass_season_snapshot_t s_season;
+static season_cache_t payload;
+static int nvs_open(const char *n,int m,int *h) {(void)n;(void)m;*h=1;return 0;}
+static int nvs_get_blob(int h,const char *k,void *out,size_t *size) {
+ (void)h;(void)k;assert(*size==sizeof(payload));memcpy(out,&payload,*size);return 0;
+}
+static void nvs_close(int h) {(void)h;}
+'''
+        for signature in ['static void copy_text(', 'static void initialize_fallback(',
+                          'static bool snapshot_valid(', 'static void load_cache(']:
+            code += function(source, signature)
+        code += r'''
+int main(void) {
+ initialize_fallback();assert(s_season.race_count==23);
+ payload.magic=SEASON_CACHE_MAGIC;payload.version=SEASON_CACHE_VERSION;
+ payload.season=s_season;payload.season.race_count=11;
+ memcpy(payload.season.races,pdkpass_races+12,11*sizeof(pdkpass_race_t));
+ payload.season.drivers[0].points_tenths=999;
+ strcpy(payload.season.standings_as_of,"15 SEP");
+ load_cache();
+ assert(s_season.race_count==23);assert(snapshot_valid(&s_season));
+ assert(s_season.drivers[0].points_tenths==999);
+ assert(strcmp(s_season.standings_as_of,"15 SEP")==0);
+ payload.season.year=2027;load_cache();assert(s_season.race_count==11);
+ payload.magic=0;load_cache();assert(s_season.race_count==23);
+ puts("season fallback and legacy cache load: PASS");
+}
+'''
+        compile_run(code, ['main/pdkpass_data.c'])
+
     def test_results_scheduling(self):
         source = (ROOT / 'main/pdkpass_results.c').read_text()
         defines = '\n'.join(x for x in source.splitlines() if x.startswith('#define RESULTS_'))
@@ -211,7 +251,17 @@ int main(void) {
  assert(s_cache[0].sessions[0].ready);
  update_session_identity(&s_cache[0].sessions[0],100,true,1788689800);
  assert(!s_cache[0].sessions[0].ready);
- puts("cache v2 migration, v3 identity and meeting reorder: PASS");
+ memset(&stored.races,0,sizeof(stored.races));
+ stored.race_count=11;race_count=23;
+ for (size_t i=0;i<23;i++) races[i].meeting_key=i<12 ? (int)i+1000 : 0;
+ stored.races[0].ready_mask=1;stored.races[0].present_mask=1;
+ stored.races[0].session_keys[0]=321;
+ load_cache();
+ assert(s_cache[12].sessions[0].ready);
+ assert(s_cache[12].sessions[0].session_key==321);
+ assert(!s_cache[0].sessions[0].ready);
+ assert(!s_cache[13].sessions[0].ready);
+ puts("cache v2 migration, v3 identity, meeting reorder and R13 shift: PASS");
 }
 '''
         compile_run(code)

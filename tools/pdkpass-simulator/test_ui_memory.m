@@ -16,6 +16,14 @@ static void check_memory(void)
 int main(void)
 {
     @autoreleasepool {
+        pdkpass_season_snapshot_t snapshot;
+        assert(pdkpass_season_snapshot(&snapshot));
+        assert(snapshot.race_count == pdkpass_race_count);
+        for (size_t i = 0; i < snapshot.race_count; i++) {
+            snapshot.races[i].switch_at_utc = pdkpass_races[i].switch_at_utc;
+            assert(memcmp(&snapshot.races[i], &pdkpass_races[i],
+                          sizeof(pdkpass_race_t)) == 0);
+        }
         simulator_initialize();
         simulator_set_network(PDKPASS_NETWORK_OFFLINE);
         check_memory();

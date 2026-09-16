@@ -42,5 +42,9 @@ typedef struct {
 
 extern const pdkpass_race_t pdkpass_races[];
 extern const size_t pdkpass_race_count;
+// Repair only the legacy 2026 R13-R23 cache, preserving its updated race fields.
+// Returns the resulting count; other seasons/calendar shapes remain untouched.
+size_t pdkpass_restore_legacy_calendar(unsigned year, pdkpass_race_t *races,
+                                       size_t count, size_t capacity);
 extern const pdkpass_driver_t pdkpass_drivers[];
 extern const size_t pdkpass_driver_count;

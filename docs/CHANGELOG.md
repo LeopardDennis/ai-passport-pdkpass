@@ -6,6 +6,13 @@
 
 ## Unreleased
 
+- Restore all 23 rounds in the bundled 2026 calendar, including R1-R12 dates,
+  Beijing session times and track metadata. The simulator now shares that data.
+  Repair the legacy R13-R23 cache without discarding updated schedules or standings;
+  leave other seasons and downloaded calendar shapes unchanged. Rename the list
+  to `SEASON CALENDAR` because it also includes past races. Historical podiums
+  still require online synchronization before they are available offline.
+
 - Fix startup rendering stalls by budgeting 64 KB for LVGL objects and temporary
   text-transform layers; use the same budget in the native UI memory regression.
 
