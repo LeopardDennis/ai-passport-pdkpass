@@ -3,6 +3,9 @@
 #include "esp_err.h"
 #include <stdbool.h>
 
+// Shared by the AP interface configuration and on-device browser instructions.
+#define PDKPASS_SETUP_IP "192.168.9.1"
+
 typedef enum {
     PDKPASS_NETWORK_STARTING = 0,
     PDKPASS_NETWORK_SETUP,
@@ -18,14 +21,22 @@ typedef struct {
     bool time_valid;
     const char *setup_ssid;
     const char *setup_password;
+    const char *setup_error; // Optional short, credential-free failure message.
+    unsigned setup_seconds_left;
+    bool hotspot_active;
 } pdkpass_network_update_t;
 
 // Updates are delivered from the networking worker task. The callback must not
 // retain setup string pointers and must avoid blocking network progress.
 typedef void (*pdkpass_network_callback_t)(const pdkpass_network_update_t *update);
 
-// Start the long-lived Wi-Fi, provisioning, and network-time worker. On first
-// use it exposes a temporary browser-based setup network; credentials are only
-// committed after the station receives an IP address. Remembers up to five
-// networks, trying the most recently successful first after disconnection.
+// Boot scans saved networks once; failures power down Wi-Fi. Setup is manual.
 esp_err_t pdkpass_network_start(pdkpass_network_callback_t callback);
+
+typedef enum {
+    PDKPASS_NETWORK_RETRY,
+    PDKPASS_NETWORK_OPEN_SETUP,
+    PDKPASS_NETWORK_CANCEL,
+} pdkpass_network_command_t;
+// Nonblocking; safe under the UI lock. The worker owns all radio operations.
+void pdkpass_network_request(pdkpass_network_command_t command);

@@ -51,7 +51,9 @@ supported weekend session.
 
 | Screen | UP / DOWN | OK | Hold OK |
 | --- | --- | --- | --- |
-| Next race | Standings / calendar | Race details | — |
+| Next race | Standings / calendar | Race details | Network menu |
+| Network menu | Select action | Confirm | Home |
+| Retry / setup | — | Back after retry failure | Cancel / close hotspot |
 | Calendar | Select race | Race details | Home |
 | Standings | Scroll drivers | — | Home |
 | Race details | Previous / next race | Session results | Back |
@@ -59,23 +61,32 @@ supported weekend session.
 
 ## No app required
 
-No phone app is required. When no working network has been saved, PDKPASS shows
-a temporary Wi-Fi name, password, and `192.168.4.1` on its home screen:
+No phone app is required. Hold OK on the home screen to open `NETWORK`, select
+`WI-FI SETUP`, and confirm if already connected. Only this action opens the
+temporary hotspot and displays its name, password and `192.168.9.1`:
+
+Each opening generates a new eight-character WPA2 password using uppercase
+letters and digits, without `I`, `O`, `0` or `1`.
 
 1. Connect a phone to the displayed `PDKPASS-XXXX` Wi-Fi network.
-2. Open `http://192.168.4.1` in the phone browser.
+2. Open `http://192.168.9.1` in the phone browser.
 3. Enter a 2.4 GHz Wi-Fi name and password, then press **Connect**.
 
 PDKPASS tests the connection before saving it. A wrong password leaves the setup
 page available for another attempt without replacing saved credentials. Up to five
 networks survive power-off; the last successfully connected network is tried first.
-On disconnection, each saved network gets two attempts (up to 15 seconds each)
-before falling back to setup. While in setup, saved networks are retried after
-60 seconds if no phone is connected to the setup hotspot. A healthy connection
-is not interrupted just because another network has a stronger signal.
+Boot and reconnection scan once and try visible saved networks, twice each
+(up to 15 seconds per attempt). No profiles means no scan. Exhaustion powers
+Wi-Fi off without opening a hotspot or periodically retrying. Use `RETRY WI-FI`
+to start another scan; it never opens a hotspot or disrupts a healthy link.
 
-To add a network, take the device somewhere its saved networks are unavailable
-and use the setup page. Saving the same Wi-Fi name updates its password; a sixth
+Setup closes after three continuous minutes without a phone, or ten minutes
+from opening regardless of phone reconnections or form submissions. A candidate
+connection suspends the idle check but not the ten-minute cap. Obtaining an IP
+and saving credentials closes setup immediately; time sync runs separately.
+Hold OK to cancel retry/setup. Screen dimming and sleep continue normally.
+
+To add a network, use the manual setup menu. Saving the same Wi-Fi name updates its password; a sixth
 name replaces the least recently connected network. The single network saved by
 older firmware is imported automatically. No phone app is required.
 

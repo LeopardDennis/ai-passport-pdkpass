@@ -27,6 +27,19 @@ int main(void)
         simulator_initialize();
         simulator_set_network(PDKPASS_NETWORK_OFFLINE);
         check_memory();
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // home -> network
+        check_memory();
+        simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // manual setup
+        check_memory();
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // stop hotspot
+        check_memory();
+        simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK);
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // retry saved only
+        check_memory();
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // cancel retry
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // home
+        check_memory();
         const int levels[] = {-1, 0, 1, 15, 20, 21, 100};
         for (size_t i = 0; i < sizeof(levels) / sizeof(levels[0]); ++i) {
             pdkpass_ui_battery_update(levels[i]);
@@ -34,6 +47,18 @@ int main(void)
         }
         simulator_set_network(PDKPASS_NETWORK_SETUP);
         check_memory();
+        const char *errors[] = {"AUTH FAILED / RETRY", "WIFI NOT FOUND",
+            "WIFI SECURITY ERROR", "CONNECTION TIMEOUT", "IP ADDRESS TIMEOUT",
+            "SAVE FAILED / RETRY", "START FAILED / RETRY"};
+        for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); i++) {
+            pdkpass_network_update_t update = {
+                .state = PDKPASS_NETWORK_SETUP,
+                .setup_ssid = "PDKPASS-SETUP", .setup_password = "K7M9P2X4",
+                .setup_error = errors[i],
+            };
+            pdkpass_ui_network_update(&update);
+            check_memory();
+        }
         simulator_set_network(PDKPASS_NETWORK_OFFLINE);
         simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK);
         for (unsigned i = 0; i < 100; ++i) {

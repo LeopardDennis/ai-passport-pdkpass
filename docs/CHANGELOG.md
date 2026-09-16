@@ -6,6 +6,25 @@
 
 ## Unreleased
 
+- Use a fresh eight-character WPA2 setup password with unambiguous uppercase
+  letters and digits. Start the radio before drawing hardware random bytes.
+
+- Move the manual setup hotspot to `192.168.9.1/24`, including its gateway,
+  DHCP subnet and on-device browser instructions.
+
+- Add a home long-OK network menu with separate saved-network retry and manual
+  setup actions. Scan saved networks once, then power down Wi-Fi on failure.
+  Hotspots expire after three idle minutes or ten total minutes; cancellation
+  stops networking, and successful IP acquisition/persistence closes setup.
+  Keep normal display sleep and show the setup countdown without resetting it.
+
+- Fix first-time Wi-Fi setup getting stuck before connection: skip the idle
+  disconnect wait and drain active attempts through a station-stop barrier.
+  Retain the five saved networks and save new credentials only after an IP is
+  obtained. Show setup errors for authentication, missing networks, security,
+  connection/IP timeouts and saving failures. Switching an active attempt may
+  briefly interrupt the setup hotspot; reconnect the phone to retry.
+
 - Restore all 23 rounds in the bundled 2026 calendar, including R1-R12 dates,
   Beijing session times and track metadata. The simulator now shares that data.
   Repair the legacy R13-R23 cache without discarding updated schedules or standings;

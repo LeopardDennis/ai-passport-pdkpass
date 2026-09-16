@@ -69,6 +69,10 @@ static uint32_t s_status_background = UI_SKY;
 static pdkpass_network_state_t s_network_state = PDKPASS_NETWORK_STARTING;
 static char s_setup_ssid[33];
 static char s_setup_password[16];
+static char s_setup_error[32];
+static unsigned s_setup_seconds_left;
+static bool s_hotspot_active;
+static lv_obj_t *s_setup_countdown;
 static lv_point_precise_t s_track_points[49];
 
 static lv_obj_t *make_block(lv_obj_t *parent, int x, int y, int w, int h,
@@ -198,6 +202,7 @@ static void set_gradient(lv_obj_t *obj, uint32_t top, uint32_t bottom)
 
 static void content_reset(uint32_t top, uint32_t bottom)
 {
+    s_setup_countdown = NULL;
     s_list_page = -1;
     memset(s_list_rows, 0, sizeof(s_list_rows));
     s_list_footer = NULL;
@@ -310,7 +315,7 @@ static void title_for_season(char *output, size_t capacity,
 static void render_wifi_setup(void)
 {
     set_title("PDKPASS WIFI");
-    set_status("SETUP MODE", UI_RED);
+    set_status(s_network_state == PDKPASS_NETWORK_CONNECTING ? "CONNECTING" : "SETUP MODE", UI_RED);
     content_reset(UI_PAPER, 0xE6E7DA);
 
     make_center_label(s_content, "CONNECT PHONE TO", 0, 7, INNER_W,
@@ -321,13 +326,64 @@ static void render_wifi_setup(void)
                       &lv_font_unscii_8, UI_SKY_DARK);
     lv_obj_t *password = make_card(s_content, 5, 81, 200, 29, UI_YELLOW, 3);
     make_medium_label(password, s_setup_password, 0, 0, 194, UI_INK);
-    make_center_label(s_content, "OPEN IN BROWSER", 0, 121, INNER_W,
-                      &lv_font_unscii_8, UI_SKY_DARK);
-    make_center_label(s_content, "192.168.4.1", 0, 140, INNER_W,
+    make_center_label(s_content, s_setup_error[0] ? s_setup_error : "OPEN IN BROWSER", 0, 121, INNER_W,
+                      &lv_font_unscii_8, s_setup_error[0] ? UI_RED : UI_SKY_DARK);
+    make_center_label(s_content, PDKPASS_SETUP_IP, 0, 140, INNER_W,
                       &lv_font_unscii_16, UI_INK);
-    make_center_label(s_content, "2.4 GHZ WIFI", 0, 161, INNER_W,
+    char remaining[28];
+    snprintf(remaining, sizeof(remaining), "AUTO OFF %02u:%02u",
+             s_setup_seconds_left / 60U, s_setup_seconds_left % 60U);
+    s_setup_countdown = make_center_label(s_content, remaining, 0, 161, INNER_W,
                       &lv_font_unscii_8, UI_RED);
-    set_hint("UP POINTS   DOWN CALENDAR");
+    set_hint("HOLD OK CLOSE HOTSPOT");
+}
+
+static void render_network_menu(void)
+{
+    set_title("NETWORK");
+    set_status(s_network_state == PDKPASS_NETWORK_ONLINE ? "ONLINE" : "NETWORK OPTIONS", UI_SKY);
+    content_reset(UI_SKY, UI_SKY_DARK);
+    make_center_label(s_content, "CONNECT ON YOUR TERMS", 0, 7, INNER_W,
+                      &lv_font_unscii_8, UI_PAPER);
+    const char *titles[] = {"RETRY WI-FI", "WI-FI SETUP", "BACK"};
+    const char *subtitles[] = {"SAVED NETWORKS ONLY", "TEMPORARY HOTSPOT", "RETURN TO HOME"};
+    for (unsigned i = 0; i < 3U; i++) {
+        bool selected = s_state.network_selection == i;
+        uint32_t ink = selected ? UI_INK : UI_SKY_DARK;
+        lv_obj_t *card = make_card(s_content, 5, 26 + (int)i * 47, 200, 41,
+                                   selected ? UI_YELLOW : UI_PAPER, 2);
+        make_center_label(card, titles[i], 0, 4, 194, &lv_font_unscii_16, ink);
+        make_center_label(card, subtitles[i], 0, 25, 194, &lv_font_unscii_8, ink);
+    }
+    set_hint("UP/DOWN SEL OK  HOLD BACK");
+}
+
+static void render_network_progress(void)
+{
+    if (s_hotspot_active) { render_wifi_setup(); return; }
+    set_title("WI-FI");
+    set_status("SAVED NETWORKS", UI_SKY);
+    content_reset(UI_SKY, UI_SKY_DARK);
+    bool busy = s_network_state == PDKPASS_NETWORK_CONNECTING;
+    make_center_label(s_content, busy ? "SEARCHING" : "NOT CONNECTED", 0, 30,
+                      INNER_W, &lv_font_unscii_16, UI_PAPER);
+    make_center_label(s_content, busy ? "TRYING SAVED WI-FI" : s_setup_error,
+                      0, 76, INNER_W, &lv_font_unscii_8, UI_PAPER);
+    make_center_label(s_content, "HOTSPOT IS OFF", 0, 120, INNER_W,
+                      &lv_font_unscii_8, UI_YELLOW);
+    set_hint(busy ? "HOLD OK CANCEL" : "OK / HOLD BACK TO MENU");
+}
+
+static void render_network_confirm(void)
+{
+    set_title("WI-FI SETUP");
+    set_status("CONFIRM", UI_YELLOW);
+    content_reset(UI_PAPER, 0xE6E7DA);
+    make_center_label(s_content, "ADD NETWORK?", 0, 25, INNER_W, &lv_font_unscii_16, UI_INK);
+    make_center_label(s_content, "CURRENT CONNECTION", 0, 70, INNER_W, &lv_font_unscii_8, UI_INK);
+    make_center_label(s_content, "MAY BE INTERRUPTED", 0, 89, INNER_W, &lv_font_unscii_8, UI_INK);
+    make_center_label(s_content, "HOTSPOT: MAX 10 MIN", 0, 130, INNER_W, &lv_font_unscii_8, UI_RED);
+    set_hint("OK CONTINUE  HOLD CANCEL");
 }
 
 static void render_season_complete(void)
@@ -754,6 +810,9 @@ static void render(void)
     s_needs_render = false;
     ui_pixel_screen_set_theme(s_screen, UI_SKY, UI_SKY_DARK);
     switch (s_state.page) {
+    case PDKPASS_PAGE_NETWORK: render_network_menu(); break;
+    case PDKPASS_PAGE_NETWORK_PROGRESS: render_network_progress(); break;
+    case PDKPASS_PAGE_NETWORK_CONFIRM: render_network_confirm(); break;
     case PDKPASS_PAGE_HOME:
         render_home();
         break;
@@ -937,16 +996,27 @@ void pdkpass_ui_network_update(const pdkpass_network_update_t *update)
 {
     if (!update) return;
     pdkpass_network_state_t previous_state = s_network_state;
+    bool was_hotspot = s_hotspot_active;
+    s_hotspot_active = update->hotspot_active;
+    s_setup_seconds_left = update->setup_seconds_left;
     s_network_state = update->state;
     s_time_valid = update->time_valid;
+    bool error_changed = strcmp(s_setup_error, update->setup_error ? update->setup_error : "") != 0;
+    snprintf(s_setup_error, sizeof(s_setup_error), "%s",
+             update->setup_error ? update->setup_error : "");
     snprintf(s_setup_ssid, sizeof(s_setup_ssid), "%s",
              update->setup_ssid ? update->setup_ssid : "");
     snprintf(s_setup_password, sizeof(s_setup_password), "%s",
              update->setup_password ? update->setup_password : "");
+    if (s_state.page == PDKPASS_PAGE_NETWORK_PROGRESS &&
+        (update->state == PDKPASS_NETWORK_ONLINE || update->state == PDKPASS_NETWORK_SYNCING ||
+         (was_hotspot && !s_hotspot_active))) s_state.page = PDKPASS_PAGE_HOME;
+    if (s_setup_countdown && !error_changed)
+        lv_label_set_text_fmt(s_setup_countdown, "AUTO OFF %02u:%02u",
+                             s_setup_seconds_left / 60U, s_setup_seconds_left % 60U);
     update_network_label();
     clock_tick(NULL);
-    if (previous_state != s_network_state &&
-        s_state.page == PDKPASS_PAGE_HOME) render();
+    if (previous_state != s_network_state || error_changed || was_hotspot != s_hotspot_active) render();
 }
 
 void pdkpass_ui_results_update(size_t race_index)
@@ -1011,6 +1081,35 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     }
 
     pdkpass_state_t previous = s_state;
+    if (s_state.page == PDKPASS_PAGE_NETWORK_PROGRESS) {
+        if (input == PDKPASS_INPUT_BACK ||
+            (input == PDKPASS_INPUT_OK && !s_hotspot_active &&
+             s_network_state != PDKPASS_NETWORK_CONNECTING)) {
+            pdkpass_network_request(PDKPASS_NETWORK_CANCEL);
+            s_state.page = PDKPASS_PAGE_NETWORK;
+            render();
+        }
+        return;
+    }
+    if ((s_state.page == PDKPASS_PAGE_NETWORK && input == PDKPASS_INPUT_OK &&
+         s_state.network_selection < 2U) ||
+        (s_state.page == PDKPASS_PAGE_NETWORK_CONFIRM && input == PDKPASS_INPUT_OK)) {
+        bool setup = s_state.network_selection == 1U;
+        bool connected = s_network_state == PDKPASS_NETWORK_ONLINE ||
+                         s_network_state == PDKPASS_NETWORK_SYNCING ||
+                         s_network_state == PDKPASS_NETWORK_TIME_ERROR;
+        if (!setup && connected) { s_state.page = PDKPASS_PAGE_HOME; render(); return; }
+        if (setup && connected && s_state.page != PDKPASS_PAGE_NETWORK_CONFIRM) {
+            s_state.page = PDKPASS_PAGE_NETWORK_CONFIRM;
+            render(); return;
+        }
+        s_state.page = PDKPASS_PAGE_NETWORK_PROGRESS;
+        s_network_state = PDKPASS_NETWORK_CONNECTING;
+        s_setup_error[0] = '\0';
+        render();
+        pdkpass_network_request(setup ? PDKPASS_NETWORK_OPEN_SETUP : PDKPASS_NETWORK_RETRY);
+        return;
+    }
     pdkpass_state_handle(&s_state, input,
                          s_season.race_count, s_season.driver_count);
     if (memcmp(&previous, &s_state, sizeof(s_state)) == 0) return;

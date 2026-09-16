@@ -19,6 +19,7 @@ void pdkpass_state_init(pdkpass_state_t *state)
     state->selected_session = PDKPASS_SESSION_FP1;
     state->home_race = 0;
     state->season_complete = false;
+    state->network_selection = 0;
 }
 
 void pdkpass_state_set_home_race(pdkpass_state_t *state, size_t race_index,
@@ -38,6 +39,7 @@ void pdkpass_state_handle(pdkpass_state_t *state, pdkpass_input_t input,
 {
     switch (state->page) {
     case PDKPASS_PAGE_HOME:
+        if (input == PDKPASS_INPUT_BACK) state->page = PDKPASS_PAGE_NETWORK;
         if (input == PDKPASS_INPUT_UP) state->page = PDKPASS_PAGE_STANDINGS;
         if (input == PDKPASS_INPUT_DOWN) {
             if (race_count > 0) {
@@ -54,6 +56,19 @@ void pdkpass_state_handle(pdkpass_state_t *state, pdkpass_input_t input,
         }
         break;
 
+    case PDKPASS_PAGE_NETWORK:
+        if (input == PDKPASS_INPUT_UP)
+            state->network_selection = (state->network_selection + 2U) % 3U;
+        if (input == PDKPASS_INPUT_DOWN)
+            state->network_selection = (state->network_selection + 1U) % 3U;
+        if (input == PDKPASS_INPUT_BACK ||
+            (input == PDKPASS_INPUT_OK && state->network_selection == 2U))
+            state->page = PDKPASS_PAGE_HOME;
+        break;
+    case PDKPASS_PAGE_NETWORK_CONFIRM:
+    case PDKPASS_PAGE_NETWORK_PROGRESS:
+        if (input == PDKPASS_INPUT_BACK) state->page = PDKPASS_PAGE_NETWORK;
+        break;
     case PDKPASS_PAGE_CALENDAR:
         if (input == PDKPASS_INPUT_UP) {
             state->selected_race = wrap_previous(state->selected_race, race_count);

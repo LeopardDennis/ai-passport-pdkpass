@@ -66,6 +66,142 @@ bool pdkpass_season_race_get(size_t i, pdkpass_race_t *race) {
 '''
 
 class Services(unittest.TestCase):
+    def test_eight_character_setup_password(self):
+        source = (ROOT / 'main/pdkpass_network.c').read_text()
+        code = PRELUDE + r'''
+static char s_setup_password[16];
+static unsigned seed;
+static void esp_fill_random(void *buffer,size_t length) {
+ assert(length==8);
+ for(size_t i=0;i<length;i++) ((uint8_t *)buffer)[i]=(uint8_t)(seed+i);
+}
+'''
+        code += function(source, 'static void generate_setup_password(')
+        code += r'''
+int main(void) {
+ for(seed=0;seed<256;seed++) {
+  memset(s_setup_password,'!',sizeof(s_setup_password));
+  generate_setup_password();assert(strlen(s_setup_password)==8);
+  for(size_t i=0;i<8;i++) assert(strchr("ABCDEFGHJKLMNPQRSTUVWXYZ23456789",s_setup_password[i]));
+  assert(s_setup_password[9]=='!');
+ }
+ puts("eight-character WPA2 password generation: PASS");
+}
+'''
+        compile_run(code)
+        setup = function(source, 'static esp_err_t start_setup(')
+        self.assertLess(setup.index('esp_wifi_start()'), setup.index('generate_setup_password()'))
+
+    def test_setup_address_and_dhcp_order(self):
+        source = (ROOT / 'main/pdkpass_network.c').read_text()
+        code = PRELUDE + r'''
+#include <arpa/inet.h>
+#include "pdkpass_network.h"
+#define ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED 7
+typedef struct {uint32_t addr;} esp_ip4_addr_t;
+typedef struct {esp_ip4_addr_t ip,gw,netmask;} esp_netif_ip_info_t;
+static int s_ap_netif=1, stage, stop_error, set_error;
+static int esp_netif_str_to_ip4(const char *text,esp_ip4_addr_t *out) {
+ return inet_pton(AF_INET,text,&out->addr)==1 ? ESP_OK : ESP_FAIL;
+}
+static int esp_netif_dhcps_stop(int netif) {assert(netif==1&&stage==0);stage=1;return stop_error;}
+static int esp_netif_set_ip_info(int netif,const esp_netif_ip_info_t *info) {
+ assert(netif==1&&stage==1);stage=2;
+ assert(ntohl(info->ip.addr)==0xc0a80901U);assert(info->gw.addr==info->ip.addr);
+ assert(ntohl(info->netmask.addr)==0xffffff00U);return set_error;
+}
+static int esp_netif_dhcps_start(int netif) {assert(netif==1&&stage==2);stage=3;return ESP_OK;}
+'''
+        code += function(source, 'static esp_err_t configure_setup_address(')
+        code += r'''
+int main(void) {
+ assert(strcmp(PDKPASS_SETUP_IP,"192.168.9.1")==0);
+ assert(configure_setup_address()==0&&stage==3);
+ stage=0;stop_error=ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED;
+ assert(configure_setup_address()==0&&stage==3);
+ stage=0;stop_error=ESP_FAIL;
+ assert(configure_setup_address()==ESP_FAIL&&stage==1);
+ stage=0;stop_error=0;set_error=ESP_FAIL;
+ assert(configure_setup_address()==ESP_FAIL&&stage==2);
+ puts("setup IP, gateway, subnet and DHCP ordering: PASS");
+}
+'''
+        compile_run(code)
+        self.assertLess(source.index('err = configure_setup_address();'),
+                        source.index('err = esp_wifi_init(&wifi_init);'))
+
+    def test_saved_scan_and_radio_shutdown(self):
+        source = (ROOT / 'main/pdkpass_network.c').read_text()
+        code = PRELUDE + r'''
+#include "pdkpass_network.h"
+#include "pdkpass_wifi_profiles.h"
+#define ESP_LOGE(...) ((void)0)
+#define WIFI_MODE_STA 1
+#define EVENT_STOPPED 16
+#define EVENT_CANDIDATE 4
+#define EVENT_CLIENT 4096
+#define EVENT_CANCEL 2048
+#define EVENT_SETUP 1024
+#define STATION_EVENTS 483
+#define SAVED_CONNECT_TIMEOUT_US 15000000LL
+#define pdFALSE 0
+typedef unsigned EventBits_t;
+typedef struct {unsigned char ssid[33];} wifi_ap_record_t;
+typedef struct {bool show_hidden;struct {struct {unsigned min,max;} active;} scan_time;} wifi_scan_config_t;
+static pdkpass_wifi_profiles_t s_profiles={.version=1};
+static bool s_visible[5],s_radio_started,s_in_setup,s_station_active,s_associated,s_has_ip;
+static int64_t s_saved_deadline,s_sync_deadline;
+static unsigned s_saved_attempt;
+static int s_events,scans,starts,stops,connects,closed_http,record_cursor,scan_error;
+static unsigned pending;
+static const char *s_setup_error;
+static char s_working_ssid[33],s_working_password[65];
+static const char *records[]={"Other","Second"};
+static pdkpass_network_state_t state;
+static int64_t esp_timer_get_time(void) {return 1000000;}
+static void publish_state(pdkpass_network_state_t value) {state=value;}
+static int esp_wifi_set_mode(int mode) {(void)mode;return 0;}
+static int esp_wifi_start(void) {starts++;return 0;}
+static int esp_wifi_stop(void) {stops++;return 0;}
+static int esp_wifi_scan_start(const wifi_scan_config_t *config,bool block) {
+ assert(block);assert(config->scan_time.active.max==120);scans++;record_cursor=0;return scan_error;
+}
+static int esp_wifi_scan_get_ap_num(uint16_t *count) {*count=2;return 0;}
+static int esp_wifi_scan_get_ap_record(wifi_ap_record_t *ap) {strcpy((char *)ap->ssid,records[record_cursor++]);return 0;}
+static void esp_wifi_clear_ap_list(void) {}
+static unsigned xEventGroupGetBits(int event) {(void)event;return pending;}
+static void xEventGroupClearBits(int event,unsigned bits) {(void)event;(void)bits;}
+static unsigned xEventGroupWaitBits(int e,unsigned bits,int c,int a,unsigned t) {(void)e;(void)c;(void)a;(void)t;return bits;}
+static void stop_http_server(void) {closed_http++;}
+static void finish_candidate(void) {}
+static int configure_station(const char *ssid,const char *password) {(void)ssid;(void)password;return 0;}
+static int esp_wifi_connect(void) {connects++;return 0;}
+'''
+        for signature in ['static esp_err_t go_offline(', 'static esp_err_t connect_saved(',
+                          'static esp_err_t scan_saved(']:
+            code += function(source, signature)
+        code += r'''
+int main(void) {
+ assert(scan_saved()==0);assert(scans==0&&starts==0&&connects==0);
+ assert(state==PDKPASS_NETWORK_OFFLINE);assert(strcmp(s_setup_error,"NO SAVED NETWORKS")==0);
+ assert(pdkpass_wifi_profiles_remember(&s_profiles,"Second","test-only"));
+ assert(pdkpass_wifi_profiles_remember(&s_profiles,"First","test-only"));
+ assert(scan_saved()==0);assert(scans==1&&starts==1&&connects==1);
+ assert(strcmp(s_working_ssid,"Second")==0);assert(!s_visible[0]&&s_visible[1]);
+ assert(s_saved_attempt==2);
+ assert(go_offline()==0);assert(stops==1&&!s_radio_started&&!s_in_setup);
+ records[1]="Unknown";assert(scan_saved()==0);
+ assert(connects==1&&!s_radio_started);assert(state==PDKPASS_NETWORK_OFFLINE);
+ records[1]="Second";pending=EVENT_CANCEL;
+ assert(scan_saved()==0);assert(connects==1);go_offline();
+ pending=0;scan_error=ESP_FAIL;
+ assert(scan_saved()==ESP_FAIL);assert(!s_radio_started);
+ assert(strcmp(s_setup_error,"SCAN FAILED / RETRY")==0);
+ puts("saved-only scan, absent profiles, cancellation and radio shutdown: PASS");
+}
+'''
+        compile_run(code, ['main/pdkpass_wifi_profiles.c'])
+
     def test_season_legacy_calendar_load(self):
         source = (ROOT / 'main/pdkpass_season.c').read_text()
         defines = '\n'.join(x for x in source.splitlines()
@@ -375,6 +511,9 @@ int main(void) {
 #define EVENT_CONNECTED 1
 #define EVENT_DISCONNECTED 2
 #define EVENT_CANDIDATE 4
+#define EVENT_STOPPED 16
+#define EVENT_ASSOCIATED 32
+#define STATION_EVENTS (EVENT_CONNECTED | EVENT_DISCONNECTED | EVENT_ASSOCIATED)
 #define WIFI_MODE_STA 1
 typedef unsigned EventBits_t;
 typedef struct {unsigned content_len;const char *body;} httpd_req_t;
@@ -382,6 +521,11 @@ typedef struct {unsigned char ssid[33];} wifi_ap_record_t;
 static int s_candidate_lock, s_events;
 static bool s_candidate_busy, s_testing_candidate, s_has_ip, s_in_setup=true;
 static bool s_have_working_credentials;
+static bool s_station_active, s_associated;
+static const char *s_setup_error;
+static int64_t s_sync_deadline;
+static int stop_calls, start_calls, connect_calls;
+static bool stop_event=true;
 static int64_t s_candidate_deadline, s_saved_deadline, s_saved_retry_at;
 #define SAVED_RETRY_INTERVAL_US 60000000LL
 static char s_candidate_ssid[33],s_candidate_password[65],s_attempt_ssid[33],s_attempt_password[65];
@@ -396,10 +540,11 @@ static int httpd_req_recv(httpd_req_t *r,char *out,unsigned length) {memcpy(out,
 static int xEventGroupSetBits(int event,unsigned bits) {(void)event;return bits;}
 static int xEventGroupClearBits(int event,unsigned bits) {(void)event;return bits;}
 static EventBits_t xEventGroupWaitBits(int event,unsigned bits,int clear,int all,unsigned wait) {
- (void)event;(void)clear;(void)all;(void)wait;return bits;
+ (void)event;(void)clear;(void)all;(void)wait;return stop_event ? bits : 0;
 }
-static int esp_wifi_disconnect(void) {return ESP_ERR_WIFI_NOT_CONNECT;}
-static int esp_wifi_connect(void) {return ESP_OK;}
+static int esp_wifi_stop(void) {stop_calls++;return ESP_OK;}
+static int esp_wifi_start(void) {start_calls++;return ESP_OK;}
+static int esp_wifi_connect(void) {connect_calls++;return ESP_OK;}
 static int esp_wifi_set_mode(int mode) {(void)mode;return ESP_OK;}
 static int64_t esp_timer_get_time(void) {return 1000000;}
 static void publish_state(pdkpass_network_state_t state) {(void)state;}
@@ -421,7 +566,9 @@ int main(void) {
  req.body=b;req.content_len=(unsigned)strlen(b);
  assert(save_post(&req)==ESP_OK);assert(response_status==409);
  assert(strcmp(s_candidate_ssid,"TestA")==0);
+ stop_event=false; // First boot: no old link, so no stop/disconnect event.
  assert(test_candidate()==ESP_OK);assert(s_testing_candidate);
+ assert(stop_calls==0);assert(connect_calls==1);
  strcpy(connected_ssid,"WrongAP");
  assert(accept_candidate()==ESP_ERR_INVALID_STATE);assert(!s_have_working_credentials);
  strcpy(connected_ssid,"TestA");
@@ -430,6 +577,21 @@ int main(void) {
  assert(accept_candidate()==ESP_OK);
  assert(strcmp(saved_ssid,"TestA")==0);assert(strcmp(saved_password,"abcdefgh")==0);
  assert(!s_candidate_busy);assert(!s_testing_candidate);assert(s_attempt_password[0]==0);
+ // Switch away from an active link/scan: stop barrier precedes new connection.
+ stop_event=true;
+ assert(save_post(&req)==ESP_OK);assert(response_status==202);
+ assert(test_candidate()==ESP_OK);
+ assert(stop_calls==1);assert(start_calls==1);assert(connect_calls==2);
+ assert(strcmp(s_attempt_ssid,"TestB")==0);
+ finish_candidate();
+ // A missing stop barrier must never allow a new configuration/connection.
+ stop_event=false;
+ assert(test_candidate()==ESP_ERR_TIMEOUT);assert(connect_calls==2);
+ finish_candidate();
+ // A failed association has already returned the station to idle; retry works.
+ s_station_active=false;
+ assert(test_candidate()==ESP_OK);assert(connect_calls==3);
+ finish_candidate();
  puts("provisioning duplicate rejection and immutable commit: PASS");
 }
 '''
@@ -446,6 +608,15 @@ int main(void) {
 #define EVENT_DISCONNECTED 2
 #define EVENT_CANDIDATE 4
 #define EVENT_TIME_SYNCED 8
+#define EVENT_RETRY 512
+#define EVENT_SETUP 1024
+#define EVENT_CANCEL 2048
+#define EVENT_CLIENT 4096
+#define EVENT_ASSOCIATED 32
+#define EVENT_AUTH_ERROR 64
+#define EVENT_AP_MISSING 128
+#define EVENT_SECURITY_ERROR 256
+#define STATION_EVENTS (EVENT_CONNECTED | EVENT_DISCONNECTED | EVENT_ASSOCIATED | EVENT_AUTH_ERROR | EVENT_AP_MISSING | EVENT_SECURITY_ERROR)
 #define pdFALSE 0
 #define SAVED_RETRY_INTERVAL_US 60000000LL
 #define SAVED_CONNECT_TIMEOUT_US 15000000LL
@@ -457,6 +628,11 @@ typedef struct {unsigned char ssid[33];} wifi_ap_record_t;
 static int s_events;
 static bool s_time_synced_boot, s_has_ip, s_in_setup, s_testing_candidate;
 static bool s_have_working_credentials=true;
+static bool s_station_active, s_associated;
+static const char *s_setup_error;
+static bool s_visible[5]={true,true,true,true,true};
+static int64_t s_setup_started, s_setup_idle_since;
+static pdkpass_network_state_t s_published_state;
 static int64_t s_candidate_deadline, s_sync_deadline, now_us;
 static int64_t s_saved_deadline, s_saved_retry_at;
 static unsigned s_saved_attempt;
@@ -473,11 +649,18 @@ static unsigned xEventGroupWaitBits(int e,unsigned bits,int clear,int all,unsign
  now_us=times[cursor];return script[cursor++];
 }
 static int connect_saved(void);
+static int scan_calls, offline_count;
+static int go_offline(void) {
+ offline_count++;s_in_setup=false;s_saved_deadline=0;s_has_ip=false;s_testing_candidate=false;return ESP_OK;
+}
+static int scan_saved(void) {scan_calls++;s_saved_attempt=0;return connect_saved();}
 static int prepare_network(void) {return connect_saved();}
 static void vTaskDelete(void *task) {(void)task;}
-static int test_candidate(void) {return ESP_OK;}
+static int test_candidate(void) {
+ s_testing_candidate=true;s_saved_deadline=0;s_candidate_deadline=now_us+30000000LL;return ESP_OK;
+}
 static void finish_candidate(void) {s_testing_candidate=false;}
-static int start_setup(void) {s_in_setup=true;s_saved_deadline=0;s_saved_retry_at=now_us+60000000LL;setup_count++;return ESP_OK;}
+static int start_setup(void) {s_in_setup=true;s_saved_deadline=0;s_setup_started=now_us;s_setup_idle_since=now_us;setup_count++;return ESP_OK;}
 static int esp_wifi_connect(void) {connection_count++;return ESP_OK;}
 static int configure_station(const char *ssid,const char *password) {(void)password;strcpy(connected_ssid,ssid);return ESP_OK;}
 static int esp_wifi_sta_get_ap_info(wifi_ap_record_t *ap) {strcpy((char *)ap->ssid,connected_ssid);return ESP_OK;}
@@ -496,6 +679,7 @@ static void publish_state(pdkpass_network_state_t state) {
  if(state==PDKPASS_NETWORK_TIME_ERROR) time_error_count++;
 }
 '''
+        code += function(source, 'static int64_t setup_deadline(')
         code += function(source, 'static esp_err_t connect_saved(')
         code += function(source, 'static TickType_t network_wait_ticks(')
         code += function(source, 'static void network_task(')
@@ -513,9 +697,9 @@ int main(void) {
  s_has_ip=false;s_sync_deadline=0;
  assert(pdkpass_wifi_profiles_remember(&s_profiles,"TestA","test-only"));
  s_in_setup=true;s_saved_retry_at=60000000;
- assert(network_wait_ticks(0)==60000);
+ assert(network_wait_ticks(0)==1000);
  s_testing_candidate=true;s_candidate_deadline=30000000;
- assert(network_wait_ticks(0)==30000);
+ assert(network_wait_ticks(0)==1000);
  s_testing_candidate=false;s_in_setup=false;
  // A plausible NVS time alone cannot authorize a new HTTPS season sync.
  script[0]=EVENT_CONNECTED;times[0]=1;
@@ -531,21 +715,52 @@ int main(void) {
  script[4]=0;times[4]=61000005;
  if(setjmp(finished)==0) network_task(NULL);
  assert(online_count==2);assert(time_error_count==0);assert(s_time_synced_boot);
- // Real worker fallback: two attempts per network, then setup. No phone
- // means background recovery; an attached phone defers that recovery cycle.
+ // Exhausted saved networks power down; there is no periodic background retry.
  assert(pdkpass_wifi_profiles_remember(&s_profiles,"TestB","test-only"));
  cursor=0;event_count=4;now_us=0;s_saved_attempt=0;
  s_sync_deadline=0;s_has_ip=false;connection_count=0;
  for(int i=0;i<4;i++){script[i]=EVENT_DISCONNECTED;times[i]=i+1;}
  if(setjmp(finished)==0) network_task(NULL);
- assert(connection_count==4);assert(setup_count==1);assert(s_in_setup);
+ assert(connection_count==4);assert(setup_count==0);assert(!s_in_setup);
  assert(strcmp(connected_ssid,"TestA")==0);
  cursor=0;event_count=1;script[0]=0;times[0]=60000005;phone_count=1;
  if(setjmp(finished)==0) network_task(NULL);
  assert(connection_count==4);
  cursor=0;times[0]=120000006;phone_count=0;
  if(setjmp(finished)==0) network_task(NULL);
- assert(connection_count==5);assert(strcmp(connected_ssid,"TestB")==0);
+ assert(connection_count==4);assert(setup_count==0);
+ // Only an explicit command opens setup; no clients expires at three minutes.
+ cursor=0;event_count=2;script[0]=EVENT_SETUP;times[0]=1000;
+ script[1]=0;times[1]=180001000;phone_count=0;
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(!s_in_setup);assert(setup_count==1);
+ // Attached phones cannot extend the absolute ten-minute cap.
+ cursor=0;script[0]=EVENT_SETUP;times[0]=200000000;
+ script[1]=0;times[1]=800000000;phone_count=1;
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(!s_in_setup);assert(setup_count==2);
+ // Real worker exposes actionable failure messages without saving candidates.
+ pdkpass_wifi_profiles_t before=s_profiles;
+ cursor=0;event_count=3;script[0]=EVENT_SETUP;times[0]=199000000;
+ script[1]=EVENT_CANDIDATE;times[1]=200000000;
+ script[2]=EVENT_DISCONNECTED|EVENT_AUTH_ERROR;times[2]=200000001;
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(!s_testing_candidate);assert(strcmp(s_setup_error,"AUTH FAILED / RETRY")==0);
+ assert(memcmp(&before,&s_profiles,sizeof(before))==0);
+ cursor=0;script[2]=EVENT_DISCONNECTED|EVENT_AP_MISSING;
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(strcmp(s_setup_error,"WIFI NOT FOUND")==0);
+ cursor=0;event_count=4;script[2]=EVENT_ASSOCIATED;script[3]=0;times[3]=230000001;
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(strcmp(s_setup_error,"IP ADDRESS TIMEOUT")==0);
+ assert(!s_testing_candidate);assert(memcmp(&before,&s_profiles,sizeof(before))==0);
+ // Idle deadline restarts after a phone leaves, but never extends the cap.
+ s_setup_started=1000000;s_setup_idle_since=1000000;s_testing_candidate=false;
+ assert(setup_deadline()==181000000);
+ s_setup_idle_since=-1;assert(setup_deadline()==601000000);
+ s_setup_idle_since=550000000;assert(setup_deadline()==601000000);
+ s_setup_idle_since=1000000;s_testing_candidate=true;
+ assert(setup_deadline()==601000000);
  puts("NTP cold boot and trusted reconnect: PASS");
 }
 '''

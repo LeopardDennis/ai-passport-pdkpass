@@ -55,5 +55,12 @@ int main(void)
     pdkpass_state_handle(&state, PDKPASS_INPUT_DOWN, 11, 23);
     assert(state.page == PDKPASS_PAGE_CALENDAR);
     assert(state.selected_race == 10);
+    pdkpass_state_handle(&state, PDKPASS_INPUT_BACK, 23, 23);
+    pdkpass_state_handle(&state, PDKPASS_INPUT_BACK, 23, 23);
+    assert(state.page == PDKPASS_PAGE_NETWORK);
+    pdkpass_state_handle(&state, PDKPASS_INPUT_UP, 23, 23);
+    assert(state.network_selection == 2);
+    pdkpass_state_handle(&state, PDKPASS_INPUT_OK, 23, 23);
+    assert(state.page == PDKPASS_PAGE_HOME);
     return 0;
 }

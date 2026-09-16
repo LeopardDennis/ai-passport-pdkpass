@@ -10,6 +10,9 @@ typedef enum {
     PDKPASS_PAGE_STANDINGS,
     PDKPASS_PAGE_RACE_DETAIL,
     PDKPASS_PAGE_RESULTS,
+    PDKPASS_PAGE_NETWORK,
+    PDKPASS_PAGE_NETWORK_PROGRESS,
+    PDKPASS_PAGE_NETWORK_CONFIRM,
 } pdkpass_page_t;
 
 typedef enum {
@@ -27,6 +30,7 @@ typedef struct {
     pdkpass_session_kind_t selected_session;
     size_t home_race;
     bool season_complete;
+    unsigned network_selection;
 } pdkpass_state_t;
 
 void pdkpass_state_init(pdkpass_state_t *state);

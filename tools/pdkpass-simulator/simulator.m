@@ -490,10 +490,19 @@ static void simulator_set_network(pdkpass_network_state_t state)
         .time_valid = state == PDKPASS_NETWORK_ONLINE ||
                       state == PDKPASS_NETWORK_OFFLINE,
         .setup_ssid = "PDKPASS-SETUP",
-        .setup_password = "PITLANE26",
+        .setup_password = "K7M9P2X4",
+        .hotspot_active = state == PDKPASS_NETWORK_SETUP,
+        .setup_seconds_left = 180,
     };
     pdkpass_ui_network_update(&update);
     simulator_refresh();
+}
+
+// UI preview only: radio/timers are exercised by firmware service tests.
+void pdkpass_network_request(pdkpass_network_command_t command)
+{
+    simulator_set_network(command == PDKPASS_NETWORK_OPEN_SETUP ? PDKPASS_NETWORK_SETUP :
+        command == PDKPASS_NETWORK_RETRY ? PDKPASS_NETWORK_CONNECTING : PDKPASS_NETWORK_OFFLINE);
 }
 
 static void simulator_send_button(bsp_btn_t button, bsp_btn_ev_t event)
@@ -722,7 +731,7 @@ static void simulator_initialize(void)
 
 static void print_usage(const char *program)
 {
-    printf("Usage: %s [--race 1-23] [--sync-results] "
+    printf("Usage: %s [--race 1-23] [--sync-results] [--network-view menu|retry|setup|confirm] "
            "[--battery -1..100] [--screenshot FILE.png]\n", program);
     printf("\nKeyboard: Up/Down browse, Return/Space select, hold Return or Esc back,\n");
     printf("          1-5 network states, S or Command-S screenshot.\n");
@@ -732,8 +741,15 @@ int main(int argc, const char *argv[])
 {
     @autoreleasepool {
         NSString *screenshotPath = nil;
+        const char *networkView = NULL;
         BOOL syncResults = NO;
         for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--network-view") == 0 && i + 1 < argc) {
+                networkView = argv[++i];
+                if (strcmp(networkView, "menu") && strcmp(networkView, "retry") &&
+                    strcmp(networkView, "setup") && strcmp(networkView, "confirm")) return 2;
+                continue;
+            }
             if (strcmp(argv[i], "--battery") == 0 && i + 1 < argc) {
                 char *end;
                 long value = strtol(argv[++i], &end, 10);
@@ -772,6 +788,16 @@ int main(int argc, const char *argv[])
 
         if (screenshotPath || syncResults) {
             simulator_initialize();
+            if (networkView) {
+                simulator_set_network(strcmp(networkView, "confirm") == 0
+                    ? PDKPASS_NETWORK_ONLINE : PDKPASS_NETWORK_OFFLINE);
+                simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
+                if (strcmp(networkView, "menu") != 0) {
+                    if (strcmp(networkView, "retry") != 0)
+                        simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+                    simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+                }
+            }
             if (syncResults) {
                 pdkpass_results_request_race(s_home_race_index);
                 NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:120.0];

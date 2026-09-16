@@ -68,6 +68,9 @@ cmake --build build/pdkpass-simulator -j
 
 如需不打开窗口直接渲染并做冒烟测试：
 
+加入 `--network-view menu|retry|setup|confirm` 可截取实际网络界面。无线操作为
+模拟行为，扫描与超时关闭仍需真机验证；配网截图使用示例凭据，不含设备密码。
+
 ```bash
 ./build/pdkpass-simulator/pdkpass-simulator \
   --race 13 --screenshot /tmp/pdkpass-simulator.png

@@ -26,7 +26,6 @@
 #define NETWORK_TASK_STACK 4096
 #define NETWORK_TASK_PRIORITY 4
 #define SAVED_CONNECT_TIMEOUT_US 15000000LL
-#define SAVED_RETRY_INTERVAL_US 60000000LL
 #define FORM_BODY_LIMIT 320
 #define VALID_TIME_MIN 1767225600LL
 #define VALID_TIME_MAX 4102444800LL
@@ -36,6 +35,17 @@
 #define EVENT_DISCONNECTED BIT1
 #define EVENT_CANDIDATE BIT2
 #define EVENT_TIME_SYNCED BIT3
+#define EVENT_STOPPED BIT4
+#define EVENT_ASSOCIATED BIT5
+#define EVENT_AUTH_ERROR BIT6
+#define EVENT_AP_MISSING BIT7
+#define EVENT_SECURITY_ERROR BIT8
+#define EVENT_RETRY BIT9
+#define EVENT_SETUP BIT10
+#define EVENT_CANCEL BIT11
+#define EVENT_CLIENT BIT12
+#define STATION_EVENTS (EVENT_CONNECTED | EVENT_DISCONNECTED | EVENT_ASSOCIATED | \
+                        EVENT_AUTH_ERROR | EVENT_AP_MISSING | EVENT_SECURITY_ERROR)
 
 static const char *TAG = "pdkpass_net";
 static const char *NVS_NAMESPACE = "pdkpass_net";
@@ -65,7 +75,6 @@ static char s_working_password[65];
 static pdkpass_wifi_profiles_t s_profiles = {.version = 1};
 static unsigned s_saved_attempt;
 static int64_t s_saved_deadline;
-static int64_t s_saved_retry_at;
 static char s_candidate_ssid[33];
 static char s_candidate_password[65];
 static char s_setup_ssid[33];
@@ -77,6 +86,15 @@ static bool s_sntp_started;
 static bool s_candidate_busy; // protected by s_candidate_lock, includes queued attempts
 static bool s_time_synced_boot;
 static bool s_has_ip;
+// Worker-owned: true from a successful connect call until disconnect/stop.
+static bool s_station_active;
+static bool s_associated;
+static bool s_radio_started;
+static bool s_visible[PDKPASS_WIFI_PROFILE_LIMIT];
+static int64_t s_setup_started;
+static int64_t s_setup_idle_since;
+static pdkpass_network_state_t s_published_state = PDKPASS_NETWORK_STARTING;
+static const char *s_setup_error = "";
 static int64_t s_candidate_deadline;
 static int64_t s_sync_deadline;
 static char s_attempt_ssid[33];
@@ -100,14 +118,28 @@ static bool current_time_valid(void)
     return now >= VALID_TIME_MIN && now <= VALID_TIME_MAX;
 }
 
+static int64_t setup_deadline(void)
+{
+    int64_t deadline = s_setup_started + 600000000LL;
+    if (s_setup_idle_since >= 0 && !s_testing_candidate &&
+        s_setup_idle_since + 180000000LL < deadline)
+        deadline = s_setup_idle_since + 180000000LL;
+    return deadline;
+}
+
 static void publish_state(pdkpass_network_state_t state)
 {
+    s_published_state = state;
     if (!s_callback) return;
+    int64_t remaining = s_in_setup ? setup_deadline() - esp_timer_get_time() : 0;
     pdkpass_network_update_t update = {
         .state = state,
         .time_valid = current_time_valid(),
         .setup_ssid = s_in_setup ? s_setup_ssid : "",
         .setup_password = s_in_setup ? s_setup_password : "",
+        .setup_error = s_setup_error,
+        .hotspot_active = s_in_setup,
+        .setup_seconds_left = remaining > 0 ? (unsigned)((remaining + 999999) / 1000000) : 0,
     };
     s_callback(&update);
 }
@@ -184,9 +216,30 @@ static void save_current_time(void)
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
-    (void)data;
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        xEventGroupSetBits(s_events, EVENT_DISCONNECTED);
+        EventBits_t bits = EVENT_DISCONNECTED;
+        const wifi_event_sta_disconnected_t *event = data;
+        if (event) {
+            ESP_LOGW(TAG, "Station disconnected: reason=%u", event->reason);
+            switch (event->reason) {
+            case WIFI_REASON_AUTH_FAIL:
+            case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+            case WIFI_REASON_HANDSHAKE_TIMEOUT: bits |= EVENT_AUTH_ERROR; break;
+            case WIFI_REASON_NO_AP_FOUND:
+            case WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD: bits |= EVENT_AP_MISSING; break;
+            case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+            case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD: bits |= EVENT_SECURITY_ERROR; break;
+            default: break;
+            }
+        }
+        xEventGroupSetBits(s_events, bits);
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_STOP) {
+        xEventGroupSetBits(s_events, EVENT_STOPPED);
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
+        xEventGroupSetBits(s_events, EVENT_ASSOCIATED);
+    } else if (base == WIFI_EVENT &&
+               (id == WIFI_EVENT_AP_STACONNECTED || id == WIFI_EVENT_AP_STADISCONNECTED)) {
+        xEventGroupSetBits(s_events, EVENT_CLIENT);
     }
 }
 
@@ -327,27 +380,38 @@ static esp_err_t configure_station(const char *ssid, const char *password)
     return esp_wifi_set_config(WIFI_IF_STA, &config);
 }
 
-static esp_err_t start_setup(void)
+static void generate_setup_password(void)
 {
-    s_saved_deadline = 0;
-    s_saved_retry_at = esp_timer_get_time() + SAVED_RETRY_INTERVAL_US;
-    if (s_in_setup) {
-        publish_state(PDKPASS_NETWORK_SETUP);
-        return ESP_OK;
-    }
-    uint8_t mac[6];
-    esp_err_t err = esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
-    if (err != ESP_OK) return err;
-    snprintf(s_setup_ssid, sizeof(s_setup_ssid), "PDKPASS-%02X%02X",
-             mac[4], mac[5]);
-    // Wi-Fi is running here, so the hardware RNG has an active entropy source.
-    uint8_t random_bytes[12];
+    // Called with Wi-Fi running so the RNG has an active entropy source.
+    uint8_t random_bytes[8];
     esp_fill_random(random_bytes, sizeof(random_bytes));
     static const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     for (size_t i = 0; i < sizeof(random_bytes); i++) {
         s_setup_password[i] = alphabet[random_bytes[i] & 31U];
     }
     s_setup_password[sizeof(random_bytes)] = '\0';
+}
+
+static esp_err_t start_setup(void)
+{
+    s_saved_deadline = 0;
+    if (s_in_setup) {
+        publish_state(PDKPASS_NETWORK_SETUP);
+        return ESP_OK;
+    }
+    // Bring up STA only first: enable RNG entropy without exposing an old AP.
+    if (!s_radio_started) {
+        esp_err_t start_err = esp_wifi_set_mode(WIFI_MODE_STA);
+        if (start_err == ESP_OK) start_err = esp_wifi_start();
+        if (start_err != ESP_OK) return start_err;
+        s_radio_started = true;
+    }
+    uint8_t mac[6];
+    esp_err_t err = esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
+    if (err != ESP_OK) return err;
+    snprintf(s_setup_ssid, sizeof(s_setup_ssid), "PDKPASS-%02X%02X",
+             mac[4], mac[5]);
+    generate_setup_password();
 
     wifi_config_t config = { 0 };
     memcpy(config.ap.ssid, s_setup_ssid, strlen(s_setup_ssid));
@@ -359,9 +423,15 @@ static esp_err_t start_setup(void)
 
     err = esp_wifi_set_mode(WIFI_MODE_APSTA);
     if (err == ESP_OK) err = esp_wifi_set_config(WIFI_IF_AP, &config);
+    if (err == ESP_OK && !s_radio_started) {
+        err = esp_wifi_start();
+        s_radio_started = err == ESP_OK;
+    }
     if (err == ESP_OK) err = start_http_server();
     if (err != ESP_OK) return err;
     s_in_setup = true;
+    s_setup_started = esp_timer_get_time();
+    s_setup_idle_since = s_setup_started;
     s_testing_candidate = false;
     ESP_LOGI(TAG, "Wi-Fi setup ready; heap=%lu largest=%lu",
              (unsigned long)esp_get_free_heap_size(),
@@ -372,21 +442,34 @@ static esp_err_t start_setup(void)
 
 static esp_err_t disconnect_station(void)
 {
-    esp_err_t err = esp_wifi_disconnect();
-    if (err == ESP_OK) {
-        EventBits_t stopped = xEventGroupWaitBits(s_events, EVENT_DISCONNECTED,
-                                                 pdTRUE, pdFALSE, pdMS_TO_TICKS(3000));
-        if (!(stopped & EVENT_DISCONNECTED)) return ESP_ERR_TIMEOUT;
-    } else if (err != ESP_ERR_WIFI_NOT_CONNECT) return err;
+    // An idle station has no disconnect event to wait for. When cancelling an
+    // active scan/association/link, STA_STOP is the event-loop barrier: all old
+    // connection events have drained before the next attempt starts. AP config
+    // and the HTTP server are retained; phones may need to rejoin the setup AP.
+    if (s_station_active) {
+        xEventGroupClearBits(s_events, EVENT_STOPPED);
+        esp_err_t err = esp_wifi_stop();
+        if (err != ESP_OK) return err;
+        EventBits_t stopped = xEventGroupWaitBits(s_events, EVENT_STOPPED,
+            pdTRUE, pdFALSE, pdMS_TO_TICKS(3000));
+        if (!(stopped & EVENT_STOPPED)) return ESP_ERR_TIMEOUT;
+        xEventGroupClearBits(s_events, STATION_EVENTS);
+        err = esp_wifi_start();
+        if (err != ESP_OK) return err;
+    }
+    s_station_active = false;
+    s_associated = false;
     s_has_ip = false;
-    xEventGroupClearBits(s_events, EVENT_CONNECTED | EVENT_DISCONNECTED);
+    s_sync_deadline = 0;
+    xEventGroupClearBits(s_events, STATION_EVENTS);
     return ESP_OK;
 }
 
 static esp_err_t test_candidate(void)
 {
+    s_setup_error = "";
+    publish_state(PDKPASS_NETWORK_CONNECTING);
     s_saved_deadline = 0;
-    s_saved_retry_at = esp_timer_get_time() + SAVED_RETRY_INTERVAL_US;
     xSemaphoreTake(s_candidate_lock, portMAX_DELAY);
     memcpy(s_attempt_ssid, s_candidate_ssid, sizeof(s_attempt_ssid));
     memcpy(s_attempt_password, s_candidate_password, sizeof(s_attempt_password));
@@ -402,6 +485,7 @@ static esp_err_t test_candidate(void)
         s_candidate_deadline = esp_timer_get_time() + 30000000LL;
         publish_state(PDKPASS_NETWORK_CONNECTING);
         err = esp_wifi_connect();
+        s_station_active = err == ESP_OK;
     }
     return err;
 }
@@ -432,21 +516,115 @@ static esp_err_t accept_candidate(void)
     return esp_wifi_set_mode(WIFI_MODE_STA);
 }
 
+static esp_err_t go_offline(void)
+{
+    if (s_radio_started) {
+        xEventGroupClearBits(s_events, EVENT_STOPPED);
+        esp_err_t err = esp_wifi_stop();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Radio stop failed: %s", esp_err_to_name(err));
+            return err;
+        }
+        xEventGroupWaitBits(s_events, EVENT_STOPPED, pdTRUE, pdFALSE, pdMS_TO_TICKS(3000));
+        s_radio_started = false;
+    }
+    // Cut radio power before waiting for any outstanding HTTP handler to exit.
+    stop_http_server();
+    s_in_setup = false;
+    s_station_active = false;
+    s_associated = false;
+    s_has_ip = false;
+    s_saved_deadline = 0;
+    s_sync_deadline = 0;
+    finish_candidate();
+    xEventGroupClearBits(s_events, STATION_EVENTS | EVENT_CANDIDATE | EVENT_CLIENT);
+    publish_state(PDKPASS_NETWORK_OFFLINE);
+    return ESP_OK;
+}
+
 // Start one bounded saved-network attempt. Run only from the worker, after
 // draining the previous station. Setup stays available during background retry.
 static esp_err_t connect_saved(void)
 {
     size_t index = pdkpass_wifi_profile_for_attempt(s_profiles.count, s_saved_attempt);
-    if (index >= s_profiles.count) return start_setup();
+    while (index < s_profiles.count && !s_visible[index]) {
+        s_saved_attempt = (unsigned)(index + 1U) * 2U;
+        index = pdkpass_wifi_profile_for_attempt(s_profiles.count, s_saved_attempt);
+    }
+    if (index >= s_profiles.count) {
+        s_setup_error = "NO AVAILABLE NETWORK";
+        return go_offline();
+    }
     memcpy(s_working_ssid, s_profiles.entries[index].ssid, sizeof(s_working_ssid));
     memcpy(s_working_password, s_profiles.entries[index].password, sizeof(s_working_password));
     esp_err_t err = configure_station(s_working_ssid, s_working_password);
     s_saved_deadline = esp_timer_get_time() + SAVED_CONNECT_TIMEOUT_US;
     if (!s_in_setup) publish_state(PDKPASS_NETWORK_CONNECTING);
     if (err == ESP_OK) err = esp_wifi_connect();
+    s_station_active = err == ESP_OK;
     // Immediate driver errors use the same bounded fallback path.
     if (err != ESP_OK) s_saved_deadline = esp_timer_get_time();
     return ESP_OK;
+}
+
+static esp_err_t scan_saved(void)
+{
+    if (!s_profiles.count) {
+        s_setup_error = "NO SAVED NETWORKS";
+        return go_offline();
+    }
+    s_setup_error = "";
+    publish_state(PDKPASS_NETWORK_CONNECTING);
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err == ESP_OK && !s_radio_started) {
+        err = esp_wifi_start();
+        s_radio_started = err == ESP_OK;
+    }
+    memset(s_visible, 0, sizeof(s_visible));
+    // Bounded single scan on the worker, never the UI/button task. Consume
+    // records individually instead of allocating an array of nearby APs.
+    wifi_scan_config_t config = {.show_hidden = true};
+    config.scan_time.active.min = 30;
+    config.scan_time.active.max = 120;
+    if (err == ESP_OK) err = esp_wifi_scan_start(&config, true);
+    uint16_t count = 0;
+    if (err == ESP_OK) err = esp_wifi_scan_get_ap_num(&count);
+    for (uint16_t i = 0; err == ESP_OK && i < count; i++) {
+        wifi_ap_record_t ap;
+        err = esp_wifi_scan_get_ap_record(&ap);
+        if (err != ESP_OK) break;
+        for (size_t j = 0; j < s_profiles.count; j++) {
+            if (strncmp((const char *)ap.ssid, s_profiles.entries[j].ssid, 32) == 0)
+                s_visible[j] = true;
+        }
+    }
+    esp_wifi_clear_ap_list();
+    if (err != ESP_OK) {
+        s_setup_error = "SCAN FAILED / RETRY";
+        go_offline();
+        return err;
+    }
+    // A cancel/setup request received while scanning takes precedence.
+    if (xEventGroupGetBits(s_events) & (EVENT_CANCEL | EVENT_SETUP)) return ESP_OK;
+    s_saved_attempt = 0;
+    return connect_saved();
+}
+
+static esp_err_t configure_setup_address(void)
+{
+    // Configure before Wi-Fi starts. Restarting DHCP on a down interface arms
+    // it for AP_START, using the new subnet for phone leases as well.
+    esp_netif_ip_info_t info = {0};
+    esp_err_t err = esp_netif_str_to_ip4(PDKPASS_SETUP_IP, &info.ip);
+    if (err != ESP_OK) return err;
+    info.gw = info.ip;
+    err = esp_netif_str_to_ip4("255.255.255.0", &info.netmask);
+    if (err != ESP_OK) return err;
+    err = esp_netif_dhcps_stop(s_ap_netif);
+    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) return err;
+    err = esp_netif_set_ip_info(s_ap_netif, &info);
+    if (err != ESP_OK) return err;
+    return esp_netif_dhcps_start(s_ap_netif);
 }
 
 static esp_err_t prepare_network(void)
@@ -468,6 +646,8 @@ static esp_err_t prepare_network(void)
     s_sta_netif = esp_netif_create_default_wifi_sta();
     s_ap_netif = esp_netif_create_default_wifi_ap();
     if (!s_sta_netif || !s_ap_netif) return ESP_ERR_NO_MEM;
+    err = configure_setup_address();
+    if (err != ESP_OK) return err;
 
     wifi_init_config_t wifi_init = WIFI_INIT_CONFIG_DEFAULT();
     err = esp_wifi_init(&wifi_init);
@@ -483,20 +663,9 @@ static esp_err_t prepare_network(void)
     if (err != ESP_OK) return err;
 
     s_have_working_credentials = load_credentials();
-    err = esp_wifi_set_mode(s_have_working_credentials ? WIFI_MODE_STA
-                                                        : WIFI_MODE_APSTA);
-    if (err != ESP_OK) return err;
-    if (s_have_working_credentials) {
-        err = configure_station(s_working_ssid, s_working_password);
-        if (err != ESP_OK) return err;
-    }
-    err = esp_wifi_start();
-    if (err != ESP_OK) return err;
-
-    if (s_have_working_credentials) {
-        return connect_saved();
-    }
-    return start_setup();
+    // No saved profiles means no scan, radio or hotspot on first boot.
+    scan_saved();
+    return ESP_OK;
 }
 
 // Sleep until the next active deadline; Wi-Fi, form and SNTP events wake us
@@ -507,8 +676,8 @@ static TickType_t network_wait_ticks(int64_t now_us)
         s_saved_deadline,
         s_testing_candidate ? s_candidate_deadline : 0,
         s_has_ip ? s_sync_deadline : 0,
-        s_in_setup && !s_testing_candidate && !s_saved_deadline && s_profiles.count
-            ? s_saved_retry_at : 0,
+        s_in_setup ? now_us + 1000000LL : 0,
+        s_in_setup ? setup_deadline() : 0,
     };
     int64_t next = 0;
     for (size_t i = 0; i < sizeof(deadlines) / sizeof(deadlines[0]); ++i) {
@@ -534,32 +703,75 @@ static void network_task(void *arg)
 
     for (;;) {
         EventBits_t bits = xEventGroupWaitBits(
-            s_events, EVENT_CONNECTED | EVENT_DISCONNECTED | EVENT_CANDIDATE |
-                          EVENT_TIME_SYNCED,
+            s_events, STATION_EVENTS | EVENT_CANDIDATE |
+                          EVENT_TIME_SYNCED | EVENT_RETRY | EVENT_SETUP | EVENT_CANCEL | EVENT_CLIENT,
             pdTRUE, pdFALSE, network_wait_ticks(esp_timer_get_time()));
 
-        if (bits & EVENT_CANDIDATE) {
+        if (bits & EVENT_CANCEL) {
+            if (s_in_setup || !s_has_ip) go_offline();
+            continue;
+        }
+        if (bits & EVENT_SETUP) {
+            if (!s_in_setup) {
+                go_offline();
+                s_setup_error = "";
+                if (start_setup() != ESP_OK) {
+                    s_setup_error = "START FAILED / RETRY";
+                    go_offline();
+                }
+            }
+            continue;
+        }
+        if (bits & EVENT_RETRY) {
+            if (!s_has_ip && !s_in_setup && !s_saved_deadline) scan_saved();
+            else publish_state(s_published_state);
+            continue;
+        }
+        if (s_in_setup) {
+            wifi_sta_list_t clients;
+            if (esp_wifi_ap_get_sta_list(&clients) == ESP_OK) {
+                if (clients.num) s_setup_idle_since = -1;
+                else if (s_setup_idle_since < 0) s_setup_idle_since = esp_timer_get_time();
+            }
+            if (esp_timer_get_time() >= setup_deadline()) {
+                s_setup_error = "SETUP EXPIRED";
+                go_offline();
+                continue;
+            }
+            publish_state(s_published_state);
+        }
+        if ((bits & EVENT_CANDIDATE) && s_in_setup) {
             err = test_candidate();
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "Candidate start failed: %s", esp_err_to_name(err));
+                s_setup_error = "START FAILED / RETRY";
                 finish_candidate();
                 publish_state(PDKPASS_NETWORK_SETUP);
             }
             // These bits were sampled before the new attempt was started.
-            bits &= ~(EVENT_CONNECTED | EVENT_DISCONNECTED);
+            bits &= ~STATION_EVENTS;
         }
+        if (bits & EVENT_ASSOCIATED) s_associated = true;
         if (bits & EVENT_DISCONNECTED) {
+            s_station_active = false;
+            s_associated = false;
             s_has_ip = false;
             s_sync_deadline = 0;
             if (s_testing_candidate) {
+                s_setup_error = bits & EVENT_AUTH_ERROR ? "AUTH FAILED / RETRY" :
+                    bits & EVENT_AP_MISSING ? "WIFI NOT FOUND" :
+                    bits & EVENT_SECURITY_ERROR ? "WIFI SECURITY ERROR" : "CONNECTION FAILED";
                 finish_candidate();
                 publish_state(PDKPASS_NETWORK_SETUP);
             } else if (s_have_working_credentials && (!s_in_setup || s_saved_deadline)) {
                 // A dropped working link restarts at the most recent network;
                 // a failed connection advances through the bounded attempt list.
-                if (s_saved_deadline) ++s_saved_attempt;
-                else s_saved_attempt = 0;
-                err = connect_saved();
+                if (s_saved_deadline) {
+                    ++s_saved_attempt;
+                    err = connect_saved();
+                } else {
+                    err = scan_saved();
+                }
                 if (err != ESP_OK) publish_state(PDKPASS_NETWORK_OFFLINE);
             }
             bits &= ~EVENT_CONNECTED;
@@ -576,6 +788,7 @@ static void network_task(void *arg)
                 err = accept_candidate();
                 if (err != ESP_OK) {
                     ESP_LOGE(TAG, "Credentials not saved: %s", esp_err_to_name(err));
+                    s_setup_error = "SAVE FAILED / RETRY";
                     disconnect_station();
                     finish_candidate();
                     s_has_ip = false;
@@ -609,22 +822,12 @@ static void network_task(void *arg)
                 err = connect_saved();
             } else {
                 s_saved_deadline = 0;
-                err = start_setup();
+                err = go_offline();
             }
             if (err != ESP_OK) publish_state(PDKPASS_NETWORK_OFFLINE);
         }
-        // Retry saved networks after a minute without an active phone. Keep
-        // the AP/password stable and let a submitted form preempt this cycle.
-        if (s_in_setup && !s_testing_candidate && !s_saved_deadline &&
-            s_profiles.count && now_us >= s_saved_retry_at) {
-            wifi_sta_list_t clients;
-            s_saved_retry_at = now_us + SAVED_RETRY_INTERVAL_US;
-            if (esp_wifi_ap_get_sta_list(&clients) == ESP_OK && clients.num == 0) {
-                s_saved_attempt = 0;
-                connect_saved();
-            }
-        }
         if (s_testing_candidate && now_us >= s_candidate_deadline) {
+            s_setup_error = s_associated ? "IP ADDRESS TIMEOUT" : "CONNECTION TIMEOUT";
             disconnect_station();
             finish_candidate();
             s_has_ip = false;
@@ -651,4 +854,12 @@ esp_err_t pdkpass_network_start(pdkpass_network_callback_t callback)
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
+}
+
+void pdkpass_network_request(pdkpass_network_command_t command)
+{
+    if (!s_events) return;
+    EventBits_t bits = command == PDKPASS_NETWORK_CANCEL ? EVENT_CANCEL :
+        command == PDKPASS_NETWORK_OPEN_SETUP ? EVENT_SETUP : EVENT_RETRY;
+    xEventGroupSetBits(s_events, bits);
 }
