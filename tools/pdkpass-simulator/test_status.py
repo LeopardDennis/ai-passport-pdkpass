@@ -25,8 +25,9 @@ class StatusPixels(unittest.TestCase):
 
     def test_gray_area_center(self):
         image = self.frames[88]
-        gray = image.getpixel((170, 63))
-        rows = [y for y in range(52, 79) if image.getpixel((170, y)) == gray]
+        # The larger status text now reaches x=170; sample the clear gap.
+        gray = image.getpixel((192, 63))
+        rows = [y for y in range(52, 79) if image.getpixel((192, y)) == gray]
         self.assertEqual((min(rows), max(rows)), (55, 71))
         for name, left, right in (("network", 38, 84), ("date", 110, 149),
                                   ("battery", 198, 225)):

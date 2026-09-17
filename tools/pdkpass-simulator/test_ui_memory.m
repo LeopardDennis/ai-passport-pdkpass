@@ -4,9 +4,31 @@
 #undef main
 #include <assert.h>
 
+static void check_body_text(lv_obj_t *obj)
+{
+    if (lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN)) return;
+    if (lv_obj_check_type(obj, &lv_label_class)) {
+        const lv_font_t *font = lv_obj_get_style_text_font(obj, 0);
+        if (font->line_height == 14) {
+            lv_point_t size;
+            lv_text_get_size(&size, lv_label_get_text(obj), font, 0, 0,
+                             LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+            if (size.x > lv_obj_get_content_width(obj)) {
+                fprintf(stderr, "Clipped body text: %s (%ld > %ld)\n",
+                        lv_label_get_text(obj), (long)size.x,
+                        (long)lv_obj_get_content_width(obj));
+                abort();
+            }
+        }
+    }
+    for (uint32_t i = 0; i < lv_obj_get_child_count(obj); i++)
+        check_body_text(lv_obj_get_child(obj, i));
+}
+
 static void check_memory(void)
 {
     simulator_refresh();
+    check_body_text(lv_screen_active());
     lv_mem_monitor_t memory;
     lv_mem_monitor(&memory);
     assert(lv_mem_test() == LV_RESULT_OK);

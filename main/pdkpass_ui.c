@@ -3,6 +3,7 @@
 #include "bsp_battery.h"
 #include "bsp_display.h"
 #include "pdkpass_data.h"
+#include "pdkpass_font.h"
 #include "pdkpass_model.h"
 #include "pdkpass_results.h"
 #include "pdkpass_schedule.h"
@@ -33,7 +34,7 @@
 #define INNER_W 210
 #define INNER_H 177
 #define CALENDAR_ROWS 5
-#define STANDINGS_ROWS 6
+#define STANDINGS_ROWS 5
 #define IDLE_DIM_SECONDS 30
 #define IDLE_OFF_SECONDS 90
 #define CLOCK_FALLBACK_PERIOD_MS 86400000U
@@ -101,6 +102,10 @@ static lv_obj_t *make_card(lv_obj_t *parent, int x, int y, int w, int h,
 static lv_obj_t *make_label(lv_obj_t *parent, const char *text, int x, int y,
                             int width, const lv_font_t *font, uint32_t color)
 {
+    if (font == &lv_font_unscii_8) {
+        font = &pdkpass_body_font;
+        y -= 2;
+    }
     lv_obj_t *label = lv_label_create(parent);
     lv_label_set_text(label, text);
     lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
@@ -115,7 +120,7 @@ static lv_obj_t *make_center_label(lv_obj_t *parent, const char *text,
                                    int x, int y, int width,
                                    const lv_font_t *font, uint32_t color)
 {
-    lv_obj_t *label = make_label(parent, text, x, y, width, font, color);
+    lv_obj_t *label = make_label(parent, text, x + 3, y, width - 6, font, color);
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
     return label;
 }
@@ -136,14 +141,19 @@ static lv_obj_t *make_zoom_label(lv_obj_t *parent, const char *text,
 static lv_obj_t *make_medium_label(lv_obj_t *parent, const char *text,
                                    int x, int y, int width, uint32_t color)
 {
-    const int scale = 352;
-    int logical_width = width * 256 / scale;
+    x += 3;
+    width -= 6;
+    lv_point_t size;
+    lv_text_get_size(&size, text, &pdkpass_body_font, 0, 0,
+                     LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    const int scale = size.x > 0 && size.x * 282 > width * 256
+                          ? width * 256 / size.x : 282;
+    int logical_width = width * 256 / scale + 6;
     lv_obj_t *label = make_center_label(parent, text,
         x + (width - logical_width) / 2, y + 8, logical_width,
         &lv_font_unscii_8, color);
     lv_obj_set_style_transform_pivot_x(label, logical_width / 2, 0);
-    lv_obj_set_style_transform_pivot_y(label, 4, 0);
-    lv_obj_set_style_transform_scale(label, scale, 0);
+    lv_obj_set_style_transform_scale_x(label, scale, 0);
     return label;
 }
 
@@ -335,7 +345,7 @@ static void render_wifi_setup(void)
              s_setup_seconds_left / 60U, s_setup_seconds_left % 60U);
     s_setup_countdown = make_center_label(s_content, remaining, 0, 161, INNER_W,
                       &lv_font_unscii_8, UI_RED);
-    set_hint("HOLD OK CLOSE HOTSPOT");
+    set_hint("HOLD OK: CLOSE WI-FI");
 }
 
 static void render_network_menu(void)
@@ -343,19 +353,19 @@ static void render_network_menu(void)
     set_title("NETWORK");
     set_status(s_network_state == PDKPASS_NETWORK_ONLINE ? "ONLINE" : "NETWORK OPTIONS", UI_SKY);
     content_reset(UI_SKY, UI_SKY_DARK);
-    make_center_label(s_content, "CONNECT ON YOUR TERMS", 0, 7, INNER_W,
+    make_center_label(s_content, "CHOOSE CONNECTION", 0, 8, INNER_W,
                       &lv_font_unscii_8, UI_PAPER);
     const char *titles[] = {"RETRY WI-FI", "WI-FI SETUP", "BACK"};
-    const char *subtitles[] = {"SAVED NETWORKS ONLY", "TEMPORARY HOTSPOT", "RETURN TO HOME"};
+    const char *subtitles[] = {"SAVED WI-FI ONLY", "TEMPORARY HOTSPOT", "RETURN TO HOME"};
     for (unsigned i = 0; i < 3U; i++) {
         bool selected = s_state.network_selection == i;
         uint32_t ink = selected ? UI_INK : UI_SKY_DARK;
-        lv_obj_t *card = make_card(s_content, 5, 26 + (int)i * 47, 200, 41,
+        lv_obj_t *card = make_card(s_content, 5, 26 + (int)i * 47, 200, 44,
                                    selected ? UI_YELLOW : UI_PAPER, 2);
         make_center_label(card, titles[i], 0, 4, 194, &lv_font_unscii_16, ink);
         make_center_label(card, subtitles[i], 0, 25, 194, &lv_font_unscii_8, ink);
     }
-    set_hint("UP/DOWN SEL OK  HOLD BACK");
+    set_hint("UP/DN OK  HOLD:BACK");
 }
 
 static void render_network_progress(void)
@@ -371,7 +381,7 @@ static void render_network_progress(void)
                       0, 76, INNER_W, &lv_font_unscii_8, UI_PAPER);
     make_center_label(s_content, "HOTSPOT IS OFF", 0, 120, INNER_W,
                       &lv_font_unscii_8, UI_YELLOW);
-    set_hint(busy ? "HOLD OK CANCEL" : "OK / HOLD BACK TO MENU");
+    set_hint(busy ? "HOLD OK CANCEL" : "OK / HOLD: MENU");
 }
 
 static void render_network_confirm(void)
@@ -383,7 +393,7 @@ static void render_network_confirm(void)
     make_center_label(s_content, "CURRENT CONNECTION", 0, 70, INNER_W, &lv_font_unscii_8, UI_INK);
     make_center_label(s_content, "MAY BE INTERRUPTED", 0, 89, INNER_W, &lv_font_unscii_8, UI_INK);
     make_center_label(s_content, "HOTSPOT: MAX 10 MIN", 0, 130, INNER_W, &lv_font_unscii_8, UI_RED);
-    set_hint("OK CONTINUE  HOLD CANCEL");
+    set_hint("OK:NEXT  HOLD:CANCEL");
 }
 
 static void render_season_complete(void)
@@ -400,9 +410,9 @@ static void render_season_complete(void)
                       &lv_font_unscii_16, 0xFFFFFF);
     lv_obj_t *offline = make_card(s_content, 8, 133, 194, 31,
                                   UI_PAPER, 3);
-    make_center_label(offline, "CALENDAR + POINTS SAVED", 0, 7, 188,
+    make_center_label(offline, "SEASON DATA SAVED", 0, 7, 188,
                       &lv_font_unscii_8, UI_INK);
-    set_hint("UP POINTS   DOWN CALENDAR");
+    set_hint("UP:POINTS DN:CALENDAR");
 }
 
 static const char *network_word(void)
@@ -479,7 +489,7 @@ static void render_home(void)
 
     char round[8];
     snprintf(round, sizeof(round), "R%u", race->round);
-    make_zoom_label(s_content, round, 0, 0, INNER_W, 0xFFFFFF);
+    make_zoom_label(s_content, round, 0, 3, INNER_W, 0xFFFFFF);
     make_fit_zoom_label(s_content, race->country, 0, 35, INNER_W, UI_PAPER);
     make_center_label(s_content, race->circuit, 0, 73, INNER_W,
                       &lv_font_unscii_16, 0xFFFFFF);
@@ -511,7 +521,7 @@ static void render_home(void)
     make_center_label(s_content, page, 0, 146, INNER_W,
                       &lv_font_unscii_16, UI_PAPER);
     make_progress(s_state.home_race, s_season.race_count);
-    set_hint("UP/DOWN BROWSE  OK DETAIL");
+    set_hint("UP/DN  OK:DETAIL");
 }
 
 static bool update_list_selection(int page, size_t start, size_t selected,
@@ -575,17 +585,22 @@ static void render_calendar(void)
         bool selected = index == s_state.selected_race;
         uint32_t bg = selected ? race->accent : UI_PAPER;
         uint32_t ink = selected ? contrast_color(bg) : UI_INK;
-        int y = 18 + (int)row * 29;
-        lv_obj_t *card = make_card(s_content, 1, y, 208, 26, bg, 2);
+        int y = 21 + (int)row * 28;
+        lv_obj_t *card = make_card(s_content, 1, y, 208, 25, bg, 2);
         s_list_rows[row] = card;
-        char round[6];
-        snprintf(round, sizeof(round), "%02u", race->round);
-        make_label(card, round, 5, 8, 20, &lv_font_unscii_8, ink);
-        make_label(card, race->country, 30, 8, 99,
-                   &lv_font_unscii_8, ink);
-        lv_obj_t *date = make_label(card, race->weekend, 131, 8, 71,
-                                    &lv_font_unscii_8, ink);
-        lv_obj_set_style_text_align(date, LV_TEXT_ALIGN_RIGHT, 0);
+        char line[64];
+        snprintf(line, sizeof(line), "%02u %s  %s", race->round,
+                 race->country, race->weekend);
+        lv_point_t size;
+        lv_text_get_size(&size, line, &pdkpass_body_font, 0, 0,
+                         LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        // Preserve the full weekend (including cross-month dates) on one
+        // line. Fit horizontally only; keep the enlarged glyph height.
+        int scale = size.x > 192 ? 192 * 256 / size.x : 256;
+        lv_obj_t *label = make_label(card, line, 6, 7, size.x,
+                                     &lv_font_unscii_8, ink);
+        lv_obj_set_style_transform_pivot_x(label, 0, 0);
+        lv_obj_set_style_transform_scale_x(label, scale, 0);
     }
     char page[20];
     snprintf(page, sizeof(page), "%u / %u",
@@ -595,7 +610,7 @@ static void render_calendar(void)
                       &lv_font_unscii_8, UI_PAPER);
     s_list_page = PDKPASS_PAGE_CALENDAR;
     s_list_start = start;
-    set_hint("UP/DOWN SEL  OK  HOLD HOME");
+    set_hint("UP/DN OK  HOLD:HOME");
 }
 
 static void render_standings(void)
@@ -615,7 +630,7 @@ static void render_standings(void)
 
     if (s_season.driver_count == 0U) {
         make_zoom_label(s_content, "POINTS", 0, 34, INNER_W, UI_YELLOW);
-        make_center_label(s_content, "UPDATES AFTER FIRST RACE", 0, 91,
+        make_center_label(s_content, "AFTER THE FIRST RACE", 0, 91,
                           INNER_W, &lv_font_unscii_8, UI_PAPER);
         set_hint("HOLD OK HOME");
         return;
@@ -628,8 +643,8 @@ static void render_standings(void)
         bool selected = index == s_state.selected_driver;
         uint32_t bg = selected ? driver->accent : UI_PAPER;
         uint32_t ink = selected ? contrast_color(bg) : UI_INK;
-        int y = 2 + (int)row * 28;
-        lv_obj_t *card = make_card(s_content, 1, y, 208, 25, bg, 2);
+        int y = 5 + (int)row * 30;
+        lv_obj_t *card = make_card(s_content, 1, y, 208, 28, bg, 2);
         s_list_rows[row] = card;
         char position[5];
         char points[8];
@@ -642,21 +657,20 @@ static void render_standings(void)
                      driver->points_tenths / 10U,
                      driver->points_tenths % 10U);
         }
-        make_label(card, position, 4, 8, 18, &lv_font_unscii_8, ink);
-        make_label(card, driver->code, 25, 8, 25, &lv_font_unscii_8, ink);
-        make_label(card, driver->name, 55, 8, 99,
+        make_label(card, position, 6, 8, 22, &lv_font_unscii_8, ink);
+        make_label(card, driver->name, 32, 8, 120,
                    &lv_font_unscii_8, ink);
-        lv_obj_t *score = make_label(card, points, 158, 8, 44,
+        lv_obj_t *score = make_label(card, points, 156, 8, 42,
                                      &lv_font_unscii_8, ink);
         lv_obj_set_style_text_align(score, LV_TEXT_ALIGN_RIGHT, 0);
     }
     const pdkpass_driver_t *selected =
         &s_season.drivers[s_state.selected_driver];
-    s_list_footer = make_center_label(s_content, selected->team, 0, 170, INNER_W,
+    s_list_footer = make_center_label(s_content, selected->team, 0, 165, INNER_W,
                       &lv_font_unscii_8, UI_PAPER);
     s_list_page = PDKPASS_PAGE_STANDINGS;
     s_list_start = start;
-    set_hint("UP/DOWN SCROLL  HOLD HOME");
+    set_hint("UP/DN  HOLD:HOME");
 }
 
 static size_t build_track_points(const char *circuit)
@@ -746,7 +760,7 @@ static void render_detail(void)
         make_center_label(row, line, 1, 4, 204,
                           &lv_font_unscii_8, UI_INK);
     }
-    set_hint("UP/DOWN RACE OK  HOLD BACK");
+    set_hint("UP/DN OK  HOLD:BACK");
 }
 
 static void render_results(void)
@@ -781,7 +795,7 @@ static void render_results(void)
         }
         make_medium_label(s_content, state, 0, 42, INNER_W, UI_YELLOW);
         make_medium_label(s_content, detail, 0, 95, INNER_W, UI_PAPER);
-        make_center_label(s_content, "RESULTS SYNC ABOUT +30 MIN", 0, 139,
+        make_center_label(s_content, "SYNC ABOUT +30 MIN", 0, 139,
                           INNER_W, &lv_font_unscii_8, UI_PAPER);
     } else {
         for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
@@ -793,15 +807,15 @@ static void render_results(void)
             char position[4];
             snprintf(position, sizeof(position), "P%u", driver->position);
             make_label(row, position, 7, 5, 32, &lv_font_unscii_16, ink);
-            make_label(row, driver->code, 47, 9, 29,
+            make_label(row, driver->code, 47, 9, 32,
                        &lv_font_unscii_8, ink);
             make_label(row, driver->name, 84, 5, 114,
-                       &lv_font_unscii_16, ink);
+                       &pdkpass_body_font, ink);
             make_label(row, driver->team, 45, 27, 153,
                        &lv_font_unscii_8, ink);
         }
     }
-    set_hint("UP/DOWN SESS  OK/HOLD BACK");
+    set_hint("UP/DN SESS  OK:BACK");
 }
 
 static void render(void)
@@ -954,11 +968,12 @@ void pdkpass_ui_enter(bool battery_available)
     s_screen = ui_pixel_screen_create(title);
     s_status = ui_pixel_ticket_create(s_screen, STATUS_X, STATUS_Y,
                                       STATUS_W, STATUS_H, UI_SKY, true);
-    s_network = make_center_label(s_status, "NET... | --.--", 5, 5, 154,
+    s_network = make_center_label(s_status, "NET... | --.--", 5, 5, 180,
                            &lv_font_unscii_8, UI_PAPER);
     // Center in the gray content area only; exclude border and drop shadow.
-    // UNSCII visible capitals and the battery share its pixel center (y=63).
-    lv_obj_align(s_network, LV_ALIGN_LEFT_MID, 5, 0);
+    // The enlarged font's visible capitals need a one-pixel baseline offset
+    // to share the battery's center (y=63), excluding the drop shadow.
+    lv_obj_align(s_network, LV_ALIGN_LEFT_MID, 5, 1);
     s_battery = make_block(s_status, 188, 5, 23, 11, UI_SKY);
     lv_obj_set_style_radius(s_battery, 3, 0);
     lv_obj_set_style_bg_opa(s_battery, LV_OPA_TRANSP, 0);

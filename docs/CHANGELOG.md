@@ -6,6 +6,11 @@
 
 ## Unreleased
 
+- Enlarge compact bitmap text by 25% in width and about 50% in height throughout
+  network setup, status, schedules and results. Show five single-line calendar
+  rows and five standings rows per page, with shorter hints and wider driver
+  names. Add inner text spacing; fit long calendar entries without wrapping.
+
 - Use a fresh eight-character WPA2 setup password with unambiguous uppercase
   letters and digits. Start the radio before drawing hardware random bytes.
 

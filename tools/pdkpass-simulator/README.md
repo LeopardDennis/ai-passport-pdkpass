@@ -74,6 +74,9 @@ Pillow) to check pixel centering, battery states and invalid preview arguments.
 
 For a headless render suitable for a smoke test:
 
+Use `--page home|calendar|standings|track|results` with `--screenshot` to render
+a specific production page. Network views and result syncing take precedence.
+
 Add `--network-view menu|retry|setup|confirm` to capture the production network
 screens. Radio operations are simulated; validate real scan/timeout behavior on
 hardware. Setup screenshots use example credentials, not device secrets.

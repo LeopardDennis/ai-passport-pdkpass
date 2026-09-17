@@ -731,7 +731,7 @@ static void simulator_initialize(void)
 
 static void print_usage(const char *program)
 {
-    printf("Usage: %s [--race 1-23] [--sync-results] [--network-view menu|retry|setup|confirm] "
+    printf("Usage: %s [--race 1-23] [--page home|calendar|standings|track|results] [--sync-results] [--network-view menu|retry|setup|confirm] "
            "[--battery -1..100] [--screenshot FILE.png]\n", program);
     printf("\nKeyboard: Up/Down browse, Return/Space select, hold Return or Esc back,\n");
     printf("          1-5 network states, S or Command-S screenshot.\n");
@@ -742,8 +742,16 @@ int main(int argc, const char *argv[])
     @autoreleasepool {
         NSString *screenshotPath = nil;
         const char *networkView = NULL;
+        const char *pageView = "home";
         BOOL syncResults = NO;
         for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--page") == 0 && i + 1 < argc) {
+                pageView = argv[++i];
+                if (strcmp(pageView, "home") && strcmp(pageView, "calendar") &&
+                    strcmp(pageView, "standings") && strcmp(pageView, "track") &&
+                    strcmp(pageView, "results")) return 2;
+                continue;
+            }
             if (strcmp(argv[i], "--network-view") == 0 && i + 1 < argc) {
                 networkView = argv[++i];
                 if (strcmp(networkView, "menu") && strcmp(networkView, "retry") &&
@@ -788,6 +796,17 @@ int main(int argc, const char *argv[])
 
         if (screenshotPath || syncResults) {
             simulator_initialize();
+            if (!networkView && !syncResults) {
+                if (strcmp(pageView, "calendar") == 0)
+                    simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+                else if (strcmp(pageView, "standings") == 0)
+                    simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK);
+                else if (strcmp(pageView, "track") == 0 || strcmp(pageView, "results") == 0) {
+                    simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+                    if (strcmp(pageView, "results") == 0)
+                        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+                }
+            }
             if (networkView) {
                 simulator_set_network(strcmp(networkView, "confirm") == 0
                     ? PDKPASS_NETWORK_ONLINE : PDKPASS_NETWORK_OFFLINE);
