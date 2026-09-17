@@ -729,11 +729,15 @@ esp_err_t pdkpass_results_start(pdkpass_results_callback_t callback)
 void pdkpass_results_set_online(bool online)
 {
     if (!s_lock || !s_events) return;
+    bool changed = false;
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        changed = s_online != online;
         s_online = online;
         xSemaphoreGive(s_lock);
     }
-    xEventGroupSetBits(s_events, EVENT_WAKE);
+    // Setup countdown/status publications repeat the same offline state. Waking
+    // results for each one feeds SYNC back to the network worker indefinitely.
+    if (changed) xEventGroupSetBits(s_events, EVENT_WAKE);
 }
 
 void pdkpass_results_season_changed(void)

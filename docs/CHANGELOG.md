@@ -6,6 +6,9 @@
 
 ## Unreleased
 
+- Stop repeated offline setup updates from waking results and feeding SYNC events
+  back into the network worker, which could starve idle time and trigger watchdogs.
+
 - Add display-aware 80–160 MHz power management and automatic light sleep,
   with lit-screen, network-setup and USB-console safeguards. Replace periodic
   LVGL ticks with monotonic time and suppress drawing while dark without

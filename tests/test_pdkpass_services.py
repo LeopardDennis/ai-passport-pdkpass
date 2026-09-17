@@ -66,6 +66,40 @@ bool pdkpass_season_race_get(size_t i, pdkpass_race_t *race) {
 '''
 
 class Services(unittest.TestCase):
+    def test_repeated_offline_status_does_not_requeue_sync(self):
+        source = (ROOT / 'main/pdkpass_results.c').read_text()
+        code = PRELUDE + r'''
+#define EVENT_WAKE 1
+static int s_events=1, wakes;
+static bool s_online;
+static void xEventGroupSetBits(int events,int bits) {
+ (void)events;assert(bits==EVENT_WAKE);wakes++;
+}
+'''
+        code += function(source, 'void pdkpass_results_set_online(')
+        code += r'''
+int main(void) {
+ s_lock=1;
+ // Initial setup and its countdown must leave the offline worker asleep.
+ for(int i=0;i<100;i++) pdkpass_results_set_online(false);
+ assert(wakes==0);
+ pdkpass_results_set_online(true);assert(wakes==1);
+ for(int i=0;i<100;i++) pdkpass_results_set_online(true);
+ assert(wakes==1);
+ pdkpass_results_set_online(false);assert(wakes==2);
+ // Model the feedback: offline work emits SYNC; the network publishes offline.
+ int handled=1;
+ while(handled<wakes && handled<10) {
+  handled++;
+  pdkpass_results_set_online(false);
+ }
+ assert(handled==2 && wakes==2);
+ pdkpass_results_set_online(true);assert(wakes==3);
+ puts("Offline setup feedback terminates; real transitions still wake: PASS");
+}
+'''
+        compile_run(code)
+
     def test_season_worker_preserves_deadline_across_radio_parking(self):
         source = (ROOT / 'main/pdkpass_season.c').read_text()
         code = PRELUDE + r'''
