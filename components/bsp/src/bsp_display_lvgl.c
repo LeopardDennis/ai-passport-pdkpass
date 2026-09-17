@@ -4,6 +4,7 @@
 #include "bsp_pins.h"
 #include "esp_lvgl_port.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 static const char *TAG = "bsp_lvgl";
 
@@ -16,7 +17,8 @@ lv_display_t *bsp_lvgl_init(void) {
         return NULL;
     }
 
-    const lvgl_port_cfg_t pc = ESP_LVGL_PORT_INIT_CONFIG();
+    lvgl_port_cfg_t pc = ESP_LVGL_PORT_INIT_CONFIG();
+    pc.task_max_sleep_ms = 60000;
     if (lvgl_port_init(&pc) != ESP_OK) {
         ESP_LOGE(TAG, "lvgl_port_init 失败");
         return NULL;
@@ -45,4 +47,49 @@ lv_display_t *bsp_lvgl_init(void) {
 }
 
 bool bsp_lvgl_lock(int timeout_ms) { return lvgl_port_lock(timeout_ms); }
-void bsp_lvgl_unlock(void)         { lvgl_port_unlock(); }
+void bsp_lvgl_unlock(void) {
+    lvgl_port_unlock();
+    lvgl_port_task_wake(LVGL_PORT_EVENT_USER, NULL);
+}
+
+static uint32_t s_tick_offset;
+static bool s_drawing = true;
+static bool s_draw_guard_added;
+static void drawing_guard(lv_event_t *event)
+{
+    if (!s_drawing) {
+        lv_display_t *display = lv_event_get_target(event);
+        lv_timer_pause(lv_display_get_refr_timer(display));
+    }
+}
+static uint32_t monotonic_tick(void) { return (uint32_t)(esp_timer_get_time() / 1000) + s_tick_offset; }
+
+esp_err_t bsp_lvgl_use_monotonic_clock(void)
+{
+    // The port creates its tick timer just after announcing initialization.
+    // Retry from the application worker if that race returns INVALID_STATE.
+    esp_err_t err = lvgl_port_stop();
+    if (err == ESP_OK) {
+        s_tick_offset = lv_tick_get() - (uint32_t)(esp_timer_get_time() / 1000);
+        lv_tick_set_cb(monotonic_tick);
+    }
+    lv_timer_enable(true);
+    return err;
+}
+
+void bsp_lvgl_set_drawing(bool enabled)
+{
+    if (!s_disp || s_drawing == enabled) return;
+    if (!s_draw_guard_added) {
+        lv_display_add_event_cb(s_disp, drawing_guard, LV_EVENT_REFR_REQUEST, NULL);
+        s_draw_guard_added = true;
+    }
+    s_drawing = enabled;
+    lv_display_enable_invalidation(s_disp, enabled);
+    lv_timer_t *refresh = lv_display_get_refr_timer(s_disp);
+    if (enabled) {
+        lv_obj_invalidate(lv_display_get_screen_active(s_disp));
+        lv_timer_resume(refresh);
+        lv_timer_ready(refresh);
+    } else lv_timer_pause(refresh);
+}

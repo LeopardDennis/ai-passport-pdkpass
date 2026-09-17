@@ -3,6 +3,8 @@
 #include "simulator.m"
 #undef main
 #include <assert.h>
+static unsigned dark_timer_fired;
+static void dark_timer(lv_timer_t *timer) { (void)timer; dark_timer_fired++; }
 
 static void check_body_text(lv_obj_t *obj)
 {
@@ -104,7 +106,20 @@ int main(void)
         }
         lv_tick_inc(90001);
         lv_timer_handler();
+        assert(!lv_display_is_invalidation_enabled(lv_display_get_default()));
+        assert(lv_timer_get_paused(lv_display_get_refr_timer(lv_display_get_default())));
+        // Background updates while dark must not restart display refreshing.
+        lv_timer_t *schedule_probe = lv_timer_create(dark_timer, 1000, NULL);
+        lv_timer_set_repeat_count(schedule_probe, 1);
+        pdkpass_ui_battery_update(19);
+        pdkpass_ui_season_update();
+        lv_tick_inc(60000);
+        lv_timer_handler();
+        assert(dark_timer_fired == 1);
+        assert(!lv_display_is_invalidation_enabled(lv_display_get_default()));
+        assert(lv_timer_get_paused(lv_display_get_refr_timer(lv_display_get_default())));
         simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+        assert(lv_display_is_invalidation_enabled(lv_display_get_default()));
         check_memory();
         lv_mem_monitor_t memory;
         lv_mem_monitor(&memory);

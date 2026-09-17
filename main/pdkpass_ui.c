@@ -4,6 +4,7 @@
 #include "bsp_display.h"
 #include "pdkpass_data.h"
 #include "pdkpass_font.h"
+#include "pdkpass_power.h"
 #include "pdkpass_model.h"
 #include "pdkpass_results.h"
 #include "pdkpass_schedule.h"
@@ -942,6 +943,8 @@ static void idle_tick(lv_timer_t *timer)
     uint32_t elapsed = lv_tick_get() - s_last_activity;
     if (elapsed >= IDLE_OFF_SECONDS * 1000U) {
         bsp_display_backlight(0);
+        bsp_lvgl_set_drawing(false);
+        pdkpass_power_display(false);
         s_idle_stage = 2;
         lv_timer_pause(timer);
     } else if (elapsed >= IDLE_DIM_SECONDS * 1000U) {
@@ -1070,6 +1073,8 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
 {
     bool was_off = s_idle_stage == 2;
     if (ev == BSP_BTN_CLICK || ev == BSP_BTN_LONG) {
+        pdkpass_power_display(true);
+        if (was_off) bsp_lvgl_set_drawing(true);
         s_last_activity = lv_tick_get();
         s_idle_stage = 0;
         lv_timer_set_period(s_idle_timer, IDLE_DIM_SECONDS * 1000U);

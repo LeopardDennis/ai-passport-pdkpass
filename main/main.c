@@ -9,6 +9,7 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "pdkpass_network.h"
+#include "pdkpass_power.h"
 #include "pdkpass_results.h"
 #include "pdkpass_screenshot.h"
 #include "pdkpass_season.h"
@@ -50,7 +51,12 @@ static void ui_worker(void *arg)
 {
     bool battery_available = (bool)(uintptr_t)arg;
     TickType_t next_battery = xTaskGetTickCount();
+    bool monotonic_ready = false;
     for (;;) {
+        if (!monotonic_ready && bsp_lvgl_lock(500)) {
+            monotonic_ready = bsp_lvgl_use_monotonic_clock() == ESP_OK;
+            bsp_lvgl_unlock();
+        }
         TickType_t now = xTaskGetTickCount();
         if ((int32_t)(now - next_battery) >= 0) {
             int soc = battery_available ? bsp_battery_soc() : -1;
@@ -81,6 +87,8 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 void app_main(void)
 {
     ESP_LOGI(TAG, "PDKPASS starting");
+    esp_err_t power_err = pdkpass_power_init();
+    if (power_err != ESP_OK) ESP_LOGW(TAG, "Power management unavailable: %s", esp_err_to_name(power_err));
 
     esp_err_t nvs_err = nvs_flash_init();
     if (nvs_err != ESP_OK) {

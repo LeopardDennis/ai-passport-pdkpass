@@ -98,6 +98,33 @@ its recorded race end, then the dashboard advances to the following round. The
 bundled offline fallback uses a four-hour window from the scheduled race start.
 After the final round it displays `SEASON COMPLETE`.
 
+## Power saving
+
+The display dims after 30 seconds and turns its backlight off after 90 seconds.
+While dark, drawing and display invalidation pause; the clock and Beijing race
+switch timers continue. The first key press wakes the display without navigating.
+ADC keys are still scanned every 20 ms, rather than relying on unverified GPIO
+wake thresholds. No deep sleep is used.
+
+The CPU stays at 160 MHz while the screen is lit, and may drop to 80 MHz and
+enter automatic light sleep while dark. Setup/connection work and an attached
+USB console prevent light sleep. The LVGL clock reads monotonic time instead of
+requiring a periodic 5 ms tick interrupt.
+
+After clock synchronization, Wi-Fi is checked for idleness every 30 seconds.
+When both data services have no work within the next minute and no HTTP
+transaction is active, the radio switches off. Their actual deadlines (daily
+updates, post-session results or retry backoff) trigger reconnection. Historical
+backfill and imminent work keep the link up to avoid repeated handshakes.
+`OFFLINE` after a successful update is therefore normal. Opening uncached race
+details/results can also wake an intentionally parked connection.
+
+Automatic wake is allowed only after this deliberate idle shutdown. Failed
+saved-network attempts, first-boot clock-sync timeout (60 seconds), or manual
+cancellation stay offline until manual retry/setup or reboot. Hotspot expiry
+rules remain unchanged. USB-connected measurements do not represent battery
+standby; actual current, ADC response and wake reliability require device tests.
+
 ## Session results
 
 When a session has ended, open its race details and press **OK** to browse FP1,

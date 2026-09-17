@@ -1,4 +1,6 @@
 #include "pdkpass_season.h"
+#include "pdkpass_sync_policy.h"
+#include "pdkpass_network.h"
 
 #include "cJSON.h"
 #include "pdkpass_http.h"
@@ -585,17 +587,22 @@ static void season_task(void *arg)
     TickType_t delay = portMAX_DELAY;
     for (;;) {
         xEventGroupWaitBits(s_events, EVENT_WAKE, pdTRUE, pdFALSE, delay);
+        uint32_t wait_ms = pdkpass_sync_wait_ms(PDKPASS_SYNC_SEASON);
         if (!network_ready()) {
-            delay = portMAX_DELAY;
+            if (!wait_ms) pdkpass_network_request(PDKPASS_NETWORK_SYNC);
+            delay = wait_ms ? pdMS_TO_TICKS(wait_ms) : portMAX_DELAY;
             continue;
         }
+        if (wait_ms) { delay = pdMS_TO_TICKS(wait_ms); continue; }
         int64_t now_utc = (int64_t)time(NULL);
         if (s_last_attempt_utc != 0 && now_utc >= s_last_attempt_utc &&
             now_utc - s_last_attempt_utc < SEASON_MIN_REPEAT_SECONDS) {
             delay = pdMS_TO_TICKS((uint32_t)(s_last_attempt_utc + SEASON_MIN_REPEAT_SECONDS - now_utc) * 1000U);
+            pdkpass_sync_plan(PDKPASS_SYNC_SEASON, delay * portTICK_PERIOD_MS);
             continue;
         }
         pdkpass_http_begin();
+        if (!network_ready()) { pdkpass_http_end(); delay = 1; continue; }
         now_utc = (int64_t)time(NULL);
         s_last_attempt_utc = now_utc;
         bool success = synchronize(now_utc);
@@ -609,6 +616,7 @@ static void season_task(void *arg)
         }
         int64_t seconds = deadline > finished ? deadline - finished : 1LL;
         delay = pdMS_TO_TICKS((uint32_t)seconds * 1000U);
+        pdkpass_sync_plan(PDKPASS_SYNC_SEASON, (uint32_t)seconds * 1000U);
     }
 }
 

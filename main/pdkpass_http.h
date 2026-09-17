@@ -9,6 +9,7 @@
 // Never acquire this lock from a UI or button callback.
 esp_err_t pdkpass_http_init(void);
 void pdkpass_http_begin(void);
+bool pdkpass_http_try_begin(void);
 void pdkpass_http_end(void);
 esp_err_t pdkpass_http_get(const char *url, size_t limit, char **json);
 typedef bool (*pdkpass_http_item_fn)(const cJSON *item, void *context);

@@ -4,12 +4,15 @@ idf_component_register(
          "ui_pixel_math.c"
          "pdkpass_data.c"
          "pdkpass_model.c"
+         "pdkpass_power.c"
          "pdkpass_network.c"
          "pdkpass_http.c"
          "pdkpass_json_stream.c"
          "pdkpass_results.c"
          "pdkpass_results_core.c"
          "pdkpass_schedule.c"
+         "pdkpass_sync.c"
+         "pdkpass_sync_policy.c"
          "pdkpass_screenshot.c"
          "pdkpass_season.c"
          "pdkpass_season_core.c"
@@ -21,5 +24,5 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES bsp esp_event esp_http_client esp_http_server esp_hw_support
              esp_netif esp_wifi esp_driver_usb_serial_jtag json lwip mbedtls
-             nvs_flash esp_timer
+             nvs_flash esp_timer esp_pm
 )

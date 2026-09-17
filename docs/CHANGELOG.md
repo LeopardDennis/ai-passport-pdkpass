@@ -6,6 +6,15 @@
 
 ## Unreleased
 
+- Add display-aware 80–160 MHz power management and automatic light sleep,
+  with lit-screen, network-setup and USB-console safeguards. Replace periodic
+  LVGL ticks with monotonic time and suppress drawing while dark without
+  stopping Beijing schedule timers. Keep ADC polling at 20 ms; no deep sleep.
+- Park idle Wi-Fi only after both services finish near-term work, serialized
+  against HTTP transactions. Reconnect at service deadlines or uncached-page
+  requests; failed/cancelled networking stays offline. Bound initial NTP to
+  60 seconds. Preserve manual setup and its three/ten-minute expiry limits.
+
 - Enlarge compact bitmap text by 25% in width and about 50% in height throughout
   network setup, status, schedules and results. Show five single-line calendar
   rows and five standings rows per page, with shorter hints and wider driver

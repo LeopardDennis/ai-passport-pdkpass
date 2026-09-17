@@ -66,6 +66,113 @@ bool pdkpass_season_race_get(size_t i, pdkpass_race_t *race) {
 '''
 
 class Services(unittest.TestCase):
+    def test_season_worker_preserves_deadline_across_radio_parking(self):
+        source = (ROOT / 'main/pdkpass_season.c').read_text()
+        code = PRELUDE + r'''
+#include <setjmp.h>
+#include "pdkpass_network.h"
+#include "pdkpass_sync_policy.h"
+#define portMAX_DELAY UINT32_MAX
+#define portTICK_PERIOD_MS 1
+#define pdFALSE 0
+#define EVENT_WAKE 1
+#define SEASON_MIN_REPEAT_SECONDS 600
+static int s_events, cursor, requests, transactions, synchronizations;
+static int64_t now_ms, s_last_attempt_utc;
+static bool online, disconnect_on_lock;
+static jmp_buf done;
+static pdkpass_sync_policy_t policy;
+static int64_t fake_time(void *p) {(void)p;return now_ms/1000;}
+#define time fake_time
+static void xEventGroupWaitBits(int e,int b,int c,int a,unsigned wait) {
+ (void)e;(void)b;(void)c;(void)a;(void)wait;
+ static const int64_t times[]={1000000,1010000,1020000,4610000,4620000};
+ static const bool states[]={false,true,false,false,true};
+ if(cursor==5) longjmp(done,1);
+ now_ms=times[cursor];online=states[cursor++];
+}
+static bool network_ready(void) {return online;}
+void pdkpass_network_request(pdkpass_network_command_t c) {assert(c==PDKPASS_NETWORK_SYNC);requests++;}
+uint32_t pdkpass_sync_wait_ms(pdkpass_sync_service_t s) {return pdkpass_sync_policy_wait(&policy,s,now_ms);}
+void pdkpass_sync_plan(pdkpass_sync_service_t s,uint32_t delay) {policy.due_ms[s]=now_ms+delay;}
+static void pdkpass_http_begin(void) {transactions++;if(disconnect_on_lock) online=false;}
+static void pdkpass_http_end(void) {}
+static bool synchronize(int64_t now) {(void)now;synchronizations++;return true;}
+static int64_t next_sync_deadline(int64_t now) {return now+3600;}
+'''
+        code += function(source, 'static void season_task(')
+        code += r'''
+int main(void) {
+ if(setjmp(done)==0) season_task(NULL);
+ assert(requests==2&&transactions==2&&synchronizations==2);
+ cursor=requests=transactions=synchronizations=0;s_last_attempt_utc=0;
+ memset(&policy,0,sizeof(policy));disconnect_on_lock=true;
+ if(setjmp(done)==0) season_task(NULL);
+ assert(transactions==2&&synchronizations==0);
+ puts("real season worker: offline deadlines, reconnect and shutdown race: PASS");
+}
+'''
+        compile_run(code, ['main/pdkpass_sync_policy.c'])
+
+    def test_sync_deadlines_and_idle_guard(self):
+        compile_run(PRELUDE + r'''
+#include "pdkpass_sync_policy.h"
+int main(void) {
+ pdkpass_sync_policy_t policy={0};
+ assert(!pdkpass_sync_policy_idle(&policy,1000));
+ policy.due_ms[0]=100000;policy.due_ms[1]=62000;
+ assert(pdkpass_sync_policy_idle(&policy,1000));
+ assert(!pdkpass_sync_policy_idle(&policy,2000));
+ assert(pdkpass_sync_policy_wait(&policy,PDKPASS_SYNC_RESULTS,61000)==1000);
+ assert(pdkpass_sync_policy_wait(&policy,PDKPASS_SYNC_RESULTS,62000)==0);
+ policy.due_ms[1]=0;assert(!pdkpass_sync_policy_idle(&policy,1000));
+ policy.due_ms[1]=INT64_MAX;
+ assert(pdkpass_sync_policy_wait(&policy,PDKPASS_SYNC_RESULTS,1000)==UINT32_MAX);
+ puts("monotonic deadlines, busy slots and reconnect guard: PASS");
+}
+''', ['main/pdkpass_sync_policy.c'])
+
+    def test_power_locks_and_failure_cleanup(self):
+        source = (ROOT / 'main/pdkpass_power.c').read_text()
+        code = PRELUDE + r'''
+#include "pdkpass_power.h"
+typedef int *esp_pm_lock_handle_t;
+typedef struct {int max_freq_mhz,min_freq_mhz;bool light_sleep_enable;} esp_pm_config_t;
+#define ESP_PM_CPU_FREQ_MAX 1
+#define ESP_PM_NO_LIGHT_SLEEP 2
+static int counts[3], allocated, config_error;
+static esp_pm_lock_handle_t s_display_cpu,s_display_awake,s_network_awake;
+static bool s_display_active,s_network_active;
+static int esp_pm_lock_create(int type,int arg,const char *name,esp_pm_lock_handle_t *out) {
+ (void)type;(void)arg;(void)name;*out=&counts[allocated++];return ESP_OK;
+}
+static void esp_pm_lock_acquire(esp_pm_lock_handle_t lock) {(*lock)++;assert(*lock==1);}
+static void esp_pm_lock_release(esp_pm_lock_handle_t lock) {(*lock)--;assert(*lock==0);}
+static void esp_pm_lock_delete(esp_pm_lock_handle_t lock) {assert(*lock==0);}
+static int esp_pm_configure(const esp_pm_config_t *c) {
+ assert(c->max_freq_mhz==160 && c->min_freq_mhz==80 && c->light_sleep_enable);
+ return config_error;
+}
+'''
+        for signature in ['void pdkpass_power_display(', 'void pdkpass_power_network(',
+                          'esp_err_t pdkpass_power_init(']:
+            code += function(source, signature)
+        code += r'''
+int main(void) {
+ assert(pdkpass_power_init()==ESP_OK);assert(counts[0]==1&&counts[1]==1);
+ pdkpass_power_display(true);pdkpass_power_display(false);pdkpass_power_display(false);
+ assert(counts[0]==0&&counts[1]==0);
+ pdkpass_power_network(true);pdkpass_power_network(true);assert(counts[2]==1);
+ pdkpass_power_network(false);assert(counts[2]==0);
+ allocated=0;config_error=ESP_FAIL;
+ assert(pdkpass_power_init()==ESP_FAIL);
+ assert(!s_display_cpu&&!s_display_awake&&!s_network_awake);
+ assert(!counts[0]&&!counts[1]&&!counts[2]);
+ puts("power locks, duplicate updates and error cleanup: PASS");
+}
+'''
+        compile_run(code)
+
     def test_eight_character_setup_password(self):
         source = (ROOT / 'main/pdkpass_network.c').read_text()
         code = PRELUDE + r'''
@@ -608,6 +715,8 @@ int main(void) {
 #define EVENT_DISCONNECTED 2
 #define EVENT_CANDIDATE 4
 #define EVENT_TIME_SYNCED 8
+#define EVENT_SYNC 8192
+#define EVENT_POLICY 16384
 #define EVENT_RETRY 512
 #define EVENT_SETUP 1024
 #define EVENT_CANCEL 2048
@@ -634,6 +743,11 @@ static bool s_visible[5]={true,true,true,true,true};
 static int64_t s_setup_started, s_setup_idle_since;
 static pdkpass_network_state_t s_published_state;
 static int64_t s_candidate_deadline, s_sync_deadline, now_us;
+static int64_t s_idle_check;
+static bool s_auto_parked, sync_idle, http_available=true;
+static bool pdkpass_sync_idle(void) {return sync_idle;}
+static bool pdkpass_http_try_begin(void) {return http_available;}
+static void pdkpass_http_end(void) {}
 static int64_t s_saved_deadline, s_saved_retry_at;
 static unsigned s_saved_attempt;
 static pdkpass_wifi_profiles_t s_profiles = {.version=1};
@@ -761,7 +875,42 @@ int main(void) {
  s_setup_idle_since=550000000;assert(setup_deadline()==601000000);
  s_setup_idle_since=1000000;s_testing_candidate=true;
  assert(setup_deadline()==601000000);
- puts("NTP cold boot and trusted reconnect: PASS");
+ // Quiescent services may park a synchronized link, then a due service wakes it.
+ s_in_setup=false;s_testing_candidate=false;s_has_ip=false;s_saved_attempt=0;
+ sync_idle=true;http_available=true;s_time_synced_boot=true;s_auto_parked=false;
+ cursor=0;event_count=3;now_us=0;
+ int before_scan=scan_calls;
+ script[0]=EVENT_CONNECTED;times[0]=1;
+ script[1]=EVENT_POLICY;times[1]=31000001;
+ script[2]=EVENT_SYNC;times[2]=32000001;
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(scan_calls==before_scan+1);assert(!s_auto_parked);
+ // A failed/offline link is never revived by an automatic service request.
+ s_saved_attempt=4;s_has_ip=false;s_auto_parked=false;
+ cursor=0;event_count=1;script[0]=EVENT_SYNC;times[0]=33000001;
+ before_scan=scan_calls;
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(scan_calls==before_scan);
+ // An active HTTP transaction must prevent radio shutdown.
+ s_saved_attempt=0;http_available=false;s_has_ip=false;now_us=0;
+ cursor=0;event_count=2;script[0]=EVENT_CONNECTED;times[0]=1;
+ script[1]=EVENT_POLICY;times[1]=31000001;
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(s_has_ip&&!s_auto_parked);
+ // Manual cancel disarms the previously scheduled reconnect.
+ s_has_ip=false;s_auto_parked=true;s_saved_attempt=4;
+ cursor=0;event_count=2;script[0]=EVENT_CANCEL;times[0]=32000001;
+ script[1]=EVENT_SYNC;times[1]=33000001;before_scan=scan_calls;
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(!s_auto_parked&&scan_calls==before_scan);
+ // An unreachable initial NTP server cannot keep the radio awake forever.
+ s_has_ip=false;s_in_setup=false;s_saved_attempt=0;s_time_synced_boot=false;now_us=0;
+ cursor=0;event_count=2;script[0]=EVENT_CONNECTED;times[0]=1;
+ script[1]=0;times[1]=60000001;
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(!s_has_ip&&!s_auto_parked);
+ assert(strcmp(s_setup_error,"TIME SYNC FAILED")==0);
+ puts("NTP, bounded setup, scheduled parking and manual override: PASS");
 }
 '''
         compile_run(code, ['main/pdkpass_wifi_profiles.c'])

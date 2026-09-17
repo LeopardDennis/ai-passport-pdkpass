@@ -34,3 +34,9 @@ struct _lv_display_t *bsp_lvgl_init(void);
 // LVGL 非线程安全:在【非 LVGL 任务】里操作任何 lv_* 对象前后必须加解锁。
 bool bsp_lvgl_lock(int timeout_ms);
 void bsp_lvgl_unlock(void);
+
+// Switch LVGL to monotonic time without periodic ticks. Call from a worker
+// under the LVGL lock, not from inside an LVGL timer callback.
+esp_err_t bsp_lvgl_use_monotonic_clock(void);
+// Pause drawing only; application timers keep running. Caller holds LVGL lock.
+void bsp_lvgl_set_drawing(bool enabled);

@@ -1,4 +1,6 @@
 #include "pdkpass_results.h"
+#include "pdkpass_sync_policy.h"
+#include "pdkpass_network.h"
 
 #include "cJSON.h"
 #include "pdkpass_http.h"
@@ -675,12 +677,16 @@ static void results_task(void *arg)
     TickType_t delay = pdMS_TO_TICKS(RESULTS_IDLE_DELAY_MS);
     for (;;) {
         xEventGroupWaitBits(s_events, EVENT_WAKE, pdTRUE, pdFALSE, delay);
+        uint32_t wait_ms = pdkpass_sync_wait_ms(PDKPASS_SYNC_RESULTS);
         if (!online_snapshot()) {
-            delay = portMAX_DELAY;
+            if (!wait_ms) pdkpass_network_request(PDKPASS_NETWORK_SYNC);
+            delay = wait_ms ? pdMS_TO_TICKS(wait_ms) : portMAX_DELAY;
             continue;
         }
+        if (wait_ms) { delay = pdMS_TO_TICKS(wait_ms); continue; }
 
         pdkpass_http_begin();
+        if (!online_snapshot()) { pdkpass_http_end(); delay = 1; continue; }
         int64_t now_utc = (int64_t)time(NULL);
         if (s_cache_dirty && save_cache() == ESP_OK) s_cache_dirty = false;
         size_t race_index = select_race(now_utc);
@@ -688,6 +694,7 @@ static void results_task(void *arg)
         if (race_index >= race_count) {
             delay = next_scheduled_wait(now_utc);
             if (s_cache_dirty && delay > pdMS_TO_TICKS(60000)) delay = pdMS_TO_TICKS(60000);
+            pdkpass_sync_plan(PDKPASS_SYNC_RESULTS, delay * portTICK_PERIOD_MS);
             pdkpass_http_end();
             continue;
         }
@@ -698,6 +705,7 @@ static void results_task(void *arg)
             delay = pdMS_TO_TICKS(RESULTS_BACKFILL_DELAY_MS);
         }
         if (s_cache_dirty && delay > pdMS_TO_TICKS(60000)) delay = pdMS_TO_TICKS(60000);
+        pdkpass_sync_plan(PDKPASS_SYNC_RESULTS, delay * portTICK_PERIOD_MS);
         pdkpass_http_end();
     }
 }
@@ -739,7 +747,10 @@ void pdkpass_results_season_changed(void)
         pdkpass_race_t race;
         same = pdkpass_season_race_get(i, &race) && race.meeting_key == s_cache[i].meeting_key;
     }
-    if (!same) load_cache();
+    if (!same) {
+        load_cache();
+        pdkpass_sync_plan(PDKPASS_SYNC_RESULTS, 0);
+    }
     xEventGroupSetBits(s_events, EVENT_WAKE);
 }
 
@@ -749,7 +760,9 @@ void pdkpass_results_request_race(size_t race_index)
         race_index >= pdkpass_season_race_count()) return;
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) == pdTRUE) {
         s_requested_race = race_index;
+        bool needs_sync = !cache_complete(race_index, &s_cache[race_index], (int64_t)time(NULL));
         xSemaphoreGive(s_lock);
+        if (needs_sync) pdkpass_sync_plan(PDKPASS_SYNC_RESULTS, 0);
     }
     xEventGroupSetBits(s_events, EVENT_WAKE);
 }

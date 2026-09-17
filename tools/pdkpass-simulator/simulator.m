@@ -100,6 +100,31 @@ void bsp_display_backlight(uint8_t percent)
     (void)percent;
 }
 
+void pdkpass_power_display(bool active) { (void)active; }
+static bool s_drawing = true, s_draw_guard_added;
+static void drawing_guard(lv_event_t *event)
+{
+    if (!s_drawing)
+        lv_timer_pause(lv_display_get_refr_timer(lv_event_get_target(event)));
+}
+void bsp_lvgl_set_drawing(bool enabled)
+{
+    lv_display_t *display = lv_display_get_default();
+    if (s_drawing == enabled) return;
+    if (!s_draw_guard_added) {
+        lv_display_add_event_cb(display, drawing_guard, LV_EVENT_REFR_REQUEST, NULL);
+        s_draw_guard_added = true;
+    }
+    s_drawing = enabled;
+    lv_display_enable_invalidation(display, enabled);
+    lv_timer_t *timer = lv_display_get_refr_timer(display);
+    if (enabled) {
+        lv_obj_invalidate(lv_screen_active());
+        lv_timer_resume(timer);
+        lv_timer_ready(timer);
+    } else lv_timer_pause(timer);
+}
+
 // Use the firmware calendar verbatim. Only completion boundaries are shifted
 // for the simulator's explicitly selected preview round.
 bool pdkpass_season_snapshot(pdkpass_season_snapshot_t *snapshot)

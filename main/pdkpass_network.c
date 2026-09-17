@@ -1,4 +1,7 @@
 #include "pdkpass_network.h"
+#include "pdkpass_http.h"
+#include "pdkpass_sync_policy.h"
+#include "pdkpass_power.h"
 
 #include "pdkpass_wifi_form.h"
 #include "pdkpass_wifi_profiles.h"
@@ -44,6 +47,8 @@
 #define EVENT_SETUP BIT10
 #define EVENT_CANCEL BIT11
 #define EVENT_CLIENT BIT12
+#define EVENT_SYNC BIT13
+#define EVENT_POLICY BIT14
 #define STATION_EVENTS (EVENT_CONNECTED | EVENT_DISCONNECTED | EVENT_ASSOCIATED | \
                         EVENT_AUTH_ERROR | EVENT_AP_MISSING | EVENT_SECURITY_ERROR)
 
@@ -97,6 +102,8 @@ static pdkpass_network_state_t s_published_state = PDKPASS_NETWORK_STARTING;
 static const char *s_setup_error = "";
 static int64_t s_candidate_deadline;
 static int64_t s_sync_deadline;
+static int64_t s_idle_check;
+static bool s_auto_parked;
 static char s_attempt_ssid[33];
 static char s_attempt_password[65];
 
@@ -129,6 +136,8 @@ static int64_t setup_deadline(void)
 
 static void publish_state(pdkpass_network_state_t state)
 {
+    pdkpass_power_network(s_in_setup || state == PDKPASS_NETWORK_STARTING ||
+                          state == PDKPASS_NETWORK_CONNECTING || state == PDKPASS_NETWORK_SYNCING);
     s_published_state = state;
     if (!s_callback) return;
     int64_t remaining = s_in_setup ? setup_deadline() - esp_timer_get_time() : 0;
@@ -661,6 +670,8 @@ static esp_err_t prepare_network(void)
     if (err != ESP_OK) return err;
     err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
     if (err != ESP_OK) return err;
+    err = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    if (err != ESP_OK) return err;
 
     s_have_working_credentials = load_credentials();
     // No saved profiles means no scan, radio or hotspot on first boot.
@@ -678,6 +689,7 @@ static TickType_t network_wait_ticks(int64_t now_us)
         s_has_ip ? s_sync_deadline : 0,
         s_in_setup ? now_us + 1000000LL : 0,
         s_in_setup ? setup_deadline() : 0,
+        s_has_ip && !s_in_setup ? s_idle_check : 0,
     };
     int64_t next = 0;
     for (size_t i = 0; i < sizeof(deadlines) / sizeof(deadlines[0]); ++i) {
@@ -704,14 +716,17 @@ static void network_task(void *arg)
     for (;;) {
         EventBits_t bits = xEventGroupWaitBits(
             s_events, STATION_EVENTS | EVENT_CANDIDATE |
-                          EVENT_TIME_SYNCED | EVENT_RETRY | EVENT_SETUP | EVENT_CANCEL | EVENT_CLIENT,
+                          EVENT_TIME_SYNCED | EVENT_RETRY | EVENT_SETUP | EVENT_CANCEL | EVENT_CLIENT |
+                          EVENT_SYNC | EVENT_POLICY,
             pdTRUE, pdFALSE, network_wait_ticks(esp_timer_get_time()));
 
         if (bits & EVENT_CANCEL) {
+            s_auto_parked = false;
             if (s_in_setup || !s_has_ip) go_offline();
             continue;
         }
         if (bits & EVENT_SETUP) {
+            s_auto_parked = false;
             if (!s_in_setup) {
                 go_offline();
                 s_setup_error = "";
@@ -723,8 +738,14 @@ static void network_task(void *arg)
             continue;
         }
         if (bits & EVENT_RETRY) {
+            s_auto_parked = false;
             if (!s_has_ip && !s_in_setup && !s_saved_deadline) scan_saved();
             else publish_state(s_published_state);
+            continue;
+        }
+        if ((bits & EVENT_SYNC) && s_auto_parked && !s_in_setup && !s_has_ip) {
+            s_auto_parked = false;
+            scan_saved();
             continue;
         }
         if (s_in_setup) {
@@ -782,6 +803,7 @@ static void network_task(void *arg)
             if (!s_testing_candidate && (!s_saved_deadline ||
                 strncmp((const char *)ap.ssid, s_working_ssid, 32) != 0)) continue;
             s_has_ip = true;
+            s_idle_check = esp_timer_get_time() + 30000000LL;
             s_saved_deadline = 0;
             s_saved_attempt = 0;
             if (s_testing_candidate) {
@@ -834,9 +856,25 @@ static void network_task(void *arg)
             publish_state(PDKPASS_NETWORK_SETUP);
         }
         if (s_has_ip && s_sync_deadline && now_us >= s_sync_deadline) {
-            if (!s_time_synced_boot) publish_state(PDKPASS_NETWORK_TIME_ERROR);
+            if (!s_time_synced_boot) {
+                s_setup_error = "TIME SYNC FAILED";
+                publish_state(PDKPASS_NETWORK_TIME_ERROR);
+                go_offline();
+                continue;
+            }
             start_sntp_once();
             s_sync_deadline = now_us + 300000000LL;
+        }
+        if (s_has_ip && !s_in_setup && now_us >= s_idle_check) {
+            s_idle_check = now_us + 30000000LL;
+            // Serialize shutdown with complete service transactions. Services
+            // recheck connectivity after acquiring this same mutex.
+            if (s_time_synced_boot && pdkpass_sync_idle() && pdkpass_http_try_begin()) {
+                if (pdkpass_sync_idle()) {
+                    s_auto_parked = go_offline() == ESP_OK;
+                }
+                pdkpass_http_end();
+            }
         }
     }
 }
@@ -860,6 +898,8 @@ void pdkpass_network_request(pdkpass_network_command_t command)
 {
     if (!s_events) return;
     EventBits_t bits = command == PDKPASS_NETWORK_CANCEL ? EVENT_CANCEL :
+        command == PDKPASS_NETWORK_SYNC ? EVENT_SYNC :
+        command == PDKPASS_NETWORK_POLICY ? EVENT_POLICY :
         command == PDKPASS_NETWORK_OPEN_SETUP ? EVENT_SETUP : EVENT_RETRY;
     xEventGroupSetBits(s_events, bits);
 }

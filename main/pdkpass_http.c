@@ -29,6 +29,7 @@ esp_err_t pdkpass_http_init(void)
     return s_transaction ? ESP_OK : ESP_ERR_NO_MEM;
 }
 void pdkpass_http_begin(void) { xSemaphoreTake(s_transaction, portMAX_DELAY); }
+bool pdkpass_http_try_begin(void) { return s_transaction && xSemaphoreTake(s_transaction, 0) == pdTRUE; }
 void pdkpass_http_end(void) { xSemaphoreGive(s_transaction); }
 
 static bool stream_item(const char *json, void *context)
