@@ -6,6 +6,18 @@
 
 ## Unreleased
 
+- Bundle the official 2027 date-only calendar (24 rounds, 10 Sprints). Select it
+  at Beijing New Year even offline, preserve accepted same-year/newer caches,
+  and reuse circuit colors. Unknown times/laps/standings remain pending.
+  Use venue-local weekend-end midnight until actual session times are available.
+  Add simulator `--year 2027`; leave HTTPS memory fixes out of this change.
+
+- Add a year-independent 27-circuit catalog with stable IDs, shared aliases,
+  geometry, lengths and colors. Include offline Portimão, Istanbul, Sakhir and
+  Jeddah outlines. Resolve downloaded and cached circuits without depending on
+  the previous season. Keep lap counts event-specific and show known lengths
+  even when laps are unavailable.
+
 - Stop repeated offline setup updates from waking results and feeding SYNC events
   back into the network worker, which could starve idle time and trigger watchdogs.
 

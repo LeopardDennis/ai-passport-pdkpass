@@ -9,7 +9,11 @@ state machine, circuit outlines, themes, calendar, standings, and result layout.
 It scales the device's exact 240 × 320 RGB565 framebuffer with nearest-neighbour
 rendering instead of recreating the interface as a web mockup.
 
-The simulator uses an offline 2026 season calendar and standings snapshot. When
+The simulator defaults to the offline 2026 calendar and standings snapshot.
+Pass `--year 2027 --race 1` for the 24-round built-in 2027 calendar, with pending
+session times and no assumed standings. Result caches are separated by year.
+This option is for preview/testing; firmware selects by its valid clock.
+When
 a historical results page is opened while the simulator is online, it retrieves
 that round's real session classifications from OpenF1 and caches completed
 podiums in the user's macOS cache directory. Network number keys exercise the

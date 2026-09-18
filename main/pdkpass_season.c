@@ -1,4 +1,6 @@
 #include "pdkpass_season.h"
+#include "pdkpass_calendar.h"
+#include "pdkpass_tracks.h"
 #include "pdkpass_sync_policy.h"
 #include "pdkpass_network.h"
 
@@ -110,22 +112,18 @@ static uint32_t accent_for_key(int circuit_key)
     return palette[index % (sizeof(palette) / sizeof(palette[0]))];
 }
 
+static void apply_track_details(pdkpass_race_t *race, const char *name)
+{
+    const pdkpass_track_info_t *track = pdkpass_track_find(name);
+    if (!track) return;
+    copy_text(race->circuit, sizeof(race->circuit), track->name);
+    race->circuit_length_m = track->length_m;
+    race->accent = track->accent;
+}
+
 static void initialize_fallback(void)
 {
-    memset(&s_season, 0, sizeof(s_season));
-    s_season.year = 2026;
-    s_season.race_count = pdkpass_race_count > PDKPASS_MAX_RACES
-                              ? PDKPASS_MAX_RACES
-                              : (uint8_t)pdkpass_race_count;
-    s_season.driver_count = pdkpass_driver_count > PDKPASS_MAX_DRIVERS
-                                ? PDKPASS_MAX_DRIVERS
-                                : (uint8_t)pdkpass_driver_count;
-    copy_text(s_season.standings_as_of, sizeof(s_season.standings_as_of),
-              "31 AUG");
-    memcpy(s_season.races, pdkpass_races,
-           s_season.race_count * sizeof(s_season.races[0]));
-    memcpy(s_season.drivers, pdkpass_drivers,
-           s_season.driver_count * sizeof(s_season.drivers[0]));
+    pdkpass_calendar_load(2026, &s_season);
 }
 
 static bool snapshot_valid(const pdkpass_season_snapshot_t *season)
@@ -162,6 +160,8 @@ static void load_cache(void)
         s_season.race_count = (uint8_t)pdkpass_restore_legacy_calendar(
             s_season.year, s_season.races, s_season.race_count,
             PDKPASS_MAX_RACES);
+        for (size_t i = 0; i < s_season.race_count; i++)
+            apply_track_details(&s_season.races[i], s_season.races[i].circuit);
         ESP_LOGI(TAG, "Loaded %u season: %u races, %u drivers",
                  s_season.year, s_season.race_count, s_season.driver_count);
     }
@@ -242,6 +242,8 @@ static bool parse_meeting(const cJSON *meeting, void *user)
     entry->race.accent = accent_for_key(circuit_key);
     copy_upper(entry->race.country, sizeof(entry->race.country), country);
     copy_upper(entry->race.circuit, sizeof(entry->race.circuit), circuit);
+    // Resolve the original name before the short display buffer truncates it.
+    apply_track_details(&entry->race, circuit);
     copy_text(entry->race.api_country, sizeof(entry->race.api_country),
               country);
     pdkpass_format_beijing_weekend(start_utc, end_utc,
@@ -339,16 +341,18 @@ static void preserve_track_details(pdkpass_season_snapshot_t *candidate,
                                    const pdkpass_season_snapshot_t *current)
 {
     for (size_t i = 0; i < candidate->race_count; i++) {
+        pdkpass_race_t *race = &candidate->races[i];
+        apply_track_details(race, race->circuit);
+        // Race laps are event data: never inherit them from another season.
+        if (candidate->year != current->year) continue;
         for (size_t j = 0; j < current->race_count; j++) {
             const pdkpass_race_t *known = &current->races[j];
-            pdkpass_race_t *race = &candidate->races[i];
-            // Country is not unique within a season (for example Miami,
-            // Austin, and Las Vegas), so only an exact circuit-name match may
-            // inherit length/lap metadata from the fallback snapshot.
-            if (!same_text(race->circuit, known->circuit)) continue;
-            race->circuit_length_m = known->circuit_length_m;
+            const pdkpass_track_info_t *a = pdkpass_track_find(race->circuit);
+            const pdkpass_track_info_t *b = pdkpass_track_find(known->circuit);
+            if (!(a && b ? a == b : same_text(race->circuit, known->circuit))) continue;
+            if (race->meeting_key > 0 && known->meeting_key > 0 &&
+                race->meeting_key != known->meeting_key) continue;
             race->laps = known->laps;
-            race->accent = known->accent;
             break;
         }
     }
@@ -581,16 +585,60 @@ static bool synchronize(int64_t now_utc)
     return success && !retry;
 }
 
+static bool clock_valid(void)
+{
+    bool valid = false;
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        valid = s_time_valid;
+        xSemaphoreGive(s_lock);
+    }
+    return valid;
+}
+
+static void refresh_builtin_year(int64_t now_utc)
+{
+    if (!clock_valid()) return;
+    unsigned year = pdkpass_beijing_year(now_utc);
+    if (!pdkpass_calendar_supported(year) || year <= pdkpass_season_year()) return;
+    // Serialize the season/result cache transition with existing HTTP work.
+    // Fill the existing snapshot in place: no extra season-sized allocation.
+    pdkpass_http_begin();
+    bool changed = false;
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(2000)) == pdTRUE) {
+        if (s_time_valid && year > s_season.year)
+            changed = pdkpass_calendar_load(year, &s_season);
+        xSemaphoreGive(s_lock);
+    }
+    if (changed) {
+        s_last_attempt_utc = 0;
+        pdkpass_sync_plan(PDKPASS_SYNC_SEASON, 0);
+        if (s_callback) s_callback();
+    }
+    pdkpass_http_end();
+}
+
+static TickType_t offline_wait(uint32_t network_wait_ms, int64_t now_utc)
+{
+    // Offline is not an indefinite wait when a valid clock can cross New Year.
+    uint32_t wait = network_wait_ms ? network_wait_ms : UINT32_MAX;
+    if (clock_valid()) {
+        uint32_t midnight_ms = (uint32_t)(pdkpass_next_beijing_midnight(now_utc) - now_utc) * 1000U;
+        if (midnight_ms < wait) wait = midnight_ms;
+    }
+    return wait == UINT32_MAX ? portMAX_DELAY : pdMS_TO_TICKS(wait);
+}
+
 static void season_task(void *arg)
 {
     (void)arg;
     TickType_t delay = portMAX_DELAY;
     for (;;) {
         xEventGroupWaitBits(s_events, EVENT_WAKE, pdTRUE, pdFALSE, delay);
+        refresh_builtin_year((int64_t)time(NULL));
         uint32_t wait_ms = pdkpass_sync_wait_ms(PDKPASS_SYNC_SEASON);
         if (!network_ready()) {
             if (!wait_ms) pdkpass_network_request(PDKPASS_NETWORK_SYNC);
-            delay = wait_ms ? pdMS_TO_TICKS(wait_ms) : portMAX_DELAY;
+            delay = offline_wait(wait_ms, (int64_t)time(NULL));
             continue;
         }
         if (wait_ms) { delay = pdMS_TO_TICKS(wait_ms); continue; }
@@ -641,7 +689,7 @@ void pdkpass_season_set_network(bool online, bool time_valid)
     if (!s_lock || !s_events) return;
     bool wake = false;
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) == pdTRUE) {
-        wake = (online && time_valid) && (!s_online || !s_time_valid);
+        wake = time_valid && (!s_time_valid || (online && !s_online));
         s_online = online;
         s_time_valid = time_valid;
         xSemaphoreGive(s_lock);

@@ -46,6 +46,8 @@ PRELUDE = r'''
 #include "pdkpass_season.h"
 #include "pdkpass_results_core.h"
 #include "pdkpass_season_core.h"
+#include "pdkpass_tracks.h"
+#include "pdkpass_calendar.h"
 #define pdTRUE 1
 #define ESP_FAIL -1
 #define PDKPASS_PODIUM_SIZE 3
@@ -66,6 +68,83 @@ bool pdkpass_season_race_get(size_t i, pdkpass_race_t *race) {
 '''
 
 class Services(unittest.TestCase):
+    def test_offline_builtin_year_rollover(self):
+        source = (ROOT / 'main/pdkpass_season.c').read_text()
+        code = PRELUDE.replace('unsigned pdkpass_season_year(void) {return 2026;}','') + r'''
+#include "pdkpass_sync_policy.h"
+#define portMAX_DELAY UINT32_MAX
+static bool s_time_valid;
+static int64_t s_last_attempt_utc;
+static pdkpass_season_snapshot_t s_season;
+static int callbacks, plans, transactions;
+static void changed(void) {callbacks++;}
+static pdkpass_season_callback_t s_callback=changed;
+unsigned pdkpass_season_year(void) {return s_season.year;}
+static void pdkpass_http_begin(void) {transactions++;}
+static void pdkpass_http_end(void) {transactions--;}
+void pdkpass_sync_plan(pdkpass_sync_service_t service,uint32_t delay) {
+ assert(service==PDKPASS_SYNC_SEASON && delay==0);plans++;
+}
+'''
+        for signature in ['static bool clock_valid(', 'static void refresh_builtin_year(',
+                          'static TickType_t offline_wait(']:
+            code += function(source, signature)
+        code += r'''
+int main(void) {
+ assert(pdkpass_calendar_load(2026,&s_season));
+ refresh_builtin_year(1798732800LL);assert(s_season.year==2026&&!callbacks);
+ assert(offline_wait(0,1798732799LL)==portMAX_DELAY);
+ s_time_valid=true;
+ assert(offline_wait(0,1798732799LL)==1000);
+ assert(offline_wait(500,1798732799LL)==500);
+ refresh_builtin_year(1798732799LL);assert(s_season.year==2026);
+ refresh_builtin_year(1798732800LL);
+ assert(s_season.year==2027&&s_season.race_count==24&&s_season.driver_count==0);
+ assert(callbacks==1&&plans==1&&transactions==0);
+ s_season.races[0].meeting_key=999; // Accepted online data must survive.
+ refresh_builtin_year(1798732801LL);
+ assert(s_season.races[0].meeting_key==999&&callbacks==1);
+ refresh_builtin_year(1798732799LL);assert(s_season.year==2027);
+ refresh_builtin_year(1830268800LL);assert(s_season.year==2027); // No 2028 seed.
+ puts("offline New Year, invalid clock, no downgrade and cache priority: PASS");
+}
+'''
+        compile_run(code, ['main/pdkpass_calendar.c', 'main/pdkpass_data.c',
+                           'main/pdkpass_tracks.c', 'main/pdkpass_season_core.c'])
+
+    def test_circuit_metadata_is_independent_of_season(self):
+        source = (ROOT / 'main/pdkpass_season.c').read_text()
+        code = PRELUDE + '\n#include <ctype.h>\n'
+        for signature in ['static void copy_text(', 'static bool same_text(',
+                          'static void apply_track_details(', 'static void preserve_track_details(']:
+            code += function(source, signature)
+        code += r'''
+int main(void) {
+ pdkpass_season_snapshot_t current={.year=2026,.race_count=1};
+ pdkpass_season_snapshot_t candidate={.year=2027,.race_count=3};
+ strcpy(current.races[0].circuit,"MONZA");current.races[0].laps=53;
+ strcpy(candidate.races[0].circuit,"Portimão");
+ strcpy(candidate.races[1].circuit,"Istanbul Park");
+ strcpy(candidate.races[2].circuit,"MONZA");
+ preserve_track_details(&candidate,&current);
+ assert(candidate.races[0].circuit_length_m==4653);
+ assert(strcmp(candidate.races[0].circuit,"PORTIMAO")==0);
+ assert(candidate.races[1].circuit_length_m==5338);
+ assert(candidate.races[2].circuit_length_m==5793);
+ assert(candidate.races[2].laps==0);
+ candidate.year=2026;preserve_track_details(&candidate,&current);
+ assert(candidate.races[2].laps==53);
+ candidate.year=2028;candidate.races[2].laps=0;current.race_count=0;
+ preserve_track_details(&candidate,&current);
+ assert(candidate.races[2].circuit_length_m==5793&&candidate.races[2].laps==0);
+ pdkpass_race_t unknown={.circuit_length_m=1234};
+ strcpy(unknown.circuit,"UNKNOWN");apply_track_details(&unknown,unknown.circuit);
+ assert(unknown.circuit_length_m==1234);
+ puts("year-independent circuit metadata, aliases and event-only laps: PASS");
+}
+'''
+        compile_run(code, ['main/pdkpass_tracks.c'])
+
     def test_repeated_offline_status_does_not_requeue_sync(self):
         source = (ROOT / 'main/pdkpass_results.c').read_text()
         code = PRELUDE + r'''
@@ -126,6 +205,8 @@ static void xEventGroupWaitBits(int e,int b,int c,int a,unsigned wait) {
  now_ms=times[cursor];online=states[cursor++];
 }
 static bool network_ready(void) {return online;}
+static void refresh_builtin_year(int64_t now) {(void)now;}
+static TickType_t offline_wait(uint32_t wait,int64_t now) {(void)now;return wait?wait:portMAX_DELAY;}
 void pdkpass_network_request(pdkpass_network_command_t c) {assert(c==PDKPASS_NETWORK_SYNC);requests++;}
 uint32_t pdkpass_sync_wait_ms(pdkpass_sync_service_t s) {return pdkpass_sync_policy_wait(&policy,s,now_ms);}
 void pdkpass_sync_plan(pdkpass_sync_service_t s,uint32_t delay) {policy.due_ms[s]=now_ms+delay;}
@@ -361,7 +442,7 @@ static int nvs_get_blob(int h,const char *k,void *out,size_t *size) {
 }
 static void nvs_close(int h) {(void)h;}
 '''
-        for signature in ['static void copy_text(', 'static void initialize_fallback(',
+        for signature in ['static void copy_text(', 'static void apply_track_details(', 'static void initialize_fallback(',
                           'static bool snapshot_valid(', 'static void load_cache(']:
             code += function(source, signature)
         code += r'''
@@ -381,7 +462,7 @@ int main(void) {
  puts("season fallback and legacy cache load: PASS");
 }
 '''
-        compile_run(code, ['main/pdkpass_data.c'])
+        compile_run(code, ['main/pdkpass_data.c', 'main/pdkpass_tracks.c', 'main/pdkpass_calendar.c'])
 
     def test_results_scheduling(self):
         source = (ROOT / 'main/pdkpass_results.c').read_text()

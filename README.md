@@ -39,7 +39,7 @@ supported weekend session.
 - Gives every round its own colour while keeping the race-pass visual language
   consistent across the calendar, details, standings, results, setup, and
   season-end screens.
-- Bundles the complete 2026 calendar and distinct circuit outlines for offline
+- Bundles the 2026 and 2027 calendars and distinct circuit outlines for offline
   first use.
 - Downloads the current season and standings when online, then keeps the latest
   valid copy available offline.
@@ -148,17 +148,41 @@ Displayed session times are converted to China Standard Time (UTC+8).
 
 After the first successful connection, PDKPASS downloads and stores the Grand
 Prix calendar for the current Beijing-time year and the standings from the
-latest completed race. At a year boundary it switches only after OpenF1 returns
-at least one valid Grand Prix for the new year; otherwise it keeps the last
-working season and tries again at the next scheduled check. The device stores
-one current season at a time, including up to 24 races, 24 drivers, and the
-cached podiums for all seven supported session types. The previous season cache
-is replaced only after the new season has been accepted.
+latest completed race. With a valid clock, Beijing New Year selects a newer
+bundled season even without Wi-Fi or successful HTTPS. The worker also checks
+at Beijing midnight while offline. A same-year/newer downloaded cache wins over
+the seed, and an unavailable future year keeps the last working season.
+Flash contains both bundled calendars; RAM and downloaded caches keep one
+active season (up to 24 races, 24 drivers and seven session types).
+
+The 2027 seed follows the
+[official 16 September announcement](https://corp.formula1.com/2027-calendar-announced-with-10-sprint-events/):
+24 rounds and 10 Sprint weekends. Dates are venue-local; unpublished session
+times show `TIME TBD`, with no invented times, laps, drivers or standings.
+Until session metadata arrives, automatic round selection uses midnight after
+the last published date in the venue's time zone, not a claimed race-end time.
+Downloaded session end times replace this date-only boundary. Istanbul remains
+subject to FIA circuit homologation. Existing circuit colors remain unchanged.
+This offline addition does not resolve the known HTTPS memory-exhaustion issue.
 
 The most recent valid time, accepted season, standings, and downloaded podiums
 remain available offline. After a long powered-off period, reconnect to refresh
 them. Dynamic calendar, standings, session classifications, and driver metadata
 come from the unofficial [OpenF1 API](https://openf1.org/docs/).
+
+### Year-independent circuit catalog
+
+The offline catalog contains 27 circuits, including Portimão, Istanbul Park,
+Sakhir and Jeddah. Stable circuit IDs resolve display names and aliases to the
+same outline, length, accent and background across seasons. Race dates, rounds,
+session results and lap counts remain event data. A new season does not need
+the preceding season's cache to recover circuit details. Unknown lap counts
+display as `-- LAPS` without hiding a known circuit length.
+
+These are the stored circuit layouts, not a guarantee of future homologation.
+A materially changed layout should receive a separate layout identity; do not
+overwrite historical geometry merely because the calendar year changes.
+There is no manual season-selection page; selection follows the valid clock.
 
 ### Circuit-outline provenance
 
@@ -173,6 +197,14 @@ OpenF1 identifies the detailed circuit information as data provided by
 [OpenStreetMap contributors](https://www.openstreetmap.org/copyright). This is
 an independent, non-commercial fan use. Review the relevant source terms before
 any commercial redistribution.
+
+The four added outlines use the MIT-licensed
+[bacinger/f1-circuits](https://github.com/bacinger/f1-circuits) GeoJSON data.
+Sources and the copyright notice are stored in
+[`assets/images/circuits/`](assets/images/circuits/).
+Run `python3 tools/check_circuit_assets.py` to verify the embedded coordinates
+against these offline sources. Portimão (4.653 km) and Istanbul (5.338 km) use
+their documented existing GP layouts, not an assumed revised 2027 layout.
 
 ## Try the real interface on macOS
 

@@ -512,7 +512,13 @@ static void render_home(void)
     const char *time_text = race_line_length >= 5U
                                 ? race->race_cn + race_line_length - 5U
                                 : "--:--";
-    snprintf(race_time, sizeof(race_time), "RACE %s CST", time_text);
+    if (strlen(time_text) == 5 && time_text[2] == ':' &&
+        time_text[0] >= '0' && time_text[0] <= '2' &&
+        time_text[1] >= '0' && time_text[1] <= '9' &&
+        time_text[3] >= '0' && time_text[3] <= '5' &&
+        time_text[4] >= '0' && time_text[4] <= '9')
+        snprintf(race_time, sizeof(race_time), "RACE %s CST", time_text);
+    else snprintf(race_time, sizeof(race_time), "RACE TIME TBD");
     make_medium_label(race_card, race_time, 0, 0, 188,
                       contrast_color(race->accent));
     char page[20];
@@ -727,15 +733,15 @@ static void render_detail(void)
 
     char distance[18];
     char laps[16];
-    if (race->circuit_length_m > 0U && race->laps > 0U) {
+    if (race->circuit_length_m > 0U) {
         snprintf(distance, sizeof(distance), "%u.%03u KM",
                  race->circuit_length_m / 1000,
                  race->circuit_length_m % 1000);
-        snprintf(laps, sizeof(laps), "%u LAPS", race->laps);
     } else {
         snprintf(distance, sizeof(distance), "-- KM");
-        snprintf(laps, sizeof(laps), "-- LAPS");
     }
+    if (race->laps > 0U) snprintf(laps, sizeof(laps), "%u LAPS", race->laps);
+    else snprintf(laps, sizeof(laps), "-- LAPS");
     lv_obj_t *distance_card = make_card(s_content, 1, 74, 101, 30,
                                         theme.bottom, 3);
     lv_obj_t *laps_card = make_card(s_content, 108, 74, 101, 30,

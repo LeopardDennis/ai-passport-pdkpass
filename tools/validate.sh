@@ -13,6 +13,7 @@ run_static_checks() {
     local test_dir
 
     python3 tools/check_repo.py
+    python3 tools/check_circuit_assets.py
 
     actionlint_bin="${ACTIONLINT_BIN:-}"
     if [[ -z "${actionlint_bin}" ]]; then
@@ -36,12 +37,17 @@ run_static_checks() {
         tests/test_pdkpass_schedule.c main/pdkpass_schedule.c main/pdkpass_data.c \
         -o "${test_dir}/test_pdkpass_schedule"
     "${test_dir}/test_pdkpass_schedule"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Itools/pdkpass-simulator/stubs \
+        tests/test_pdkpass_calendar.c main/pdkpass_calendar.c main/pdkpass_data.c \
+        main/pdkpass_tracks.c main/pdkpass_schedule.c main/pdkpass_season_core.c \
+        -o "${test_dir}/test_pdkpass_calendar"
+    "${test_dir}/test_pdkpass_calendar"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_pdkpass_tracks.c main/pdkpass_tracks.c \
         -o "${test_dir}/test_pdkpass_tracks"
     "${test_dir}/test_pdkpass_tracks"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
-        tests/test_pdkpass_theme.c main/pdkpass_theme.c \
+        tests/test_pdkpass_theme.c main/pdkpass_theme.c main/pdkpass_tracks.c \
         -o "${test_dir}/test_pdkpass_theme"
     "${test_dir}/test_pdkpass_theme"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \

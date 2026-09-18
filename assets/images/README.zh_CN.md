@@ -14,4 +14,22 @@
 
 ## 目录说明
 
-> 当前为空骨架，用于存放后续加入的图片资源。加入资源时请同步更新本 `README.md` 的索引。
+### 赛道几何
+
+`circuits/` 保存于 2026-09-18 获取的四份
+[bacinger/f1-circuits](https://github.com/bacinger/f1-circuits) GeoJSON 来源，
+MIT 许可原文保存在 [circuits/LICENSE.txt](circuits/LICENSE.txt)。
+这些是坐标数据，不是下载的地图画面。
+
+| 本地文件 | 上游来源 |
+| --- | --- |
+| [portimao.geojson](circuits/portimao.geojson) | [pt-2008.geojson](https://github.com/bacinger/f1-circuits/blob/master/circuits/pt-2008.geojson) |
+| [istanbul.geojson](circuits/istanbul.geojson) | [tr-2005.geojson](https://github.com/bacinger/f1-circuits/blob/master/circuits/tr-2005.geojson) |
+| [sakhir.geojson](circuits/sakhir.geojson) | [bh-2002.geojson](https://github.com/bacinger/f1-circuits/blob/master/circuits/bh-2002.geojson) |
+| [jeddah.geojson](circuits/jeddah.geojson) | [sa-2021.geojson](https://github.com/bacinger/f1-circuits/blob/master/circuits/sa-2021.geojson) |
+
+`tools/check_circuit_assets.py` 按平均纬度余弦投影经度、翻转纬度为屏幕坐标，
+将闭合线等距采样成 48 段，等比放入 192 × 61 坐标区并保留三像素边距；
+校验 `main/pdkpass_tracks.c` 中每条赛道的 49 对字节坐标。
+固件无需读取 GeoJSON 或在线下载几何；现有 UI 会再等比适配到赛道卡片。
+上游文件名中的数字描述赛道历史，不限制可用于哪个赛季。

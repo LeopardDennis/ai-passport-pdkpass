@@ -36,6 +36,7 @@ set(PDKPASS_UI_SOURCES
     "${PDKPASS_REPO}/main/pdkpass_results_core.c"
     "${PDKPASS_REPO}/main/pdkpass_schedule.c"
     "${PDKPASS_REPO}/main/pdkpass_data.c"
+    "${PDKPASS_REPO}/main/pdkpass_calendar.c"
     "${PDKPASS_REPO}/main/pdkpass_theme.c"
     "${PDKPASS_REPO}/main/pdkpass_tracks.c"
 )

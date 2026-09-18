@@ -234,82 +234,201 @@ static const uint8_t s_yas_marina[] = {
     86, 43,
 };
 
-typedef struct {
-    const char *circuit;
-    const uint8_t *xy;
-    size_t byte_count;
-} track_entry_t;
-
-#define TRACK(name, points) { name, points, sizeof(points) }
-
-static const track_entry_t s_tracks[] = {
-    TRACK("MELBOURNE", s_melbourne),
-    TRACK("ALBERT PARK", s_melbourne),
-    TRACK("ALBERT PARK GRAND PRIX CIRCUIT", s_melbourne),
-    TRACK("SHANGHAI", s_shanghai),
-    TRACK("SHANGHAI INTERNATIONAL CIRCUIT", s_shanghai),
-    TRACK("SUZUKA", s_suzuka),
-    TRACK("SUZUKA CIRCUIT", s_suzuka),
-    TRACK("MIAMI", s_miami),
-    TRACK("MIAMI INTERNATIONAL AUTODROME", s_miami),
-    TRACK("MONTREAL", s_montreal),
-    TRACK("GILLES VILLENEUVE", s_montreal),
-    TRACK("CIRCUIT GILLES-VILLENEUVE", s_montreal),
-    TRACK("MONACO", s_monaco),
-    TRACK("MONTE CARLO", s_monaco),
-    TRACK("CIRCUIT DE MONACO", s_monaco),
-    TRACK("BARCELONA", s_catalunya),
-    TRACK("CATALUNYA", s_catalunya),
-    TRACK("CIRCUIT DE BARCELONA-CATALUNYA", s_catalunya),
-    TRACK("SPIELBERG", s_spielberg),
-    TRACK("RED BULL RING", s_spielberg),
-    TRACK("SILVERSTONE", s_silverstone),
-    TRACK("SILVERSTONE CIRCUIT", s_silverstone),
-    TRACK("SPA", s_spa),
-    TRACK("SPA-FRANCORCHAMPS", s_spa),
-    TRACK("CIRCUIT DE SPA-FRANCORCHAMPS", s_spa),
-    TRACK("BUDAPEST", s_hungaroring),
-    TRACK("HUNGARORING", s_hungaroring),
-    TRACK("ZANDVOORT", s_zandvoort),
-    TRACK("CIRCUIT ZANDVOORT", s_zandvoort),
-    TRACK("MONZA", s_monza),
-    TRACK("AUTODROMO NAZIONALE MONZA", s_monza),
-    TRACK("MADRING", s_madring),
-    TRACK("MADRID", s_madring),
-    TRACK("BAKU", s_baku),
-    TRACK("BAKU CITY CIRCUIT", s_baku),
-    TRACK("SEPANG", s_sepang),
-    TRACK("SEPANG INTERNATIONAL CIRCUIT", s_sepang),
-    TRACK("MARINA BAY", s_singapore),
-    TRACK("SINGAPORE", s_singapore),
-    TRACK("MARINA BAY STREET CIRCUIT", s_singapore),
-    TRACK("COTA", s_austin),
-    TRACK("AUSTIN", s_austin),
-    TRACK("CIRCUIT OF THE AMERICAS", s_austin),
-    TRACK("MEXICO CITY", s_mexico_city),
-    TRACK("AUTÓDROMO HERMANOS RODRÍGUEZ", s_mexico_city),
-    TRACK("INTERLAGOS", s_interlagos),
-    TRACK("SAO PAULO", s_interlagos),
-    TRACK("AUTÓDROMO JOSÉ CARLOS PACE", s_interlagos),
-    TRACK("LAS VEGAS", s_las_vegas),
-    TRACK("LAS VEGAS STRIP CIRCUIT", s_las_vegas),
-    TRACK("LUSAIL", s_losail),
-    TRACK("LOSAIL", s_losail),
-    TRACK("LUSAIL INTERNATIONAL CIRCUIT", s_losail),
-    TRACK("YAS MARINA", s_yas_marina),
-    TRACK("YAS MARINA CIRCUIT", s_yas_marina),
+// Derived from bacinger/f1-circuits; MIT notice in assets/images/circuits/LICENSE.txt.
+static const uint8_t s_portimao[] = {
+    85, 26, 84, 21, 82, 17, 81, 13, 80, 8, 83, 5, 86, 3, 91, 4,
+    92, 7, 88, 9, 89, 14, 90, 18, 91, 22, 92, 27, 94, 31, 95, 35,
+    97, 31, 97, 27, 96, 22, 94, 18, 93, 14, 96, 11, 98, 12, 99, 16,
+    100, 21, 101, 25, 104, 28, 108, 30, 111, 33, 109, 36, 105, 38, 101, 40,
+    100, 45, 101, 49, 104, 47, 107, 43, 110, 45, 109, 49, 106, 53, 103, 56,
+    99, 57, 95, 55, 92, 52, 91, 47, 90, 43, 89, 39, 87, 34, 86, 30,
+    85, 26,
 };
 
-bool pdkpass_track_get(const char *circuit,
-                       pdkpass_track_geometry_t *geometry)
+// Derived from bacinger/f1-circuits; MIT notice in assets/images/circuits/LICENSE.txt.
+static const uint8_t s_istanbul[] = {
+    86, 54, 91, 53, 96, 52, 96, 48, 96, 43, 100, 40, 104, 38, 108, 37,
+    113, 37, 117, 36, 117, 31, 121, 30, 124, 28, 121, 24, 117, 22, 113, 20,
+    109, 18, 106, 15, 109, 12, 114, 13, 118, 14, 123, 14, 126, 11, 125, 7,
+    122, 4, 118, 3, 113, 5, 109, 6, 104, 7, 100, 9, 98, 12, 98, 16,
+    97, 21, 95, 25, 94, 30, 92, 34, 89, 37, 84, 39, 80, 41, 76, 43,
+    72, 46, 68, 48, 65, 51, 68, 52, 68, 57, 73, 56, 77, 55, 82, 54,
+    86, 54,
+};
+
+// Derived from bacinger/f1-circuits; MIT notice in assets/images/circuits/LICENSE.txt.
+static const uint8_t s_sakhir[] = {
+    78, 29, 79, 24, 79, 18, 79, 13, 79, 8, 79, 3, 83, 6, 88, 4,
+    93, 5, 98, 6, 103, 7, 108, 8, 113, 9, 111, 13, 108, 16, 105, 20,
+    101, 22, 96, 24, 93, 28, 90, 29, 91, 24, 91, 19, 92, 14, 88, 11,
+    88, 16, 87, 21, 87, 27, 87, 32, 87, 37, 86, 42, 90, 44, 94, 41,
+    96, 36, 100, 34, 105, 35, 109, 38, 107, 42, 103, 44, 98, 47, 94, 49,
+    89, 52, 85, 54, 80, 57, 77, 54, 77, 49, 78, 44, 78, 39, 78, 34,
+    78, 29,
+};
+
+// Derived from bacinger/f1-circuits; MIT notice in assets/images/circuits/LICENSE.txt.
+static const uint8_t s_jeddah[] = {
+    98, 45, 97, 42, 97, 40, 96, 37, 94, 36, 95, 34, 94, 31, 94, 29,
+    93, 27, 92, 25, 93, 22, 91, 20, 91, 18, 93, 16, 94, 14, 94, 11,
+    94, 9, 94, 6, 94, 4, 92, 3, 92, 6, 93, 8, 93, 11, 92, 13,
+    91, 15, 90, 17, 90, 19, 91, 22, 91, 24, 92, 27, 93, 29, 94, 31,
+    94, 34, 93, 36, 95, 38, 95, 41, 94, 43, 93, 45, 93, 48, 94, 50,
+    95, 53, 97, 54, 99, 56, 101, 57, 101, 54, 100, 52, 100, 49, 99, 47,
+    98, 45,
+};
+
+// Stable circuit identities: no year, round, meeting or race-lap fields.
+static const pdkpass_track_info_t s_catalog[] = {
+    { "melbourne", "MELBOURNE", 5278, 0x229971, 0x0871CD, { s_melbourne, sizeof(s_melbourne) / 2U } },
+    { "shanghai", "SHANGHAI", 5451, 0xF2A900, 0xC8102E, { s_shanghai, sizeof(s_shanghai) / 2U } },
+    { "suzuka", "SUZUKA", 5807, 0x229971, 0xD84A7F, { s_suzuka, sizeof(s_suzuka) / 2U } },
+    { "miami", "MIAMI", 5412, 0xD3208B, 0xD5007F, { s_miami, sizeof(s_miami) / 2U } },
+    { "montreal", "MONTREAL", 4361, 0xFF8700, 0xD52B1E, { s_montreal, sizeof(s_montreal) / 2U } },
+    { "monaco", "MONACO", 3337, 0x229971, 0x00A6C8, { s_monaco, sizeof(s_monaco) / 2U } },
+    { "catalunya", "BARCELONA", 4657, 0xFF7A00, 0xFF7A00, { s_catalunya, sizeof(s_catalunya) / 2U } },
+    { "spielberg", "SPIELBERG", 4318, 0xD3208B, 0xB50925, { s_spielberg, sizeof(s_spielberg) / 2U } },
+    { "silverstone", "SILVERSTONE", 5891, 0x00A6C8, 0x1D4ED8, { s_silverstone, sizeof(s_silverstone) / 2U } },
+    { "spa", "SPA-FRANCORCHAMPS", 7004, 0xD3208B, 0x365C7D, { s_spa, sizeof(s_spa) / 2U } },
+    { "hungaroring", "HUNGARORING", 4381, 0x8A3FFC, 0x7B2CBF, { s_hungaroring, sizeof(s_hungaroring) / 2U } },
+    { "zandvoort", "ZANDVOORT", 4259, 0xD3208B, 0xE85D04, { s_zandvoort, sizeof(s_zandvoort) / 2U } },
+    { "monza", "MONZA", 5793, 0xFFD928, 0x59636E, { s_monza, sizeof(s_monza) / 2U } },
+    { "madring", "MADRING", 5416, 0xF2A900, 0x5B3FD6, { s_madring, sizeof(s_madring) / 2U } },
+    { "baku", "BAKU", 6003, 0x00A6C8, 0x009CA6, { s_baku, sizeof(s_baku) / 2U } },
+    { "sepang", "SEPANG", 5543, 0xFF7A00, 0x009B77, { s_sepang, sizeof(s_sepang) / 2U } },
+    { "singapore", "MARINA BAY", 4927, 0x8A3FFC, 0x541388, { s_singapore, sizeof(s_singapore) / 2U } },
+    { "austin", "COTA", 5513, 0x0057B8, 0x173F5F, { s_austin, sizeof(s_austin) / 2U } },
+    { "mexico_city", "MEXICO CITY", 4304, 0x00843D, 0x00843D, { s_mexico_city, sizeof(s_mexico_city) / 2U } },
+    { "interlagos", "INTERLAGOS", 4309, 0xFFCC29, 0x4C9F38, { s_interlagos, sizeof(s_interlagos) / 2U } },
+    { "las_vegas", "LAS VEGAS", 6201, 0xD3208B, 0xFF2DAA, { s_las_vegas, sizeof(s_las_vegas) / 2U } },
+    { "losail", "LUSAIL", 5419, 0x8A1538, 0x8A1538, { s_losail, sizeof(s_losail) / 2U } },
+    { "yas_marina", "YAS MARINA", 5281, 0x00A9A5, 0x004C6D, { s_yas_marina, sizeof(s_yas_marina) / 2U } },
+    { "portimao", "PORTIMAO", 4653, 0xD4AF37, 0xC49A38, { s_portimao, sizeof(s_portimao) / 2U } },
+    { "istanbul", "ISTANBUL", 5338, 0xE32636, 0xB84B40, { s_istanbul, sizeof(s_istanbul) / 2U } },
+    { "sakhir", "SAKHIR", 5412, 0xC87941, 0xA87956, { s_sakhir, sizeof(s_sakhir) / 2U } },
+    { "jeddah", "JEDDAH", 6175, 0x60B893, 0x487B68, { s_jeddah, sizeof(s_jeddah) / 2U } },
+};
+
+typedef struct { const char *alias; const char *id; } track_alias_t;
+static const track_alias_t s_aliases[] = {
+    { "MELBOURNE", "melbourne" },
+    { "ALBERT PARK", "melbourne" },
+    { "ALBERT PARK GRAND PRIX CIRCUIT", "melbourne" },
+    { "SHANGHAI", "shanghai" },
+    { "SHANGHAI INTERNATIONAL CIRCUIT", "shanghai" },
+    { "SUZUKA", "suzuka" },
+    { "SUZUKA CIRCUIT", "suzuka" },
+    { "MIAMI", "miami" },
+    { "MIAMI INTERNATIONAL AUTODROME", "miami" },
+    { "MONTREAL", "montreal" },
+    { "GILLES VILLENEUVE", "montreal" },
+    { "CIRCUIT GILLES-VILLENEUVE", "montreal" },
+    { "MONACO", "monaco" },
+    { "MONTE CARLO", "monaco" },
+    { "CIRCUIT DE MONACO", "monaco" },
+    { "BARCELONA", "catalunya" },
+    { "CATALUNYA", "catalunya" },
+    { "CIRCUIT DE BARCELONA-CATALUNYA", "catalunya" },
+    { "SPIELBERG", "spielberg" },
+    { "RED BULL RING", "spielberg" },
+    { "SILVERSTONE", "silverstone" },
+    { "SILVERSTONE CIRCUIT", "silverstone" },
+    { "SPA", "spa" },
+    { "SPA-FRANCORCHAMPS", "spa" },
+    { "CIRCUIT DE SPA-FRANCORCHAMPS", "spa" },
+    { "BUDAPEST", "hungaroring" },
+    { "HUNGARORING", "hungaroring" },
+    { "ZANDVOORT", "zandvoort" },
+    { "CIRCUIT ZANDVOORT", "zandvoort" },
+    { "MONZA", "monza" },
+    { "AUTODROMO NAZIONALE MONZA", "monza" },
+    { "MADRING", "madring" },
+    { "MADRID", "madring" },
+    { "BAKU", "baku" },
+    { "BAKU CITY CIRCUIT", "baku" },
+    { "SEPANG", "sepang" },
+    { "SEPANG INTERNATIONAL CIRCUIT", "sepang" },
+    { "MARINA BAY", "singapore" },
+    { "SINGAPORE", "singapore" },
+    { "MARINA BAY STREET CIRCUIT", "singapore" },
+    { "COTA", "austin" },
+    { "AUSTIN", "austin" },
+    { "CIRCUIT OF THE AMERICAS", "austin" },
+    { "MEXICO CITY", "mexico_city" },
+    { "AUTÓDROMO HERMANOS RODRÍGUEZ", "mexico_city" },
+    { "INTERLAGOS", "interlagos" },
+    { "SAO PAULO", "interlagos" },
+    { "AUTÓDROMO JOSÉ CARLOS PACE", "interlagos" },
+    { "LAS VEGAS", "las_vegas" },
+    { "LAS VEGAS STRIP CIRCUIT", "las_vegas" },
+    { "LUSAIL", "losail" },
+    { "LOSAIL", "losail" },
+    { "LUSAIL INTERNATIONAL CIRCUIT", "losail" },
+    { "YAS MARINA", "yas_marina" },
+    { "YAS MARINA CIRCUIT", "yas_marina" },
+    { "PORTIMAO", "portimao" },
+    { "PORTIMÃO", "portimao" },
+    { "ALGARVE", "portimao" },
+    { "AUTODROMO INTERNACIONAL DO ALGARVE", "portimao" },
+    { "ISTANBUL", "istanbul" },
+    { "ISTANBUL PARK", "istanbul" },
+    { "INTERCITY ISTANBUL PARK", "istanbul" },
+    { "SAKHIR", "sakhir" },
+    { "BAHRAIN", "sakhir" },
+    { "BAHRAIN INTERNATIONAL CIRCUIT", "sakhir" },
+    { "JEDDAH", "jeddah" },
+    { "JEDDAH CORNICHE CIRCUIT", "jeddah" },
+};
+
+// Normalize ASCII case and Latin accents used by known circuit names.
+static unsigned name_char(const unsigned char **cursor)
 {
-    if (!circuit || !geometry) return false;
-    for (size_t i = 0; i < sizeof(s_tracks) / sizeof(s_tracks[0]); i++) {
-        if (strcmp(circuit, s_tracks[i].circuit) == 0) {
-            geometry->xy = s_tracks[i].xy;
-            geometry->point_count = s_tracks[i].byte_count / 2U;
-            return true;
+    unsigned c = *(*cursor)++;
+    if (c == 0xC3 && **cursor) {
+        unsigned next = *(*cursor)++;
+        switch (next | 0x20U) {
+            case 0xA0: case 0xA1: case 0xA2: case 0xA3: case 0xA4: return 'A';
+            case 0xA7: return 'C';
+            case 0xA8: case 0xA9: case 0xAA: case 0xAB: return 'E';
+            case 0xAC: case 0xAD: case 0xAE: case 0xAF: return 'I';
+            case 0xB2: case 0xB3: case 0xB4: case 0xB5: case 0xB6: return 'O';
+            case 0xB9: case 0xBA: case 0xBB: case 0xBC: return 'U';
+            default: return 0xC300U | next;
         }
     }
-    return false;
+    return c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c;
+}
+
+static bool name_equal(const char *a, const char *b)
+{
+    const unsigned char *left = (const unsigned char *)a;
+    const unsigned char *right = (const unsigned char *)b;
+    while (*left && *right) if (name_char(&left) != name_char(&right)) return false;
+    return *left == *right;
+}
+
+size_t pdkpass_track_count(void) { return sizeof(s_catalog) / sizeof(s_catalog[0]); }
+const pdkpass_track_info_t *pdkpass_track_at(size_t index)
+{
+    return index < pdkpass_track_count() ? &s_catalog[index] : NULL;
+}
+
+const pdkpass_track_info_t *pdkpass_track_find(const char *circuit)
+{
+    if (!circuit) return NULL;
+    const char *id = circuit;
+    for (size_t i = 0; i < sizeof(s_aliases) / sizeof(s_aliases[0]); i++) {
+        if (name_equal(circuit, s_aliases[i].alias)) { id = s_aliases[i].id; break; }
+    }
+    for (size_t i = 0; i < pdkpass_track_count(); i++)
+        if (name_equal(id, s_catalog[i].id)) return &s_catalog[i];
+    return NULL;
+}
+
+bool pdkpass_track_get(const char *circuit, pdkpass_track_geometry_t *geometry)
+{
+    const pdkpass_track_info_t *track = pdkpass_track_find(circuit);
+    if (!track || !geometry) return false;
+    *geometry = track->geometry;
+    return true;
 }

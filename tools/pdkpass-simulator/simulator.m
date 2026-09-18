@@ -3,6 +3,7 @@
 
 #include "lvgl.h"
 #include "pdkpass_data.h"
+#include "pdkpass_calendar.h"
 #include "pdkpass_network.h"
 #include "pdkpass_results.h"
 #include "pdkpass_season.h"
@@ -24,6 +25,7 @@ enum {
 static uint16_t s_draw_buffer[SIMULATOR_WIDTH * SIMULATOR_HEIGHT];
 static uint16_t s_framebuffer[SIMULATOR_WIDTH * SIMULATOR_HEIGHT];
 static size_t s_home_race_index = 12U;
+static unsigned s_preview_year = 2026;
 static NSLock *s_results_lock;
 static pdkpass_result_snapshot_t
     s_results[PDKPASS_MAX_RACES][PDKPASS_SESSION_COUNT];
@@ -129,23 +131,13 @@ void bsp_lvgl_set_drawing(bool enabled)
 // for the simulator's explicitly selected preview round.
 bool pdkpass_season_snapshot(pdkpass_season_snapshot_t *snapshot)
 {
-    if (!snapshot) return false;
-    memset(snapshot, 0, sizeof(*snapshot));
-    snapshot->year = 2026;
-    snapshot->race_count = (uint8_t)pdkpass_race_count;
-    snapshot->driver_count = (uint8_t)pdkpass_driver_count;
-    snprintf(snapshot->standings_as_of, sizeof(snapshot->standings_as_of),
-             "31 AUG");
-    memcpy(snapshot->races, pdkpass_races,
-           pdkpass_race_count * sizeof(snapshot->races[0]));
+    if (!pdkpass_calendar_load(s_preview_year, snapshot)) return false;
     time_t now = time(NULL);
     for (size_t i = 0; i < snapshot->race_count; i++) {
         snapshot->races[i].switch_at_utc = i < s_home_race_index
             ? now - (int64_t)(s_home_race_index - i) * 86400
             : now + (int64_t)(i - s_home_race_index + 1U) * 86400;
     }
-    memcpy(snapshot->drivers, pdkpass_drivers,
-           pdkpass_driver_count * sizeof(snapshot->drivers[0]));
     return true;
 }
 static NSString *results_cache_path(void)
@@ -164,7 +156,8 @@ static NSString *results_cache_path(void)
       withIntermediateDirectories:YES
                        attributes:nil
                             error:nil];
-    return [[directory URLByAppendingPathComponent:@"results-2026.json"] path];
+    return [[directory URLByAppendingPathComponent:
+        [NSString stringWithFormat:@"results-%u.json", s_preview_year]] path];
 }
 
 static void copy_json_string(char *destination, size_t capacity, id value)
@@ -182,7 +175,7 @@ static void results_cache_load(void)
                                                            error:nil];
     if (![root isKindOfClass:NSDictionary.class] ||
         [root[@"version"] unsignedIntegerValue] != 1U ||
-        [root[@"year"] unsignedIntegerValue] != 2026U) return;
+        [root[@"year"] unsignedIntegerValue] != s_preview_year) return;
     NSDictionary *entries = root[@"results"];
     if (![entries isKindOfClass:NSDictionary.class]) return;
 
@@ -256,7 +249,7 @@ static void results_cache_save_locked(void)
     }
     NSDictionary *root = @{
         @"version" : @1,
-        @"year" : @2026,
+        @"year" : @(s_preview_year),
         @"results" : entries,
     };
     NSData *data = [NSJSONSerialization dataWithJSONObject:root
@@ -756,7 +749,7 @@ static void simulator_initialize(void)
 
 static void print_usage(const char *program)
 {
-    printf("Usage: %s [--race 1-23] [--page home|calendar|standings|track|results] [--sync-results] [--network-view menu|retry|setup|confirm] "
+    printf("Usage: %s [--year 2026|2027] [--race 1-24] [--page home|calendar|standings|track|results] [--sync-results] [--network-view menu|retry|setup|confirm] "
            "[--battery -1..100] [--screenshot FILE.png]\n", program);
     printf("\nKeyboard: Up/Down browse, Return/Space select, hold Return or Esc back,\n");
     printf("          1-5 network states, S or Command-S screenshot.\n");
@@ -770,6 +763,12 @@ int main(int argc, const char *argv[])
         const char *pageView = "home";
         BOOL syncResults = NO;
         for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--year") == 0 && i + 1 < argc) {
+                const char *value = argv[++i];
+                if (strcmp(value, "2026") && strcmp(value, "2027")) return 2;
+                s_preview_year = (unsigned)strtoul(value, NULL, 10);
+                continue;
+            }
             if (strcmp(argv[i], "--page") == 0 && i + 1 < argc) {
                 pageView = argv[++i];
                 if (strcmp(pageView, "home") && strcmp(pageView, "calendar") &&
@@ -799,8 +798,8 @@ int main(int argc, const char *argv[])
             }
             if (strcmp(argv[i], "--race") == 0 && i + 1 < argc) {
                 unsigned long race = strtoul(argv[++i], NULL, 10);
-                if (race < 1U || race > 23U) {
-                    fprintf(stderr, "--race must be between 1 and 23\n");
+                if (race < 1U || race > 24U) {
+                    fprintf(stderr, "--race must be between 1 and 24\n");
                     return 2;
                 }
                 s_home_race_index = (size_t)race - 1U;
@@ -819,6 +818,7 @@ int main(int argc, const char *argv[])
             return 2;
         }
 
+        if (s_home_race_index >= (s_preview_year == 2027 ? 24U : 23U)) return 2;
         if (screenshotPath || syncResults) {
             simulator_initialize();
             if (!networkView && !syncResults) {

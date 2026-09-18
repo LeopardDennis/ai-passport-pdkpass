@@ -24,7 +24,7 @@ int main(void)
         "BARCELONA", "SPIELBERG", "SILVERSTONE", "SPA-FRANCORCHAMPS",
         "HUNGARORING", "ZANDVOORT", "MONZA", "MADRING", "BAKU", "SEPANG",
         "MARINA BAY", "COTA", "MEXICO CITY", "INTERLAGOS", "LAS VEGAS",
-        "LUSAIL", "YAS MARINA",
+        "LUSAIL", "YAS MARINA", "PORTIMAO", "ISTANBUL", "SAKHIR", "JEDDAH",
     };
     for (size_t i = 0; i < sizeof(circuits) / sizeof(circuits[0]); i++) {
         assert_track(circuits[i]);
@@ -35,6 +35,27 @@ int main(void)
     assert(pdkpass_track_get("MADRING", &madring));
     assert(pdkpass_track_get("MADRID", &madrid));
     assert(madring.xy == madrid.xy);
+
+    assert(pdkpass_track_count() == 27);
+    for (size_t i = 0; i < pdkpass_track_count(); i++) {
+        const pdkpass_track_info_t *track = pdkpass_track_at(i);
+        assert(track && track->length_m > 3000 && track->length_m < 8000);
+        assert(pdkpass_track_find(track->id) == track);
+        assert(pdkpass_track_find(track->name) == track);
+        assert_track(track->id);
+        for (size_t j = 0; j < i; j++) {
+            assert(strcmp(track->id, pdkpass_track_at(j)->id) != 0);
+            assert(track->background != pdkpass_track_at(j)->background);
+        }
+    }
+    assert(!pdkpass_track_at(27));
+    assert(!pdkpass_track_find(""));
+    assert(!pdkpass_track_find("Portugal")); // Country is not a circuit identity.
+    assert(pdkpass_track_find("Portimão") == pdkpass_track_find("PORTIMAO"));
+    assert(pdkpass_track_find("Autódromo Internacional do Algarve")->length_m == 4653);
+    assert(pdkpass_track_find("Intercity Istanbul Park")->length_m == 5338);
+    assert(pdkpass_track_find("Bahrain International Circuit")->length_m == 5412);
+    assert(pdkpass_track_find("Jeddah Corniche Circuit")->length_m == 6175);
 
     pdkpass_track_geometry_t unknown = { 0 };
     assert(!pdkpass_track_get("UNKNOWN", &unknown));

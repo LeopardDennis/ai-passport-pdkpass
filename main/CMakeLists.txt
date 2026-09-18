@@ -3,6 +3,7 @@ idf_component_register(
          "ui_pixel.c"
          "ui_pixel_math.c"
          "pdkpass_data.c"
+         "pdkpass_calendar.c"
          "pdkpass_model.c"
          "pdkpass_power.c"
          "pdkpass_network.c"

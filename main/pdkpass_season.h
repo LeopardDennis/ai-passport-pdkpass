@@ -17,8 +17,8 @@ typedef struct {
 
 typedef void (*pdkpass_season_callback_t)(void);
 
-// Loads the last complete season snapshot (or the bundled 2026 fallback) and
-// starts the daily OpenF1 calendar/standings synchronizer.
+// Loads the last complete snapshot; a valid clock selects a newer bundled
+// season even offline. Starts the daily OpenF1 calendar/standings synchronizer.
 esp_err_t pdkpass_season_start(pdkpass_season_callback_t callback);
 
 // Network state includes time validity so an unset RTC cannot select a bogus

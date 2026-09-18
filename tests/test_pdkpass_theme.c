@@ -10,7 +10,7 @@ int main(void)
         "BARCELONA", "SPIELBERG", "SILVERSTONE", "SPA-FRANCORCHAMPS",
         "HUNGARORING", "ZANDVOORT", "MONZA", "MADRING", "BAKU", "SEPANG",
         "MARINA BAY", "COTA", "MEXICO CITY", "INTERLAGOS", "LAS VEGAS",
-        "LUSAIL", "YAS MARINA",
+        "LUSAIL", "YAS MARINA", "PORTIMAO", "ISTANBUL", "SAKHIR", "JEDDAH",
     };
     uint32_t colors[sizeof(circuits) / sizeof(circuits[0])] = { 0 };
     for (size_t i = 0; i < sizeof(circuits) / sizeof(circuits[0]); i++) {
@@ -31,6 +31,9 @@ int main(void)
     assert(pdkpass_theme_get("MADRING", &madring));
     assert(madrid.top == madring.top);
     assert(madrid.bottom == madring.bottom);
+    assert(pdkpass_theme_get("Portimão", &madrid));
+    assert(pdkpass_theme_get("portimao", &madring));
+    assert(madrid.top == madring.top);
 
     pdkpass_theme_t china = { 0 };
     pdkpass_theme_t monza = { 0 };
