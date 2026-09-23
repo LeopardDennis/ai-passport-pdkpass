@@ -18,6 +18,7 @@ void pdkpass_state_init(pdkpass_state_t *state)
     state->selected_driver = 0;
     state->selected_session = PDKPASS_SESSION_FP1;
     state->home_race = 0;
+    state->home_browsing = false;
     state->season_complete = false;
     state->network_selection = 0;
 }
@@ -27,9 +28,17 @@ void pdkpass_state_set_home_race(pdkpass_state_t *state, size_t race_index,
 {
     state->season_complete = race_index >= race_count;
     state->home_race = state->season_complete ? 0 : race_index;
-    if (state->page == PDKPASS_PAGE_HOME && !state->season_complete) {
+    if (state->page == PDKPASS_PAGE_HOME && !state->home_browsing) {
         state->selected_race = state->home_race;
     }
+}
+
+void pdkpass_state_reset_home_race(pdkpass_state_t *state, size_t race_count)
+{
+    state->home_browsing = false;
+    state->selected_race = state->season_complete
+                               ? (race_count > 0 ? race_count - 1 : 0)
+                               : state->home_race;
 }
 
 // Pure navigation state machine. UI rendering and hardware access intentionally
@@ -37,20 +46,31 @@ void pdkpass_state_set_home_race(pdkpass_state_t *state, size_t race_index,
 void pdkpass_state_handle(pdkpass_state_t *state, pdkpass_input_t input,
                           size_t race_count, size_t driver_count)
 {
+    pdkpass_page_t previous_page = state->page;
     switch (state->page) {
     case PDKPASS_PAGE_HOME:
         if (input == PDKPASS_INPUT_BACK) state->page = PDKPASS_PAGE_NETWORK;
-        if (input == PDKPASS_INPUT_UP) state->page = PDKPASS_PAGE_STANDINGS;
-        if (input == PDKPASS_INPUT_DOWN) {
+        if (input == PDKPASS_INPUT_UP_LONG) state->page = PDKPASS_PAGE_STANDINGS;
+        if (input == PDKPASS_INPUT_DOWN_LONG) {
             if (race_count > 0) {
-                state->selected_race = state->season_complete ? race_count - 1
-                                                              : state->home_race;
+                state->selected_race = state->home_browsing
+                                           ? state->selected_race
+                                           : (state->season_complete ? race_count - 1
+                                                                     : state->home_race);
             }
             state->page = PDKPASS_PAGE_CALENDAR;
         }
+        if ((input == PDKPASS_INPUT_UP || input == PDKPASS_INPUT_DOWN) &&
+            race_count > 0) {
+            size_t current = state->season_complete && !state->home_browsing
+                                 ? race_count - 1 : state->selected_race;
+            state->selected_race = input == PDKPASS_INPUT_UP
+                                       ? wrap_previous(current, race_count)
+                                       : wrap_next(current, race_count);
+            state->home_browsing = true;
+        }
         if (input == PDKPASS_INPUT_OK && race_count > 0 &&
-            !state->season_complete) {
-            state->selected_race = state->home_race;
+            (!state->season_complete || state->home_browsing)) {
             state->detail_origin = PDKPASS_PAGE_HOME;
             state->page = PDKPASS_PAGE_RACE_DETAIL;
         }
@@ -116,5 +136,9 @@ void pdkpass_state_handle(pdkpass_state_t *state, pdkpass_input_t input,
             state->page = PDKPASS_PAGE_RACE_DETAIL;
         }
         break;
+    }
+    if (previous_page != PDKPASS_PAGE_HOME && state->page == PDKPASS_PAGE_HOME &&
+        !state->home_browsing) {
+        pdkpass_state_reset_home_race(state, race_count);
     }
 }

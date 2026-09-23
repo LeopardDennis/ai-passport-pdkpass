@@ -69,7 +69,8 @@ Pillow) to check pixel centering, battery states and invalid preview arguments.
 
 | Mac input | Device action |
 | --- | --- |
-| Up / Down | Browse |
+| Up / Down | Browse previous / next race on home; scroll on other screens |
+| Hold Up / Down for 0.65 seconds on home | Driver standings / calendar |
 | Return or Space | OK |
 | Hold Return for 0.65 seconds | Back |
 | Escape | Back |

@@ -482,7 +482,7 @@ static void render_season_complete(void)
                                   UI_PAPER, 3);
     make_center_label(offline, "SEASON DATA SAVED", 0, 7, 188,
                       &lv_font_unscii_8, UI_INK);
-    set_hint("UP:POINTS DN:CALENDAR");
+    set_hint("UP/DN:RACE HOLD:VIEWS");
 }
 
 static const char *network_word(void)
@@ -521,9 +521,9 @@ static void update_home_status(void)
     uint32_t background = UI_SKY;
     if (s_network_state == PDKPASS_NETWORK_OFFLINE) {
         background = UI_RED;
-    } else if (!s_state.season_complete &&
-               s_state.home_race < s_season.race_count) {
-        background = theme_for_race(&s_season.races[s_state.home_race]).top;
+    } else if ((!s_state.season_complete || s_state.home_browsing) &&
+               s_state.selected_race < s_season.race_count) {
+        background = theme_for_race(&s_season.races[s_state.selected_race]).top;
     }
     set_status(text, background);
 }
@@ -550,12 +550,13 @@ static void render_home(void)
         render_wifi_setup();
         return;
     }
-    if (s_state.season_complete || s_state.home_race >= s_season.race_count) {
+    if ((s_state.season_complete && !s_state.home_browsing) ||
+        s_state.selected_race >= s_season.race_count) {
         render_season_complete();
         return;
     }
 
-    const pdkpass_race_t *race = &s_season.races[s_state.home_race];
+    const pdkpass_race_t *race = &s_season.races[s_state.selected_race];
     pdkpass_theme_t theme = theme_for_race(race);
     char title[20];
     title_for_season(title, sizeof(title), "PDKPASS");
@@ -599,12 +600,12 @@ static void render_home(void)
                       contrast_color(race->accent));
     char page[20];
     snprintf(page, sizeof(page), "%u / %u",
-             (unsigned)(s_state.home_race + 1U),
+             (unsigned)(s_state.selected_race + 1U),
              (unsigned)s_season.race_count);
     make_center_label(s_content, page, 0, 146, INNER_W,
                       &lv_font_unscii_16, UI_PAPER);
-    make_progress(s_state.home_race, s_season.race_count);
-    set_hint("UP/DN  OK:DETAIL");
+    make_progress(s_state.selected_race, s_season.race_count);
+    set_hint("UP/DN:RACE HOLD:VIEWS");
 }
 
 static bool update_list_selection(int page, size_t start, size_t selected,
@@ -868,8 +869,11 @@ static void render_results(void)
         const char *detail = "NO RESULT CACHED";
         if (available && result.status == PDKPASS_RESULT_UNKNOWN &&
             s_network_state == PDKPASS_NETWORK_ONLINE) {
-            state = "FETCHING RESULT";
-            detail = "OPENF1 SYNC IN PROGRESS";
+            // ONLINE only means Wi-Fi is connected. The results worker may be
+            // waiting for the session, a retry deadline, or its HTTP turn.
+            state = s_time_valid && (int64_t)time(NULL) < race->switch_at_utc
+                        ? "RESULT PENDING" : "SYNC PENDING";
+            detail = "OPENF1 CHECK SCHEDULED";
         } else if (available && result.status == PDKPASS_RESULT_NOT_HELD) {
             state = "NO SESSION";
             detail = "NOT ON THIS WEEKEND";
@@ -915,7 +919,7 @@ static void render(void)
                          s_state.page == PDKPASS_PAGE_RACE_DETAIL ||
                          (s_state.page == PDKPASS_PAGE_HOME &&
                           s_network_state != PDKPASS_NETWORK_SETUP &&
-                          !s_state.season_complete);
+                          (!s_state.season_complete || s_state.home_browsing));
     if (!circuit_theme)
         ui_pixel_screen_set_theme(s_screen, UI_SKY, UI_SKY_DARK);
     switch (s_state.page) {
@@ -1031,7 +1035,7 @@ static void clock_tick(lv_timer_t *timer)
                                              s_season.race_count);
     pdkpass_state_set_home_race(&s_state, next, s_season.race_count);
     if (s_state.page == PDKPASS_PAGE_HOME) {
-        if (previous != next) render();
+        if (previous != next && !s_state.home_browsing) render();
         else update_home_status();
     }
 
@@ -1058,6 +1062,10 @@ static void idle_tick(lv_timer_t *timer)
         bsp_lvgl_set_drawing(false);
         pdkpass_power_display(false);
         s_idle_stage = 2;
+        if (s_state.page == PDKPASS_PAGE_HOME && s_state.home_browsing) {
+            pdkpass_state_reset_home_race(&s_state, s_season.race_count);
+            render();
+        }
         lv_timer_pause(timer);
     } else if (elapsed >= IDLE_DIM_SECONDS * 1000U) {
         bsp_display_backlight(25);
@@ -1202,12 +1210,21 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     }
     if (was_off) {
         if (s_needs_render) render();
+        if (s_state.page == PDKPASS_PAGE_RESULTS ||
+            s_state.page == PDKPASS_PAGE_RACE_DETAIL)
+            pdkpass_results_request_race(s_state.selected_race);
         return;
     }
 
     pdkpass_input_t input;
     if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
         input = PDKPASS_INPUT_BACK;
+    } else if (s_state.page == PDKPASS_PAGE_HOME &&
+               btn == BSP_BTN_UP && ev == BSP_BTN_LONG) {
+        input = PDKPASS_INPUT_UP_LONG;
+    } else if (s_state.page == PDKPASS_PAGE_HOME &&
+               btn == BSP_BTN_DOWN && ev == BSP_BTN_LONG) {
+        input = PDKPASS_INPUT_DOWN_LONG;
     } else if (ev != BSP_BTN_CLICK) {
         return;
     } else if (btn == BSP_BTN_UP) {

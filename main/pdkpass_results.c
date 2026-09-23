@@ -22,11 +22,11 @@
 
 #define RESULTS_TASK_STACK 7168
 #define RESULTS_TASK_PRIORITY 3
-#define RESULTS_BODY_LIMIT 24576
 #define RESULTS_ACTIVE_DELAY_MS (10U * 60U * 1000U)
 #define RESULTS_BACKFILL_DELAY_MS 5000U
 #define RESULTS_IDLE_DELAY_MS (24U * 60U * 60U * 1000U)
 #define RESULTS_DISCOVERY_INTERVAL_SECONDS (6LL * 60LL * 60LL)
+#define RESULTS_MANUAL_RETRY_SECONDS (5LL * 60LL)
 #define RESULTS_WINDOW_SECONDS (5LL * 24LL * 60LL * 60LL)
 #define RESULTS_GRACE_SECONDS (24LL * 60LL * 60LL)
 #define RESULTS_CACHE_MAGIC 0x50444B52U
@@ -299,11 +299,6 @@ static esp_err_t save_cache(void)
     return err;
 }
 
-static esp_err_t http_get_json(const char *url, char **json)
-{
-    return pdkpass_http_get(url, RESULTS_BODY_LIMIT, json);
-}
-
 static bool json_bool(const cJSON *object, const char *name)
 {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, name);
@@ -325,6 +320,36 @@ static void update_session_identity(session_cache_t *session, int32_t key,
     session->end_utc = end_utc;
 }
 
+typedef struct {
+    race_cache_t *cache;
+    int64_t window_start, window_end;
+    bool matched;
+} session_discovery_t;
+
+static bool parse_discovered_session(const cJSON *item, void *user)
+{
+    session_discovery_t *discovery = user;
+    const cJSON *name = cJSON_GetObjectItemCaseSensitive(item, "session_name");
+    const cJSON *key = cJSON_GetObjectItemCaseSensitive(item, "session_key");
+    const cJSON *date_end = cJSON_GetObjectItemCaseSensitive(item, "date_end");
+    if (!cJSON_IsString(name) || !cJSON_IsNumber(key) ||
+        !cJSON_IsString(date_end)) return true;
+
+    pdkpass_session_kind_t kind =
+        pdkpass_session_kind_from_name(name->valuestring);
+    int64_t end_utc;
+    if (kind >= PDKPASS_SESSION_COUNT ||
+        !pdkpass_parse_iso8601_utc(date_end->valuestring, &end_utc) ||
+        end_utc < discovery->window_start || end_utc > discovery->window_end)
+        return true;
+
+    session_cache_t *session = &discovery->cache->sessions[kind];
+    update_session_identity(session, (int32_t)key->valuedouble,
+                            json_bool(item, "is_cancelled"), end_utc);
+    discovery->matched = true;
+    return true;
+}
+
 static bool discover_sessions(size_t race_index, race_cache_t *cache,
                               int64_t now_utc)
 {
@@ -341,71 +366,38 @@ static bool discover_sessions(size_t race_index, race_cache_t *cache,
                  pdkpass_season_year(), race.api_country);
     }
 
-    char *body = NULL;
-    if (http_get_json(url, &body) != ESP_OK) return false;
-    cJSON *root = cJSON_Parse(body);
-    bool valid = cJSON_IsArray(root);
-    if (!valid)
-        pdkpass_http_report_data_failure("results-sessions-json",
-                                         ESP_ERR_INVALID_RESPONSE, strlen(body));
-    free(body);
-    if (!valid) {
-        cJSON_Delete(root);
+    // Do not publish a prefix of an interrupted or malformed response.
+    race_cache_t parsed = *cache;
+    session_discovery_t discovery = {
+        .cache = &parsed,
+        .window_start = race.switch_at_utc - RESULTS_WINDOW_SECONDS,
+        .window_end = race.switch_at_utc,
+    };
+    if (pdkpass_http_array(url, parse_discovered_session, &discovery) != ESP_OK)
         return false;
-    }
-
-    bool matched = false;
-    int64_t window_start = race.switch_at_utc - RESULTS_WINDOW_SECONDS;
-    const cJSON *item;
-    cJSON_ArrayForEach(item, root) {
-        const cJSON *name = cJSON_GetObjectItemCaseSensitive(item, "session_name");
-        const cJSON *key = cJSON_GetObjectItemCaseSensitive(item, "session_key");
-        const cJSON *date_end = cJSON_GetObjectItemCaseSensitive(item, "date_end");
-        if (!cJSON_IsString(name) || !cJSON_IsNumber(key) ||
-            !cJSON_IsString(date_end)) continue;
-
-        pdkpass_session_kind_t kind =
-            pdkpass_session_kind_from_name(name->valuestring);
-        int64_t end_utc;
-        if (kind >= PDKPASS_SESSION_COUNT ||
-            !pdkpass_parse_iso8601_utc(date_end->valuestring, &end_utc) ||
-            end_utc < window_start || end_utc > race.switch_at_utc) continue;
-
-        session_cache_t *session = &cache->sessions[kind];
-        int32_t session_key = (int32_t)key->valuedouble;
-        update_session_identity(session, session_key,
-                                json_bool(item, "is_cancelled"), end_utc);
-        matched = true;
-    }
-    cJSON_Delete(root);
-    if (matched) cache->discovered = 1;
+    if (discovery.matched) parsed.discovered = 1;
+    *cache = parsed;
     cache->last_discovery_utc = now_utc;
-    return matched;
+    return discovery.matched;
 }
 
-static bool parse_top_three(const char *body,
-                            result_driver_t top[PDKPASS_PODIUM_SIZE])
+static bool parse_podium_item(const cJSON *item, void *user)
 {
-    cJSON *root = cJSON_Parse(body);
-    if (!cJSON_IsArray(root)) {
-        pdkpass_http_report_data_failure("results-podium-json",
-                                         ESP_ERR_INVALID_RESPONSE, strlen(body));
-        cJSON_Delete(root);
-        return false;
-    }
-    memset(top, 0, sizeof(result_driver_t) * PDKPASS_PODIUM_SIZE);
-    const cJSON *item;
-    cJSON_ArrayForEach(item, root) {
-        const cJSON *position = cJSON_GetObjectItemCaseSensitive(item, "position");
-        const cJSON *number = cJSON_GetObjectItemCaseSensitive(item, "driver_number");
-        if (!cJSON_IsNumber(position) || !cJSON_IsNumber(number)) continue;
+    result_driver_t *top = user;
+    const cJSON *position = cJSON_GetObjectItemCaseSensitive(item, "position");
+    const cJSON *number = cJSON_GetObjectItemCaseSensitive(item, "driver_number");
+    if (cJSON_IsNumber(position) && cJSON_IsNumber(number)) {
         int place = position->valueint;
         if (place >= 1 && place <= PDKPASS_PODIUM_SIZE) {
             top[place - 1].position = (unsigned)place;
             top[place - 1].driver_number = number->valueint;
         }
     }
-    cJSON_Delete(root);
+    return true;
+}
+
+static bool podium_complete(const result_driver_t top[PDKPASS_PODIUM_SIZE])
+{
     for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
         if (top[i].position != i + 1 || top[i].driver_number <= 0) return false;
     }
@@ -421,31 +413,28 @@ static void copy_json_text(char *destination, size_t capacity,
              cJSON_IsString(item) ? item->valuestring : fallback);
 }
 
-static bool merge_driver_details(const char *body,
-                                 const result_driver_t top[PDKPASS_PODIUM_SIZE],
-                                 char podium_codes[PDKPASS_PODIUM_SIZE][4])
+typedef struct {
+    const result_driver_t *top;
+    char (*podium_codes)[4];
+} podium_details_t;
+
+static bool parse_podium_driver(const cJSON *item, void *user)
 {
-    cJSON *root = cJSON_Parse(body);
-    if (!cJSON_IsArray(root)) {
-        pdkpass_http_report_data_failure("results-drivers-json",
-                                         ESP_ERR_INVALID_RESPONSE, strlen(body));
-        cJSON_Delete(root);
-        return false;
+    podium_details_t *details = user;
+    const cJSON *number = cJSON_GetObjectItemCaseSensitive(item, "driver_number");
+    if (!cJSON_IsNumber(number)) return true;
+    for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
+        if (number->valueint != details->top[i].driver_number) continue;
+        char fallback[8];
+        snprintf(fallback, sizeof(fallback), "#%d", details->top[i].driver_number);
+        copy_json_text(details->podium_codes[i], sizeof(details->podium_codes[i]),
+                       item, "name_acronym", fallback);
     }
-    memset(podium_codes, 0, PDKPASS_PODIUM_SIZE * 4U);
-    const cJSON *item;
-    cJSON_ArrayForEach(item, root) {
-        const cJSON *number = cJSON_GetObjectItemCaseSensitive(item, "driver_number");
-        if (!cJSON_IsNumber(number)) continue;
-        for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
-            if (number->valueint != top[i].driver_number) continue;
-            char fallback[8];
-            snprintf(fallback, sizeof(fallback), "#%d", top[i].driver_number);
-            copy_json_text(podium_codes[i], sizeof(podium_codes[i]), item,
-                           "name_acronym", fallback);
-        }
-    }
-    cJSON_Delete(root);
+    return true;
+}
+
+static bool podium_drivers_complete(const char podium_codes[PDKPASS_PODIUM_SIZE][4])
+{
     for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
         if (podium_codes[i][0] == '\0') return false;
     }
@@ -458,20 +447,21 @@ static bool fetch_result(session_cache_t *session)
     snprintf(url, sizeof(url),
              "https://api.openf1.org/v1/session_result?session_key=%ld&position%%3C=3",
              (long)session->session_key);
-    char *body = NULL;
-    if (http_get_json(url, &body) != ESP_OK) return false;
-    result_driver_t top[PDKPASS_PODIUM_SIZE];
-    bool parsed = parse_top_three(body, top);
-    free(body);
-    if (!parsed) return false;
+    result_driver_t top[PDKPASS_PODIUM_SIZE] = {0};
+    if (pdkpass_http_array(url, parse_podium_item, top) != ESP_OK ||
+        !podium_complete(top)) return false;
 
     snprintf(url, sizeof(url),
              "https://api.openf1.org/v1/drivers?session_key=%ld",
              (long)session->session_key);
-    if (http_get_json(url, &body) != ESP_OK) return false;
-    parsed = merge_driver_details(body, top, session->podium_codes);
-    free(body);
-    if (parsed) session->ready = 1;
+    char podium_codes[PDKPASS_PODIUM_SIZE][4] = {0};
+    podium_details_t details = {.top = top, .podium_codes = podium_codes};
+    bool parsed = pdkpass_http_array(url, parse_podium_driver, &details) == ESP_OK &&
+                  podium_drivers_complete((const char (*)[4])podium_codes);
+    if (parsed) {
+        memcpy(session->podium_codes, podium_codes, sizeof(podium_codes));
+        session->ready = 1;
+    }
     return parsed;
 }
 
@@ -540,6 +530,31 @@ static bool race_needs_work(size_t race_index, int64_t now_utc)
     return discovery_due(&cache, now_utc);
 }
 
+static void expedite_requested_race(size_t race_index, int64_t now_utc)
+{
+    if (now_utc < 1767225600LL || !race_is_eligible(race_index, now_utc))
+        return;
+    int64_t retry_interval = retry_interval_seconds(race_index, now_utc);
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return;
+    race_cache_t *cache = &s_cache[race_index];
+    if (!cache_complete(race_index, cache, now_utc)) {
+        // Do this in the results worker, after any in-flight request has
+        // published its cache. The UI only queues the requested race.
+        if (now_utc - cache->last_discovery_utc >= RESULTS_MANUAL_RETRY_SECONDS &&
+            cache->next_discovery_utc > now_utc)
+            cache->next_discovery_utc = now_utc;
+        for (size_t i = 0; i < PDKPASS_SESSION_COUNT; i++) {
+            session_cache_t *session = &cache->sessions[i];
+            if (session->present && !session->cancelled && !session->ready &&
+                pdkpass_session_result_due(now_utc, session->end_utc) &&
+                now_utc - session->last_attempt_utc >= RESULTS_MANUAL_RETRY_SECONDS &&
+                now_utc - session->last_attempt_utc < retry_interval)
+                session->last_attempt_utc = 0;
+        }
+    }
+    xSemaphoreGive(s_lock);
+}
+
 static size_t select_race(int64_t now_utc)
 {
     size_t race_count = pdkpass_season_race_count();
@@ -549,8 +564,10 @@ static size_t select_race(int64_t now_utc)
         s_requested_race = SIZE_MAX;
         xSemaphoreGive(s_lock);
     }
-    if (requested < race_count &&
-        race_needs_work(requested, now_utc)) return requested;
+    if (requested < race_count) {
+        expedite_requested_race(requested, now_utc);
+        if (race_needs_work(requested, now_utc)) return requested;
+    }
     // Active weekend first; historical backfill rotates independently.
     for (size_t i = race_count; i > 0; i--) {
         pdkpass_race_t race;
@@ -790,7 +807,8 @@ void pdkpass_results_request_race(size_t race_index)
         race_index >= pdkpass_season_race_count()) return;
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) == pdTRUE) {
         s_requested_race = race_index;
-        bool needs_sync = !cache_complete(race_index, &s_cache[race_index], (int64_t)time(NULL));
+        bool needs_sync = !cache_complete(race_index, &s_cache[race_index],
+                                          (int64_t)time(NULL));
         xSemaphoreGive(s_lock);
         if (needs_sync) pdkpass_sync_plan(PDKPASS_SYNC_RESULTS, 0);
     }

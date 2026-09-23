@@ -131,9 +131,12 @@ static const char *retry_after, *chunks[2];
 static int chunk_count;
 static size_t free_bytes=100000, largest_block=65000;
 static char last_log[256];
+static char endpoint_log[64];
 static void capture_log(const char *format,...) {
  va_list args;va_start(args,format);
  vsnprintf(last_log,sizeof(last_log),format,args);
+ if(strstr(last_log,"GET endpoint="))
+  snprintf(endpoint_log,sizeof(endpoint_log),"%s",last_log);
  va_end(args);log_calls++;
 }
 #define ESP_LOGW(tag,format,...) capture_log(format,__VA_ARGS__)
@@ -194,7 +197,7 @@ static void reset_request(void) {
  status_code=200;transport_error=ESP_OK;retry_after=NULL;
  chunk_count=0;init_fails=false;realloc_fails=false;
  free_bytes=100000;largest_block=65000;
- log_calls=0;last_log[0]='\0';s_retry_at_us=0;
+ log_calls=0;last_log[0]='\0';endpoint_log[0]='\0';s_retry_at_us=0;
 }
 static bool accept_item(const cJSON *item,void *context) {
  assert(item&&item->object);(*(int *)context)++;return true;
@@ -214,6 +217,9 @@ int main(void) {
  reset_request();transport_error=ESP_FAIL;status_code=0;
  assert(pdkpass_http_get("https://example.test",16,&json)==ESP_FAIL);
  assert(strstr(last_log,"stage=transport"));
+ reset_request();transport_error=ESP_FAIL;status_code=0;
+ assert(pdkpass_http_get("https://api.openf1.org/v1/sessions?meeting_key=123",16,&json)==ESP_FAIL);
+ assert(strstr(endpoint_log,"endpoint=sessions")&&!strstr(endpoint_log,"123"));
  reset_request();init_fails=true;int cleaned=cleanup_calls;
  assert(pdkpass_http_get("https://example.test",16,&json)==ESP_ERR_NO_MEM);
  assert(strstr(last_log,"stage=client-init")&&cleanup_calls==cleaned);
@@ -235,6 +241,16 @@ int main(void) {
  int items=0;
  assert(pdkpass_http_array("https://example.test",accept_item,&items)==ESP_OK);
  assert(items==2&&log_calls==0);
+ reset_request();realloc_fails=true;
+ char many[10000];size_t used=0;many[used++]='[';
+ for (int i=0;i<1200;i++) {
+  if (i) many[used++]=',';
+  memcpy(many+used,"{\"x\":1}",7);used+=7;
+ }
+ many[used++]=']';many[used]='\0';
+ assert(used>8192);chunks[0]=many;chunk_count=1;items=0;
+ assert(pdkpass_http_array("https://example.test",accept_item,&items)==ESP_OK);
+ assert(items==1200&&log_calls==0);
  reset_request();chunks[0]="[{\"x\":1}";chunk_count=1;items=0;
  assert(pdkpass_http_array("https://example.test",accept_item,&items)==ESP_ERR_INVALID_RESPONSE);
  assert(items==1&&strstr(last_log,"stage=stream-end"));
@@ -248,6 +264,167 @@ int main(void) {
 }
 '''
         compile_run(code, ['main/pdkpass_json_stream.c'])
+
+    def test_streamed_results_publish_only_complete_responses(self):
+        source = (ROOT / 'main/pdkpass_results.c').read_text()
+        cache_types = source[source.index('typedef struct {'):
+                             source.index('} race_cache_t;') + len('} race_cache_t;')]
+        driver_type = source[source.index('typedef struct {\n    unsigned position;'):
+                             source.index('} result_driver_t;') + len('} result_driver_t;')]
+        discovery_type = source[source.index('typedef struct {\n    race_cache_t *cache;'):
+                                source.index('} session_discovery_t;') + len('} session_discovery_t;')]
+        details_type = source[source.index('typedef struct {\n    const result_driver_t *top;'):
+                              source.index('} podium_details_t;') + len('} podium_details_t;')]
+        window_define = next(line for line in source.splitlines()
+                             if line.startswith('#define RESULTS_WINDOW_SECONDS'))
+        code = PRELUDE + window_define + '\n' + cache_types + '\n' + driver_type + '\n' + discovery_type + '\n' + details_type + r'''
+typedef struct cJSON {
+ const char *key, *valuestring;
+ int type, valueint;
+ double valuedouble;
+ struct cJSON *child, *next;
+} cJSON;
+static const cJSON *cJSON_GetObjectItemCaseSensitive(const cJSON *obj,const char *key) {
+ for(const cJSON *p=obj?obj->child:NULL;p;p=p->next)
+  if(strcmp(p->key,key)==0)return p;
+ return NULL;
+}
+static bool cJSON_IsString(const cJSON *p) {return p&&p->type==1;}
+static bool cJSON_IsNumber(const cJSON *p) {return p&&p->type==2;}
+static bool cJSON_IsTrue(const cJSON *p) {return p&&p->type==3;}
+static bool fail_stream;
+bool pdkpass_parse_iso8601_utc(const char *text,int64_t *out) {
+ (void)text;*out=1000;return true;
+}
+pdkpass_session_kind_t pdkpass_session_kind_from_name(const char *name) {
+ return strcmp(name,"Race")==0?PDKPASS_SESSION_RACE:PDKPASS_SESSION_COUNT;
+}
+static int pdkpass_http_array(const char *url,bool (*item)(const cJSON *,void *),void *ctx) {
+ if(strstr(url,"/sessions?")) {
+  cJSON a={.key="session_name",.valuestring="Race",.type=1};
+  cJSON b={.key="session_key",.valueint=123,.valuedouble=123,.type=2};
+  cJSON c={.key="date_end",.valuestring="date",.type=1};
+  a.next=&b;b.next=&c;cJSON obj={.child=&a};
+  assert(item(&obj,ctx));return fail_stream?ESP_FAIL:ESP_OK;
+ }
+ if(strstr(url,"/session_result?")) {
+  for(int i=1;i<=3;i++) {
+   cJSON a={.key="position",.valueint=i,.type=2};
+   cJSON b={.key="driver_number",.valueint=i,.type=2};
+   a.next=&b;cJSON obj={.child=&a};assert(item(&obj,ctx));
+  }
+  return ESP_OK;
+ }
+ assert(strstr(url,"/drivers?"));
+ const char *codes[]={"AAA","BBB","CCC"};
+ for(int i=1;i<=3;i++) {
+  cJSON a={.key="driver_number",.valueint=i,.type=2};
+  cJSON b={.key="name_acronym",.valuestring=codes[i-1],.type=1};
+  a.next=&b;cJSON obj={.child=&a};assert(item(&obj,ctx));
+  if(fail_stream)return ESP_FAIL;
+ }
+ return ESP_OK;
+}
+'''
+        for signature in ['static bool json_bool(', 'static void update_session_identity(',
+                          'static bool parse_discovered_session(', 'static bool discover_sessions(',
+                          'static bool parse_podium_item(', 'static bool podium_complete(',
+                          'static void copy_json_text(', 'static bool parse_podium_driver(',
+                          'static bool podium_drivers_complete(', 'static bool fetch_result(']:
+            code += function(source, signature)
+        code += r'''
+int main(void) {
+ races[0].switch_at_utc=2000;races[0].meeting_key=42;
+ race_cache_t cache={0};fail_stream=true;
+ assert(!discover_sessions(0,&cache,2000));
+ assert(!cache.sessions[PDKPASS_SESSION_RACE].present);
+ fail_stream=false;assert(discover_sessions(0,&cache,2000));
+ session_cache_t *session=&cache.sessions[PDKPASS_SESSION_RACE];
+ assert(session->present&&session->session_key==123);
+ strcpy(session->podium_codes[0],"OLD");fail_stream=true;
+ assert(!fetch_result(session));assert(!session->ready);
+ assert(strcmp(session->podium_codes[0],"OLD")==0);
+ fail_stream=false;assert(fetch_result(session));assert(session->ready);
+ assert(strcmp(session->podium_codes[0],"AAA")==0);
+ assert(strcmp(session->podium_codes[1],"BBB")==0);
+ assert(strcmp(session->podium_codes[2],"CCC")==0);
+ puts("streamed results commit only complete responses: PASS");
+}
+'''
+        compile_run(code)
+
+    def test_streamed_standings_publish_only_complete_responses(self):
+        source = (ROOT / 'main/pdkpass_season.c').read_text()
+        context_type = source[source.index('typedef struct {\n    pdkpass_driver_t *drivers;'):
+                              source.index('} standings_context_t;') + len('} standings_context_t;')]
+        code = PRELUDE + '#include <ctype.h>\n' + context_type + r'''
+typedef struct cJSON {
+ const char *key, *valuestring;
+ int type, valueint;
+ double valuedouble;
+ struct cJSON *child, *next;
+} cJSON;
+static const cJSON *cJSON_GetObjectItemCaseSensitive(const cJSON *obj,const char *key) {
+ for(const cJSON *p=obj?obj->child:NULL;p;p=p->next)
+  if(strcmp(p->key,key)==0)return p;
+ return NULL;
+}
+static bool cJSON_IsString(const cJSON *p) {return p&&p->type==1;}
+static bool cJSON_IsNumber(const cJSON *p) {return p&&p->type==2;}
+static bool fail_driver_stream;
+static int pdkpass_http_array(const char *url,bool (*item)(const cJSON *,void *),void *ctx) {
+ if(strstr(url,"championship_drivers")) {
+  for(int i=2;i>=1;i--) {
+   cJSON a={.key="driver_number",.valueint=i,.type=2};
+   cJSON b={.key="position_current",.valueint=i,.type=2};
+   cJSON c={.key="points_current",.valuedouble=i==1?25.5:18,.type=2};
+   a.next=&b;b.next=&c;cJSON obj={.child=&a};assert(item(&obj,ctx));
+  }
+  return ESP_OK;
+ }
+ assert(strstr(url,"/drivers?"));
+ const char *codes[]={"AAA","BBB"};
+ const char *names[]={"ALPHA","BETA"};
+ for(int i=1;i<=2;i++) {
+  cJSON a={.key="driver_number",.valueint=i,.type=2};
+  cJSON b={.key="name_acronym",.valuestring=codes[i-1],.type=1};
+  cJSON c={.key="last_name",.valuestring=names[i-1],.type=1};
+  cJSON d={.key="team_name",.valuestring="TEAM",.type=1};
+  cJSON e={.key="team_colour",.valuestring="123456",.type=1};
+  a.next=&b;b.next=&c;c.next=&d;d.next=&e;
+  cJSON obj={.child=&a};assert(item(&obj,ctx));
+  if(fail_driver_stream)return ESP_FAIL;
+ }
+ return ESP_OK;
+}
+void pdkpass_format_beijing_date(int64_t now,char *out,size_t size) {
+ (void)now;snprintf(out,size,"23 SEP");
+}
+'''
+        for signature in ['static void copy_text(', 'static void copy_upper(',
+                          'static const char *json_string(', 'static bool json_number(',
+                          'static uint32_t parse_colour(', 'static int compare_drivers(',
+                          'static bool parse_standing_item(', 'static bool parse_standing_driver(',
+                          'static bool fetch_standings(']:
+            code += function(source, signature)
+        code += r'''
+int main(void) {
+ pdkpass_season_snapshot_t candidate={.driver_count=1};
+ strcpy(candidate.drivers[0].code,"OLD");
+ fail_driver_stream=true;
+ assert(!fetch_standings(123,1000,&candidate));
+ assert(candidate.driver_count==1&&strcmp(candidate.drivers[0].code,"OLD")==0);
+ fail_driver_stream=false;
+ assert(fetch_standings(123,1000,&candidate));
+ assert(candidate.driver_count==2);
+ assert(candidate.drivers[0].position==1&&candidate.drivers[0].points_tenths==255);
+ assert(strcmp(candidate.drivers[0].code,"AAA")==0);
+ assert(strcmp(candidate.drivers[1].name,"BETA")==0);
+ assert(candidate.drivers[1].accent==0x123456);
+ puts("streamed standings commit only complete responses: PASS");
+}
+'''
+        compile_run(code)
 
     def test_dark_display_skips_battery_i2c(self):
         source = (ROOT / 'main/main.c').read_text()
@@ -729,8 +906,17 @@ int main(void) {
         types = source[source.index('typedef struct {'):source.index('static const char *TAG')]
         code = PRELUDE + defines + '\n' + types + r'''
 #include "pdkpass_sync_policy.h"
+#define EVENT_WAKE 1
 static race_cache_t s_cache[PDKPASS_MAX_RACES];
 static size_t s_requested_race = SIZE_MAX, s_history_cursor;
+static int s_events=1, sync_plan_calls, wake_calls;
+static time_t fake_now;
+static time_t fake_time(time_t *out) {(void)out;return fake_now;}
+#define time fake_time
+static void xEventGroupSetBits(int events,int bits) {(void)events;(void)bits;wake_calls++;}
+void pdkpass_sync_plan(pdkpass_sync_service_t service,uint32_t delay) {
+ assert(service==PDKPASS_SYNC_RESULTS && delay==0);sync_plan_calls++;
+}
 static bool s_cache_dirty;
 static pdkpass_results_callback_t s_callback;
 static bool discover_ok, fetch_ok;
@@ -750,12 +936,16 @@ void pdkpass_sync_mark_success(pdkpass_sync_service_t service,int64_t utc) {
         for signature in ['static int64_t retry_interval_seconds(', 'static bool cache_has_due_result(',
                           'static bool discovery_due(', 'static bool cache_complete(',
                           'static bool race_is_eligible(', 'static bool race_needs_work(',
+                          'static void expedite_requested_race(',
                           'static size_t select_race(', 'static process_outcome_t process_race(',
-                          'static TickType_t next_scheduled_wait(']:
+                          'static TickType_t next_scheduled_wait(',
+                          'void pdkpass_results_request_race(']:
             code += function(source, signature)
         code += r'''
 int main(void) {
  int64_t now = 1788688800LL;
+ s_lock=1;
+ fake_now=now;
  races[0].switch_at_utc=now-10*86400; races[0].meeting_key=10;
  races[1].switch_at_utc=now+3600; races[1].meeting_key=20;
  s_cache[0].meeting_key=10; s_cache[1].meeting_key=20;
@@ -776,6 +966,19 @@ int main(void) {
  fetch_ok=true; process_race(1,now+611);
  assert(marks==1);
  assert(s_cache[0].next_discovery_utc==now+86400);
+ fake_now=now+RESULTS_MANUAL_RETRY_SECONDS+1;
+ pdkpass_results_request_race(0);
+ assert(select_race(fake_now)==0);
+ assert(s_cache[0].next_discovery_utc==fake_now);
+ assert(sync_plan_calls==1 && wake_calls==1);
+ s_cache[0].discovered=1;
+ s_cache[0].next_discovery_utc=fake_now+86400;
+ s_cache[0].sessions[PDKPASS_SESSION_FP1]=(session_cache_t){
+  .present=1,.session_key=123,.end_utc=fake_now-10000,
+  .last_attempt_utc=fake_now-RESULTS_MANUAL_RETRY_SECONDS};
+ pdkpass_results_request_race(0);
+ assert(select_race(fake_now)==0);
+ assert(s_cache[0].sessions[PDKPASS_SESSION_FP1].last_attempt_utc==0);
  puts("service results scheduling: PASS");
 }
 '''

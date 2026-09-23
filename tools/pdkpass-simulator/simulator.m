@@ -570,6 +570,8 @@ static void simulator_initialize(void)
 @interface PDKPASSSimulatorView : NSView
 @property(nonatomic) NSTimeInterval okPressedAt;
 @property(nonatomic) BOOL okIsDown;
+@property(nonatomic) NSTimeInterval arrowPressedAt;
+@property(nonatomic) NSInteger arrowKeyDown;
 @end
 
 @implementation PDKPASSSimulatorView
@@ -608,10 +610,9 @@ static void simulator_initialize(void)
     if (event.isARepeat) return;
     switch (event.keyCode) {
     case 126:
-        simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK);
-        return;
     case 125:
-        simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+        self.arrowKeyDown = event.keyCode;
+        self.arrowPressedAt = event.timestamp;
         return;
     case 36:
     case 49:
@@ -647,6 +648,14 @@ static void simulator_initialize(void)
 
 - (void)keyUp:(NSEvent *)event
 {
+    if ((event.keyCode == 126 || event.keyCode == 125) &&
+        self.arrowKeyDown == event.keyCode) {
+        self.arrowKeyDown = 0;
+        NSTimeInterval duration = event.timestamp - self.arrowPressedAt;
+        simulator_send_button(event.keyCode == 126 ? BSP_BTN_UP : BSP_BTN_DOWN,
+                              duration >= 0.65 ? BSP_BTN_LONG : BSP_BTN_CLICK);
+        return;
+    }
     if ((event.keyCode == 36 || event.keyCode == 49 || event.keyCode == 76) &&
         self.okIsDown) {
         self.okIsDown = NO;
@@ -766,7 +775,8 @@ static void print_usage(const char *program)
 {
     printf("Usage: %s [--year 2026|2027] [--race 1-24] [--page home|calendar|standings|track|results] [--sync-results] [--network-view menu|retry|setup|confirm] "
            "[--battery -1..100] [--screenshot FILE.png]\n", program);
-    printf("\nKeyboard: Up/Down browse, Return/Space select, hold Return or Esc back,\n");
+    printf("\nKeyboard: Up/Down browse, hold Up/Down for home standings/calendar,\n");
+    printf("          Return/Space select, hold Return or Esc back,\n");
     printf("          1-5 network states, S or Command-S screenshot.\n");
 }
 
@@ -838,9 +848,9 @@ int main(int argc, const char *argv[])
             simulator_initialize();
             if (!networkView && !syncResults) {
                 if (strcmp(pageView, "calendar") == 0)
-                    simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+                    simulator_send_button(BSP_BTN_DOWN, BSP_BTN_LONG);
                 else if (strcmp(pageView, "standings") == 0)
-                    simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK);
+                    simulator_send_button(BSP_BTN_UP, BSP_BTN_LONG);
                 else if (strcmp(pageView, "track") == 0 || strcmp(pageView, "results") == 0) {
                     simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
                     if (strcmp(pageView, "results") == 0)

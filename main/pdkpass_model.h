@@ -20,6 +20,8 @@ typedef enum {
     PDKPASS_INPUT_DOWN,
     PDKPASS_INPUT_OK,
     PDKPASS_INPUT_BACK,
+    PDKPASS_INPUT_UP_LONG,
+    PDKPASS_INPUT_DOWN_LONG,
 } pdkpass_input_t;
 
 typedef struct {
@@ -28,7 +30,9 @@ typedef struct {
     size_t selected_race;
     size_t selected_driver;
     pdkpass_session_kind_t selected_session;
+    // Current weekend stays separate from a manually browsed home round.
     size_t home_race;
+    bool home_browsing;
     bool season_complete;
     unsigned network_selection;
 } pdkpass_state_t;
@@ -36,5 +40,6 @@ typedef struct {
 void pdkpass_state_init(pdkpass_state_t *state);
 void pdkpass_state_set_home_race(pdkpass_state_t *state, size_t race_index,
                                  size_t race_count);
+void pdkpass_state_reset_home_race(pdkpass_state_t *state, size_t race_count);
 void pdkpass_state_handle(pdkpass_state_t *state, pdkpass_input_t input,
                           size_t race_count, size_t driver_count);

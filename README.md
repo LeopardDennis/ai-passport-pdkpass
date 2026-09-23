@@ -49,15 +49,15 @@ supported weekend session.
 
 ## Controls
 
-| Screen | UP / DOWN | OK | Hold OK |
-| --- | --- | --- | --- |
-| Next race | Standings / calendar | Race details | Network menu |
-| Network menu | Select action | Confirm | Home |
-| Retry / setup | — | Back after retry failure | Cancel / close hotspot |
-| Calendar | Select race | Race details | Home |
-| Standings | Scroll drivers | — | Home |
-| Race details | Previous / next race | Session results | Back |
-| Session results | Previous / next session | Race details | Race details |
+| Screen | UP / DOWN | Hold UP / DOWN | OK | Hold OK |
+| --- | --- | --- | --- | --- |
+| Home | Previous / next race | Standings / calendar | Displayed race details | Network menu |
+| Network menu | Select action | — | Confirm | Home |
+| Retry / setup | — | — | Back after retry failure | Cancel / close hotspot |
+| Calendar | Select race | — | Race details | Home |
+| Standings | Scroll drivers | — | — | Home |
+| Race details | Previous / next race | — | Session results | Back |
+| Session results | Previous / next session | — | Race details | Race details |
 
 ## No app required
 
@@ -109,6 +109,8 @@ After the final round it displays `SEASON COMPLETE`.
 The display dims after 30 seconds and turns its backlight off after 90 seconds.
 While dark, drawing and display invalidation pause; the clock and Beijing race
 switch timers continue. The first key press wakes the display without navigating.
+If you browse other rounds on the home screen, the displayed round returns to
+the current weekend when the screen turns off after 90 seconds of inactivity.
 ADC keys are still scanned every 20 ms, rather than relying on unverified GPIO
 wake thresholds. No deep sleep is used.
 The battery worker reads the fuel gauge once a minute while the display is lit.
@@ -142,6 +144,8 @@ at least 30 minutes after the recorded session end, then checks for the top
 three. The background worker retries at a low rate, so a free result normally
 appears about 30–40 minutes after the session and remains available offline once
 cached. A normal weekend reports `NO SESSION` for sprint-only slots.
+Opening a historical result or waking its page retries unfinished data after
+five minutes, even when low-power background backfill has a longer delay.
 
 Historical session classifications and driver metadata come from the unofficial
 [OpenF1 API](https://openf1.org/docs/). PDKPASS uses the unauthenticated
@@ -172,7 +176,9 @@ Until session metadata arrives, automatic round selection uses midnight after
 the last published date in the venue's time zone, not a claimed race-end time.
 Downloaded session end times replace this date-only boundary. Istanbul remains
 subject to FIA circuit homologation. Existing circuit colors remain unchanged.
-This offline addition does not resolve the known HTTPS memory-exhaustion issue.
+OpenF1 arrays are processed item by item to avoid allocating the entire HTTP
+response. The earlier 16 KB response-buffer failure has been removed from the
+calendar, standings, and results paths; on-device sync still needs validation.
 
 The most recent valid time, accepted season, standings, and downloaded podiums
 remain available offline. After a long powered-off period, reconnect to refresh

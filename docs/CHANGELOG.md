@@ -6,6 +6,29 @@
 
 ## Unreleased
 
+- On the home screen, short UP/DOWN browses the previous/next race; long
+  UP opens driver standings and long DOWN opens the calendar. OK opens the
+  displayed race. After 90 seconds of inactivity turns the screen off, the
+  next wake shows the current weekend again.
+
+- Let an explicitly opened historical race retry session discovery or an
+  unfinished podium after five minutes, even when background backfill is
+  waiting for its daily retry. Waking on the result/detail page requests that
+  race again. This addresses a photographed R13 FP1 waiting screen after a
+  transport timeout without increasing retries for every historical round.
+  Failed OpenF1 requests now log the endpoint name without query parameters,
+  so a future timeout can be attributed to sessions, drivers, or results.
+
+- Show `RESULT PENDING` before a weekend has ended and `SYNC PENDING` for
+  uncached past results while Wi-Fi is online. A connected radio alone no
+  longer claims that an OpenF1 request is actively fetching.
+
+- Stream OpenF1 results and championship driver arrays one item at a time,
+  including session discovery and podium driver details. This removes the
+  whole-response 16 KB reallocation that failed on hardware after an HTTP 200
+  with only 7.7 KB of contiguous heap available. Keep existing response
+  validation and retry behavior; successful sync still needs device testing.
+
 - Add failure-only HTTP and post-download parsing diagnostics: identify the
   failing stage, status, error, response size, free/largest heap before and
   after client cleanup, and the boot-wide low-water mark. Cover successful,

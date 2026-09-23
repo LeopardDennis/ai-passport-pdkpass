@@ -163,6 +163,15 @@ static esp_err_t perform(const char *url, response_t *r)
                             : transport_err != ESP_OK ? "transport"
                             : status != 200 ? "http-status"
                             : r->length == 0 ? "empty-body" : "stream-end";
+        // Identify the API resource without logging query parameters, which
+        // may contain device- or user-specific values in future callers.
+        const char *endpoint = strstr(url, "/v1/");
+        if (endpoint) {
+            endpoint += 4;
+            size_t length = strcspn(endpoint, "?");
+            if (length > 0 && length < 32)
+                ESP_LOGW(TAG, "GET endpoint=%.*s", (int)length, endpoint);
+        }
         report_failure(stage, status, err, r->length,
                        before, active, sample_heap());
     }

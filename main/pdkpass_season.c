@@ -25,7 +25,6 @@
 
 #define SEASON_TASK_STACK 9216
 #define SEASON_TASK_PRIORITY 3
-#define SEASON_BODY_LIMIT 24576U
 #define SEASON_CACHE_MAGIC 0x50444B53U
 #define SEASON_CACHE_VERSION 1U
 #define SEASON_MIN_REPEAT_SECONDS (5LL * 60LL)
@@ -61,11 +60,6 @@ static int64_t s_last_attempt_utc;
 
 _Static_assert(sizeof(season_cache_t) <= 6144,
                "Season snapshot no longer fits the NVS budget");
-
-static esp_err_t http_get_json(const char *url, char **json)
-{
-    return pdkpass_http_get(url, SEASON_BODY_LIMIT, json);
-}
 
 static void copy_text(char *destination, size_t capacity, const char *source)
 {
@@ -361,17 +355,6 @@ static void preserve_track_details(pdkpass_season_snapshot_t *candidate,
     }
 }
 
-static const cJSON *find_driver_number(const cJSON *drivers, int number)
-{
-    const cJSON *driver;
-    cJSON_ArrayForEach(driver, drivers) {
-        int candidate;
-        if (json_number(driver, "driver_number", &candidate) &&
-            candidate == number) return driver;
-    }
-    return NULL;
-}
-
 static uint32_t parse_colour(const char *text)
 {
     if (!text || strlen(text) != 6U) return 0x3671C6;
@@ -389,71 +372,73 @@ static int compare_drivers(const void *left, const void *right)
                                        : 0;
 }
 
+typedef struct {
+    pdkpass_driver_t *drivers;
+    size_t count;
+} standings_context_t;
+
+static bool parse_standing_item(const cJSON *standing, void *user)
+{
+    standings_context_t *context = user;
+    if (context->count >= PDKPASS_MAX_DRIVERS) return true;
+    int number;
+    int position;
+    const cJSON *points =
+        cJSON_GetObjectItemCaseSensitive(standing, "points_current");
+    if (!json_number(standing, "driver_number", &number) ||
+        !json_number(standing, "position_current", &position) ||
+        !cJSON_IsNumber(points) || number < 0 || number > 255 ||
+        position <= 0 || position > 255) return true;
+
+    pdkpass_driver_t *output = &context->drivers[context->count++];
+    output->driver_number = (uint8_t)number;
+    output->position = (uint8_t)position;
+    double tenths = points->valuedouble * 10.0;
+    if (tenths < 0.0) tenths = 0.0;
+    output->points_tenths =
+        tenths > 65535.0 ? 65535U : (uint16_t)(tenths + 0.5);
+    return true;
+}
+
+static bool parse_standing_driver(const cJSON *driver, void *user)
+{
+    standings_context_t *context = user;
+    int number;
+    if (!json_number(driver, "driver_number", &number)) return true;
+    for (size_t i = 0; i < context->count; i++) {
+        pdkpass_driver_t *output = &context->drivers[i];
+        if (output->driver_number != number) continue;
+        copy_upper(output->code, sizeof(output->code),
+                   json_string(driver, "name_acronym"));
+        const char *last_name = json_string(driver, "last_name");
+        copy_upper(output->name, sizeof(output->name),
+                   last_name ? last_name : json_string(driver, "full_name"));
+        copy_upper(output->team, sizeof(output->team),
+                   json_string(driver, "team_name"));
+        output->accent = parse_colour(json_string(driver, "team_colour"));
+    }
+    return true;
+}
+
 static bool fetch_standings(int session_key, int64_t now_utc,
                             pdkpass_season_snapshot_t *candidate)
 {
     if (session_key <= 0) return false;
     char url[192];
-    char *drivers_body = NULL;
-    char *standings_body = NULL;
-    snprintf(url, sizeof(url),
-             "https://api.openf1.org/v1/drivers?session_key=%d", session_key);
-    if (http_get_json(url, &drivers_body) != ESP_OK) return false;
+    pdkpass_driver_t parsed[PDKPASS_MAX_DRIVERS] = {0};
+    standings_context_t context = {.drivers = parsed};
     snprintf(url, sizeof(url),
              "https://api.openf1.org/v1/championship_drivers?session_key=%d",
              session_key);
-    if (http_get_json(url, &standings_body) != ESP_OK) {
-        free(drivers_body);
+    if (pdkpass_http_array(url, parse_standing_item, &context) != ESP_OK ||
+        context.count == 0U) return false;
+    snprintf(url, sizeof(url),
+             "https://api.openf1.org/v1/drivers?session_key=%d", session_key);
+    if (pdkpass_http_array(url, parse_standing_driver, &context) != ESP_OK)
         return false;
-    }
 
-    cJSON *drivers = cJSON_Parse(drivers_body);
-    cJSON *standings = cJSON_Parse(standings_body);
-    bool valid = cJSON_IsArray(drivers) && cJSON_IsArray(standings);
-    if (!valid) {
-        pdkpass_http_report_data_failure("standings-json", ESP_ERR_INVALID_RESPONSE,
-                                         strlen(drivers_body) + strlen(standings_body));
-    }
-    free(drivers_body);
-    free(standings_body);
-    if (!valid) {
-        cJSON_Delete(drivers);
-        cJSON_Delete(standings);
-        return false;
-    }
-
-    pdkpass_driver_t parsed[PDKPASS_MAX_DRIVERS] = {0};
-    size_t count = 0;
-    const cJSON *standing;
-    cJSON_ArrayForEach(standing, standings) {
-        if (count >= PDKPASS_MAX_DRIVERS) break;
-        int number;
-        int position;
-        const cJSON *points =
-            cJSON_GetObjectItemCaseSensitive(standing, "points_current");
-        if (!json_number(standing, "driver_number", &number) ||
-            !json_number(standing, "position_current", &position) ||
-            !cJSON_IsNumber(points) || number < 0 || number > 255 ||
-            position <= 0 || position > 255) continue;
-
-        pdkpass_driver_t *output = &parsed[count++];
-        output->driver_number = (uint8_t)number;
-        output->position = (uint8_t)position;
-        double tenths = points->valuedouble * 10.0;
-        if (tenths < 0.0) tenths = 0.0;
-        output->points_tenths =
-            tenths > 65535.0 ? 65535U : (uint16_t)(tenths + 0.5);
-        const cJSON *driver = find_driver_number(drivers, number);
-        if (driver) {
-            copy_upper(output->code, sizeof(output->code),
-                       json_string(driver, "name_acronym"));
-            const char *last_name = json_string(driver, "last_name");
-            copy_upper(output->name, sizeof(output->name),
-                       last_name ? last_name : json_string(driver, "full_name"));
-            copy_upper(output->team, sizeof(output->team),
-                       json_string(driver, "team_name"));
-            output->accent = parse_colour(json_string(driver, "team_colour"));
-        }
+    for (size_t i = 0; i < context.count; i++) {
+        pdkpass_driver_t *output = &parsed[i];
         if (output->code[0] == '\0') {
             snprintf(output->code, sizeof(output->code), "%03u",
                      (unsigned)output->driver_number);
@@ -461,12 +446,9 @@ static bool fetch_standings(int session_key, int64_t now_utc,
         if (output->name[0] == '\0') copy_text(output->name, sizeof(output->name), output->code);
         if (output->team[0] == '\0') copy_text(output->team, sizeof(output->team), "TEAM");
     }
-    cJSON_Delete(drivers);
-    cJSON_Delete(standings);
-    if (count == 0U) return false;
-    qsort(parsed, count, sizeof(parsed[0]), compare_drivers);
-    candidate->driver_count = (uint8_t)count;
-    memcpy(candidate->drivers, parsed, count * sizeof(parsed[0]));
+    qsort(parsed, context.count, sizeof(parsed[0]), compare_drivers);
+    candidate->driver_count = (uint8_t)context.count;
+    memcpy(candidate->drivers, parsed, context.count * sizeof(parsed[0]));
     pdkpass_format_beijing_date(now_utc, candidate->standings_as_of,
                                 sizeof(candidate->standings_as_of));
     return true;
