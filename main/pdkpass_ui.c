@@ -8,7 +8,9 @@
 #include "pdkpass_model.h"
 #include "pdkpass_results.h"
 #include "pdkpass_schedule.h"
+#include "pdkpass_season_core.h"
 #include "pdkpass_season.h"
+#include "pdkpass_sync_policy.h"
 #include "pdkpass_theme.h"
 #include "pdkpass_tracks.h"
 #include "ui_pixel.h"
@@ -60,14 +62,18 @@ static pdkpass_state_t s_state;
 static pdkpass_season_snapshot_t s_season;
 
 static bool s_time_valid;
+static bool s_time_estimated;
 static uint32_t s_last_activity;
 static bool s_needs_render;
 static int s_list_page = -1;
 static size_t s_list_start;
+static size_t s_list_selected = (size_t)-1;
 static lv_obj_t *s_list_rows[STANDINGS_ROWS];
 static lv_obj_t *s_list_footer;
+static lv_obj_t *s_network_cards[3];
 static unsigned s_idle_stage;
 static uint32_t s_status_background = UI_SKY;
+static uint32_t s_battery_background = UINT32_MAX;
 static pdkpass_network_state_t s_network_state = PDKPASS_NETWORK_STARTING;
 static char s_setup_ssid[33];
 static char s_setup_password[16];
@@ -215,8 +221,10 @@ static void content_reset(uint32_t top, uint32_t bottom)
 {
     s_setup_countdown = NULL;
     s_list_page = -1;
+    s_list_selected = (size_t)-1;
     memset(s_list_rows, 0, sizeof(s_list_rows));
     s_list_footer = NULL;
+    memset(s_network_cards, 0, sizeof(s_network_cards));
     lv_obj_clean(s_content);
     set_gradient(s_content, top, bottom);
 }
@@ -293,6 +301,8 @@ static void set_title(const char *text)
 
 static void set_status(const char *text, uint32_t background)
 {
+    if (s_status_background == background &&
+        strcmp(lv_label_get_text(s_network), text) == 0) return;
     s_status_background = background;
     set_gradient(s_status, background,
                  background == UI_SKY ? UI_SKY_DARK : background);
@@ -349,24 +359,83 @@ static void render_wifi_setup(void)
     set_hint("HOLD OK: CLOSE WI-FI");
 }
 
+static void format_sync_line(pdkpass_sync_service_t service, unsigned season_year,
+                             int64_t last, bool cached, char *line, size_t size)
+{
+    const char *label = service == PDKPASS_SYNC_SEASON ? "CAL SYNC" : "RESULTS";
+    bool other_season = false;
+    if (last > 0) {
+        time_t local = (time_t)(last + BEIJING_OFFSET_SECONDS);
+        struct tm parts;
+        gmtime_r(&local, &parts);
+        unsigned date_year = (unsigned)(parts.tm_year + 1900);
+        other_season = season_year != 0U && date_year != season_year;
+        if (!other_season) {
+            snprintf(line, size, "%s %02u.%02d.%02d", label,
+                     date_year % 100U, parts.tm_mon + 1, parts.tm_mday);
+            return;
+        }
+    }
+    if (cached) {
+        snprintf(line, size, "%s CACHE DATE?",
+                 service == PDKPASS_SYNC_SEASON ? "CAL" : "RESULT");
+    } else if (other_season) {
+        snprintf(line, size, "%s %u NO SYNC",
+                 service == PDKPASS_SYNC_SEASON ? "CAL" : "RESULT",
+                 season_year);
+    } else {
+        snprintf(line, size, "%s NEVER", label);
+    }
+}
+
 static void render_network_menu(void)
 {
     set_title("NETWORK");
-    set_status(s_network_state == PDKPASS_NETWORK_ONLINE ? "ONLINE" : "NETWORK OPTIONS", UI_SKY);
+    set_status(s_network_state == PDKPASS_NETWORK_ONLINE ? "WI-FI CONNECTED" : "WI-FI OPTIONS", UI_SKY);
     content_reset(UI_SKY, UI_SKY_DARK);
-    make_center_label(s_content, "CHOOSE CONNECTION", 0, 8, INNER_W,
-                      &lv_font_unscii_8, UI_PAPER);
+    for (unsigned i = 0; i < PDKPASS_SYNC_COUNT; i++) {
+        pdkpass_sync_service_t service = (pdkpass_sync_service_t)i;
+        bool cached = service == PDKPASS_SYNC_SEASON
+                          ? pdkpass_season_has_cached_data()
+                          : pdkpass_results_has_cached_data();
+        char line[32];
+        format_sync_line(service, s_season.year,
+                         pdkpass_sync_last_success(service), cached,
+                         line, sizeof(line));
+        make_center_label(s_content, line, 0, (int)i * 15, INNER_W,
+                          &lv_font_unscii_8, UI_PAPER);
+    }
     const char *titles[] = {"RETRY WI-FI", "WI-FI SETUP", "BACK"};
     const char *subtitles[] = {"SAVED WI-FI ONLY", "TEMPORARY HOTSPOT", "RETURN TO HOME"};
     for (unsigned i = 0; i < 3U; i++) {
         bool selected = s_state.network_selection == i;
         uint32_t ink = selected ? UI_INK : UI_SKY_DARK;
-        lv_obj_t *card = make_card(s_content, 5, 26 + (int)i * 47, 200, 44,
+        lv_obj_t *card = make_card(s_content, 5, 34 + (int)i * 45, 200, 42,
                                    selected ? UI_YELLOW : UI_PAPER, 2);
-        make_center_label(card, titles[i], 0, 4, 194, &lv_font_unscii_16, ink);
-        make_center_label(card, subtitles[i], 0, 25, 194, &lv_font_unscii_8, ink);
+        s_network_cards[i] = card;
+        make_center_label(card, titles[i], 0, 2, 194, &lv_font_unscii_16, ink);
+        make_center_label(card, subtitles[i], 0, 23, 194, &lv_font_unscii_8, ink);
     }
     set_hint("UP/DN OK  HOLD:BACK");
+}
+
+static bool update_network_selection(unsigned previous, unsigned selected)
+{
+    if (previous >= 3U || selected >= 3U ||
+        !s_network_cards[previous] || !s_network_cards[selected]) return false;
+    const unsigned rows[] = {previous, selected};
+    for (size_t i = 0; i < 2U; i++) {
+        unsigned row = rows[i];
+        bool active = row == selected;
+        lv_obj_t *card = s_network_cards[row];
+        lv_obj_set_style_bg_color(card,
+            lv_color_hex(active ? UI_YELLOW : UI_PAPER), 0);
+        uint32_t ink = active ? UI_INK : UI_SKY_DARK;
+        for (uint32_t child = 0; child < lv_obj_get_child_count(card); child++)
+            lv_obj_set_style_text_color(lv_obj_get_child(card, child),
+                                        lv_color_hex(ink), 0);
+    }
+    return true;
 }
 
 static void render_network_progress(void)
@@ -422,8 +491,8 @@ static const char *network_word(void)
     case PDKPASS_NETWORK_SETUP: return "SETUP";
     case PDKPASS_NETWORK_CONNECTING: return "WIFI...";
     case PDKPASS_NETWORK_SYNCING: return "TIME...";
-    case PDKPASS_NETWORK_ONLINE: return "ONLINE";
-    case PDKPASS_NETWORK_OFFLINE: return "OFFLINE";
+    case PDKPASS_NETWORK_ONLINE: return "WIFI OK";
+    case PDKPASS_NETWORK_OFFLINE: return "WIFI OFF";
     case PDKPASS_NETWORK_TIME_ERROR: return "NTP ERR";
     default: return "NET...";
     }
@@ -438,6 +507,13 @@ static void update_home_status(void)
         struct tm parts;
         gmtime_r(&local, &parts);
         snprintf(text, sizeof(text), "%s | %02d.%02d", network_word(),
+                 parts.tm_mon + 1, parts.tm_mday);
+    } else if (s_time_estimated) {
+        time_t local = (time_t)((int64_t)time(NULL) +
+                                BEIJING_OFFSET_SECONDS);
+        struct tm parts;
+        gmtime_r(&local, &parts);
+        snprintf(text, sizeof(text), "%s | ~%02d.%02d", network_word(),
                  parts.tm_mon + 1, parts.tm_mday);
     } else {
         snprintf(text, sizeof(text), "%s | --.--", network_word());
@@ -539,6 +615,7 @@ static bool update_list_selection(int page, size_t start, size_t selected,
         lv_obj_t *card = s_list_rows[row];
         if (!card || start + row >= count) continue;
         size_t index = start + row;
+        if (index != selected && index != s_list_selected) continue;
         uint32_t accent = page == PDKPASS_PAGE_CALENDAR
             ? s_season.races[index].accent : s_season.drivers[index].accent;
         uint32_t bg = index == selected ? accent : UI_PAPER;
@@ -560,6 +637,7 @@ static bool update_list_selection(int page, size_t start, size_t selected,
     } else if (selected < count) {
         lv_label_set_text(s_list_footer, s_season.drivers[selected].team);
     }
+    s_list_selected = selected;
     return true;
 }
 
@@ -617,6 +695,7 @@ static void render_calendar(void)
                       &lv_font_unscii_8, UI_PAPER);
     s_list_page = PDKPASS_PAGE_CALENDAR;
     s_list_start = start;
+    s_list_selected = s_state.selected_race;
     set_hint("UP/DN OK  HOLD:HOME");
 }
 
@@ -677,6 +756,7 @@ static void render_standings(void)
                       &lv_font_unscii_8, UI_PAPER);
     s_list_page = PDKPASS_PAGE_STANDINGS;
     s_list_start = start;
+    s_list_selected = s_state.selected_driver;
     set_hint("UP/DN  HOLD:HOME");
 }
 
@@ -829,7 +909,15 @@ static void render(void)
 {
     if (s_idle_stage == 2) { s_needs_render = true; return; }
     s_needs_render = false;
-    ui_pixel_screen_set_theme(s_screen, UI_SKY, UI_SKY_DARK);
+    // The home, calendar and detail pages choose their own circuit theme.
+    // Resetting them to sky first invalidates the whole screen twice.
+    bool circuit_theme = s_state.page == PDKPASS_PAGE_CALENDAR ||
+                         s_state.page == PDKPASS_PAGE_RACE_DETAIL ||
+                         (s_state.page == PDKPASS_PAGE_HOME &&
+                          s_network_state != PDKPASS_NETWORK_SETUP &&
+                          !s_state.season_complete);
+    if (!circuit_theme)
+        ui_pixel_screen_set_theme(s_screen, UI_SKY, UI_SKY_DARK);
     switch (s_state.page) {
     case PDKPASS_PAGE_NETWORK: render_network_menu(); break;
     case PDKPASS_PAGE_NETWORK_PROGRESS: render_network_progress(); break;
@@ -897,7 +985,11 @@ static void battery_draw_digits(lv_event_t *event)
 void pdkpass_ui_battery_update(int soc)
 {
     if (!s_battery) return;
-    s_battery_soc = soc < 0 ? -1 : (soc > 100 ? 100 : soc);
+    int normalized = soc < 0 ? -1 : (soc > 100 ? 100 : soc);
+    if (s_battery_soc == normalized &&
+        s_battery_background == s_status_background) return;
+    s_battery_soc = normalized;
+    s_battery_background = s_status_background;
     uint32_t ink = contrast_color(s_status_background);
     uint32_t fill = s_battery_soc >= 0 && s_battery_soc <= 20 ? UI_RED : ink;
     // A light interior separates the red warning from red page themes.
@@ -915,10 +1007,24 @@ void pdkpass_ui_battery_update(int soc)
     lv_obj_invalidate(s_battery);
 }
 
+bool pdkpass_ui_display_dark(void)
+{
+    return s_idle_stage == 2;
+}
+
 static void clock_tick(lv_timer_t *timer)
 {
-    if (!s_time_valid) return;
+    if (!s_time_valid && !s_time_estimated) return;
     int64_t now = (int64_t)time(NULL);
+    if (!s_time_valid) {
+        // A restored clock can label the date, but cannot choose a new round.
+        if (s_state.page == PDKPASS_PAGE_HOME) update_home_status();
+        int64_t midnight = pdkpass_next_beijing_midnight(now);
+        uint32_t delay_ms = midnight > now
+            ? (uint32_t)(midnight - now) * 1000U : 1000U;
+        lv_timer_set_period(timer ? timer : s_clock_timer, delay_ms);
+        return;
+    }
     size_t previous = s_state.season_complete ? s_season.race_count
                                               : s_state.home_race;
     size_t next = pdkpass_schedule_next_race(now, s_season.races,
@@ -1025,6 +1131,7 @@ void pdkpass_ui_network_update(const pdkpass_network_update_t *update)
     s_setup_seconds_left = update->setup_seconds_left;
     s_network_state = update->state;
     s_time_valid = update->time_valid;
+    s_time_estimated = update->time_estimated;
     bool error_changed = strcmp(s_setup_error, update->setup_error ? update->setup_error : "") != 0;
     snprintf(s_setup_error, sizeof(s_setup_error), "%s",
              update->setup_error ? update->setup_error : "");
@@ -1048,6 +1155,11 @@ void pdkpass_ui_results_update(size_t race_index)
     if ((s_state.page == PDKPASS_PAGE_RESULTS ||
          s_state.page == PDKPASS_PAGE_RACE_DETAIL) &&
         s_state.selected_race == race_index) render();
+}
+
+void pdkpass_ui_sync_status_update(void)
+{
+    if (s_state.page == PDKPASS_PAGE_NETWORK) render();
 }
 
 void pdkpass_ui_season_update(void)
@@ -1139,6 +1251,10 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     pdkpass_state_handle(&s_state, input,
                          s_season.race_count, s_season.driver_count);
     if (memcmp(&previous, &s_state, sizeof(s_state)) == 0) return;
+    if (previous.page == PDKPASS_PAGE_NETWORK &&
+        s_state.page == PDKPASS_PAGE_NETWORK &&
+        update_network_selection(previous.network_selection,
+                                 s_state.network_selection)) return;
     render();
     if (s_state.page == PDKPASS_PAGE_RESULTS ||
         s_state.page == PDKPASS_PAGE_RACE_DETAIL) {

@@ -43,6 +43,7 @@ PRELUDE = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "pdkpass_season.h"
 #include "pdkpass_results_core.h"
 #include "pdkpass_season_core.h"
@@ -68,12 +69,263 @@ bool pdkpass_season_race_get(size_t i, pdkpass_race_t *race) {
 '''
 
 class Services(unittest.TestCase):
+    def test_http_failure_stages_memory_and_backoff(self):
+        source = (ROOT / 'main/pdkpass_http.c').read_text()
+        types = source[source.index('typedef struct {'):source.index('} heap_sample_t;') + len('} heap_sample_t;')]
+        code = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include "pdkpass_json_stream.h"
+typedef int esp_err_t;
+#define ESP_OK 0
+#define ESP_FAIL -1
+#define ESP_ERR_NO_MEM 1
+#define ESP_ERR_INVALID_SIZE 2
+#define ESP_ERR_INVALID_RESPONSE 3
+#define ESP_ERR_TIMEOUT 4
+#define ESP_ERR_INVALID_ARG 5
+#define MALLOC_CAP_8BIT 1
+typedef struct cJSON { int object; } cJSON;
+typedef bool (*pdkpass_http_item_fn)(const cJSON *, void *);
+static cJSON parsed = {.object=1};
+static cJSON *cJSON_ParseWithOpts(const char *json,const char **end,bool strict) {
+ (void)strict;
+ if (json[0]!='{') return NULL;
+ if (end) *end=json+strlen(json);
+ return &parsed;
+}
+static bool cJSON_IsObject(const cJSON *item) {return item && item->object;}
+static void cJSON_Delete(cJSON *item) {(void)item;}
+typedef struct fake_client *esp_http_client_handle_t;
+typedef struct esp_http_client_event esp_http_client_event_t;
+struct esp_http_client_event {
+ int event_id;
+ const char *header_key, *header_value, *data;
+ int data_len;
+ void *user_data;
+ esp_http_client_handle_t client;
+};
+#define HTTP_EVENT_ON_HEADER 1
+#define HTTP_EVENT_ON_DATA 2
+typedef struct {
+ const char *url;
+ esp_err_t (*event_handler)(esp_http_client_event_t *);
+ void *user_data, *crt_bundle_attach;
+ int timeout_ms, buffer_size;
+ const char *user_agent;
+} esp_http_client_config_t;
+static void *esp_crt_bundle_attach;
+struct fake_client {esp_http_client_config_t config;int status;};
+static struct fake_client client;
+static int init_calls, cleanup_calls, log_calls, status_code=200;
+static int64_t now_us;
+static bool init_fails, realloc_fails;
+static esp_err_t transport_error;
+static const char *retry_after, *chunks[2];
+static int chunk_count;
+static size_t free_bytes=100000, largest_block=65000;
+static char last_log[256];
+static void capture_log(const char *format,...) {
+ va_list args;va_start(args,format);
+ vsnprintf(last_log,sizeof(last_log),format,args);
+ va_end(args);log_calls++;
+}
+#define ESP_LOGW(tag,format,...) capture_log(format,__VA_ARGS__)
+static size_t heap_caps_get_free_size(int caps) {(void)caps;return free_bytes;}
+static size_t heap_caps_get_largest_free_block(int caps) {(void)caps;return largest_block;}
+static size_t heap_caps_get_minimum_free_size(int caps) {(void)caps;return 70000;}
+static const char *esp_err_to_name(esp_err_t err) {(void)err;return "TEST_ERR";}
+static int64_t esp_timer_get_time(void) {return now_us;}
+static esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *config) {
+ init_calls++;
+ if (init_fails) return NULL;
+ client.config=*config;client.status=status_code;return &client;
+}
+static esp_err_t esp_http_client_set_header(esp_http_client_handle_t c,
+                                            const char *name,const char *value) {
+ (void)c;assert(strcmp(name,"Accept")==0&&strcmp(value,"application/json")==0);
+ return ESP_OK;
+}
+static int esp_http_client_get_status_code(esp_http_client_handle_t c) {return c->status;}
+static esp_err_t esp_http_client_perform(esp_http_client_handle_t c) {
+ free_bytes=82000;largest_block=42000;
+ if (transport_error) return transport_error;
+ if (retry_after) {
+  esp_http_client_event_t header={.event_id=HTTP_EVENT_ON_HEADER,
+   .header_key="Retry-After",.header_value=retry_after,
+   .user_data=c->config.user_data,.client=c};
+  esp_err_t err=c->config.event_handler(&header);if(err) return err;
+ }
+ for (int i=0;i<chunk_count;i++) {
+  esp_http_client_event_t data={.event_id=HTTP_EVENT_ON_DATA,
+   .data=chunks[i],.data_len=(int)strlen(chunks[i]),
+   .user_data=c->config.user_data,.client=c};
+  esp_err_t err=c->config.event_handler(&data);if(err) return err;
+ }
+ return ESP_OK;
+}
+static void esp_http_client_cleanup(esp_http_client_handle_t c) {
+ (void)c;cleanup_calls++;free_bytes=98000;largest_block=64000;
+}
+static void *injected_realloc(void *p,size_t size) {
+ if (realloc_fails) return NULL;
+ return realloc(p,size);
+}
+#define realloc injected_realloc
+static int64_t s_retry_at_us;
+static const char *TAG="pdk_http_test";
+'''
+        code += types + '\n'
+        for signature in ['static heap_sample_t sample_heap(',
+                          'static void report_failure(',
+                          'void pdkpass_http_report_data_failure(',
+                          'static bool stream_item(', 'static esp_err_t http_event(',
+                          'static esp_err_t perform(', 'esp_err_t pdkpass_http_get(',
+                          'esp_err_t pdkpass_http_array(']:
+            code += function(source, signature)
+        code += r'''
+static void reset_request(void) {
+ status_code=200;transport_error=ESP_OK;retry_after=NULL;
+ chunk_count=0;init_fails=false;realloc_fails=false;
+ free_bytes=100000;largest_block=65000;
+ log_calls=0;last_log[0]='\0';s_retry_at_us=0;
+}
+static bool accept_item(const cJSON *item,void *context) {
+ assert(item&&item->object);(*(int *)context)++;return true;
+}
+int main(void) {
+ char *json=NULL;
+ reset_request();chunks[0]="{\"x\":";chunks[1]="1}";chunk_count=2;
+ assert(pdkpass_http_get("https://example.test",32,&json)==ESP_OK);
+ assert(strcmp(json,"{\"x\":1}")==0&&log_calls==0);free(json);
+ reset_request();chunks[0]="12345";chunk_count=1;
+ assert(pdkpass_http_get("https://example.test",4,&json)==ESP_ERR_INVALID_SIZE);
+ assert(!json&&strstr(last_log,"stage=body-limit")&&strstr(last_log,"low=70000"));
+ assert(strstr(last_log,"100000/65000 -> 82000/42000 -> 98000/64000"));
+ reset_request();chunks[0]="ok";chunk_count=1;realloc_fails=true;
+ assert(pdkpass_http_get("https://example.test",16,&json)==ESP_ERR_NO_MEM);
+ assert(!json&&strstr(last_log,"stage=body-alloc"));
+ reset_request();transport_error=ESP_FAIL;status_code=0;
+ assert(pdkpass_http_get("https://example.test",16,&json)==ESP_FAIL);
+ assert(strstr(last_log,"stage=transport"));
+ reset_request();init_fails=true;int cleaned=cleanup_calls;
+ assert(pdkpass_http_get("https://example.test",16,&json)==ESP_ERR_NO_MEM);
+ assert(strstr(last_log,"stage=client-init")&&cleanup_calls==cleaned);
+ reset_request();status_code=500;chunks[0]="very long error page";chunk_count=1;
+ assert(pdkpass_http_get("https://example.test",4,&json)==ESP_ERR_INVALID_RESPONSE);
+ assert(strstr(last_log,"stage=http-status")&&!json);
+ reset_request();now_us=1000000;status_code=429;retry_after="2";
+ assert(pdkpass_http_get("https://example.test",16,&json)==ESP_ERR_INVALID_RESPONSE);
+ assert(strstr(last_log,"stage=http-status")&&s_retry_at_us==3000000);
+ int initialized=init_calls;
+ assert(pdkpass_http_get("https://example.test",16,&json)==ESP_ERR_TIMEOUT);
+ assert(init_calls==initialized);
+ now_us=3000000;status_code=200;retry_after=NULL;chunks[0]="ok";chunk_count=1;
+ assert(pdkpass_http_get("https://example.test",16,&json)==ESP_OK);free(json);
+ reset_request();now_us=1000000;status_code=503;
+ assert(pdkpass_http_get("https://example.test",16,&json)==ESP_ERR_INVALID_RESPONSE);
+ assert(s_retry_at_us==61000000);
+ reset_request();chunks[0]="[{\"x\":1},";chunks[1]="{\"x\":2}]";chunk_count=2;
+ int items=0;
+ assert(pdkpass_http_array("https://example.test",accept_item,&items)==ESP_OK);
+ assert(items==2&&log_calls==0);
+ reset_request();chunks[0]="[{\"x\":1}";chunk_count=1;items=0;
+ assert(pdkpass_http_array("https://example.test",accept_item,&items)==ESP_ERR_INVALID_RESPONSE);
+ assert(items==1&&strstr(last_log,"stage=stream-end"));
+ reset_request();chunks[0]="[oops]";chunk_count=1;
+ assert(pdkpass_http_array("https://example.test",accept_item,&items)==ESP_ERR_INVALID_RESPONSE);
+ assert(strstr(last_log,"stage=json-stream"));
+ reset_request();pdkpass_http_report_data_failure("standings-json",ESP_ERR_INVALID_RESPONSE,2345);
+ assert(strstr(last_log,"stage=standings-json")&&strstr(last_log,"bytes=2345"));
+ assert(cleanup_calls>0);
+ puts("HTTP failure stages, heap samples, bounded responses and backoff: PASS");
+}
+'''
+        compile_run(code, ['main/pdkpass_json_stream.c'])
+
+    def test_dark_display_skips_battery_i2c(self):
+        source = (ROOT / 'main/main.c').read_text()
+        enum_start = source.index('typedef enum {\n    BATTERY_SAMPLE_RETRY')
+        enum_end = source.index('} battery_sample_outcome_t;', enum_start) + len('} battery_sample_outcome_t;')
+        code = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdio.h>
+'''
+        code += source[enum_start:enum_end] + r'''
+static bool dark;
+static int lock_calls, lock_fail_on, reads, updates, last_soc;
+static bool bsp_lvgl_lock(int timeout) {
+ (void)timeout; lock_calls++; return lock_calls != lock_fail_on;
+}
+static void bsp_lvgl_unlock(void) {}
+static bool pdkpass_ui_display_dark(void) {return dark;}
+static int bsp_battery_soc(void) {reads++;return 55;}
+static void pdkpass_ui_battery_update(int soc) {updates++;last_soc=soc;}
+'''
+        code += function(source, 'static battery_sample_outcome_t sample_battery_if_visible(')
+        code += r'''
+int main(void) {
+ dark=true;
+ assert(sample_battery_if_visible(true)==BATTERY_SAMPLE_PAUSE_DARK);
+ assert(reads==0 && updates==0);
+ dark=false;
+ assert(sample_battery_if_visible(true)==BATTERY_SAMPLE_DONE);
+ assert(reads==1 && updates==1 && last_soc==55);
+ lock_calls=0;lock_fail_on=1;
+ assert(sample_battery_if_visible(true)==BATTERY_SAMPLE_RETRY);
+ assert(reads==1 && updates==1);
+ lock_fail_on=0;
+ assert(sample_battery_if_visible(false)==BATTERY_SAMPLE_DONE);
+ assert(reads==1 && updates==2 && last_soc==-1);
+ puts("dark display skips battery I2C: PASS");
+}
+'''
+        compile_run(code)
+
+    def test_restored_time_is_estimated_until_this_boot_syncs(self):
+        source = (ROOT / 'main/pdkpass_network.c').read_text()
+        code = PRELUDE + r'''
+#include "pdkpass_network.h"
+static bool s_in_setup, s_time_synced_boot, plausible;
+static pdkpass_network_state_t s_published_state;
+static const char *s_setup_error="";
+static char s_setup_ssid[33], s_setup_password[16];
+static pdkpass_network_update_t latest;
+static void capture(const pdkpass_network_update_t *update) {latest=*update;}
+static pdkpass_network_callback_t s_callback=capture;
+static bool current_time_valid(void) {return plausible;}
+static int64_t setup_deadline(void) {return 0;}
+static int64_t esp_timer_get_time(void) {return 0;}
+static void pdkpass_power_network(bool active) {(void)active;}
+'''
+        code += function(source, 'static void publish_state(')
+        code += r'''
+int main(void) {
+ plausible=true;publish_state(PDKPASS_NETWORK_OFFLINE);
+ assert(!latest.time_valid && latest.time_estimated);
+ s_time_synced_boot=true;publish_state(PDKPASS_NETWORK_ONLINE);
+ assert(latest.time_valid && !latest.time_estimated);
+ plausible=false;publish_state(PDKPASS_NETWORK_OFFLINE);
+ assert(!latest.time_valid && !latest.time_estimated);
+ puts("restored clock estimate is not trusted for race selection: PASS");
+}
+'''
+        compile_run(code)
+
     def test_offline_builtin_year_rollover(self):
         source = (ROOT / 'main/pdkpass_season.c').read_text()
         code = PRELUDE.replace('unsigned pdkpass_season_year(void) {return 2026;}','') + r'''
 #include "pdkpass_sync_policy.h"
 #define portMAX_DELAY UINT32_MAX
 static bool s_time_valid;
+static bool s_has_cached_data=true;
 static int64_t s_last_attempt_utc;
 static pdkpass_season_snapshot_t s_season;
 static int callbacks, plans, transactions;
@@ -100,6 +352,7 @@ int main(void) {
  refresh_builtin_year(1798732799LL);assert(s_season.year==2026);
  refresh_builtin_year(1798732800LL);
  assert(s_season.year==2027&&s_season.race_count==24&&s_season.driver_count==0);
+ assert(!s_has_cached_data);
  assert(callbacks==1&&plans==1&&transactions==0);
  s_season.races[0].meeting_key=999; // Accepted online data must survive.
  refresh_builtin_year(1798732801LL);
@@ -213,6 +466,9 @@ void pdkpass_sync_plan(pdkpass_sync_service_t s,uint32_t delay) {policy.due_ms[s
 static void pdkpass_http_begin(void) {transactions++;if(disconnect_on_lock) online=false;}
 static void pdkpass_http_end(void) {}
 static bool synchronize(int64_t now) {(void)now;synchronizations++;return true;}
+void pdkpass_sync_mark_success(pdkpass_sync_service_t service,int64_t utc) {
+ (void)utc;assert(service==PDKPASS_SYNC_SEASON);
+}
 static int64_t next_sync_deadline(int64_t now) {return now+3600;}
 '''
         code += function(source, 'static void season_task(')
@@ -435,6 +691,7 @@ int main(void) {
 typedef int nvs_handle_t;
 static const char *NVS_NAMESPACE="test", *NVS_KEY="test";
 static pdkpass_season_snapshot_t s_season;
+static bool s_has_cached_data;
 static season_cache_t payload;
 static int nvs_open(const char *n,int m,int *h) {(void)n;(void)m;*h=1;return 0;}
 static int nvs_get_blob(int h,const char *k,void *out,size_t *size) {
@@ -455,10 +712,12 @@ int main(void) {
  strcpy(payload.season.standings_as_of,"15 SEP");
  load_cache();
  assert(s_season.race_count==23);assert(snapshot_valid(&s_season));
+ assert(s_has_cached_data);
  assert(s_season.drivers[0].points_tenths==999);
  assert(strcmp(s_season.standings_as_of,"15 SEP")==0);
  payload.season.year=2027;load_cache();assert(s_season.race_count==11);
  payload.magic=0;load_cache();assert(s_season.race_count==23);
+ assert(!s_has_cached_data);
  puts("season fallback and legacy cache load: PASS");
 }
 '''
@@ -469,17 +728,23 @@ int main(void) {
         defines = '\n'.join(x for x in source.splitlines() if x.startswith('#define RESULTS_'))
         types = source[source.index('typedef struct {'):source.index('static const char *TAG')]
         code = PRELUDE + defines + '\n' + types + r'''
+#include "pdkpass_sync_policy.h"
 static race_cache_t s_cache[PDKPASS_MAX_RACES];
 static size_t s_requested_race = SIZE_MAX, s_history_cursor;
 static bool s_cache_dirty;
 static pdkpass_results_callback_t s_callback;
-static bool discover_ok;
-static int discover_calls, fetch_calls;
+static bool discover_ok, fetch_ok;
+static int discover_calls, fetch_calls, marks;
 static bool discover_sessions(size_t i, race_cache_t *cache, int64_t now) {
  (void)i; (void)cache; (void)now; discover_calls++; return discover_ok;
 }
-static bool fetch_result(session_cache_t *session) {(void)session; fetch_calls++; return false;}
+static bool fetch_result(session_cache_t *session) {
+ fetch_calls++; if (fetch_ok) session->ready=1; return fetch_ok;
+}
 static esp_err_t save_cache(void) {return ESP_OK;}
+void pdkpass_sync_mark_success(pdkpass_sync_service_t service,int64_t utc) {
+ (void)utc;assert(service==PDKPASS_SYNC_RESULTS);marks++;
+}
 '''
         code = code.replace('static pdkpass_results_callback_t s_callback;', 'static void (*s_callback)(size_t);')
         for signature in ['static int64_t retry_interval_seconds(', 'static bool cache_has_due_result(',
@@ -505,8 +770,11 @@ int main(void) {
  assert(select_race(now+10)==1);
  process_race(1,now+10);
  assert(fetch_calls==1);
+ assert(marks==0); // Discovery and failed result fetch do not claim fresh results.
  assert(!race_needs_work(1,now+11));
  assert(race_needs_work(1,now+611));
+ fetch_ok=true; process_race(1,now+611);
+ assert(marks==1);
  assert(s_cache[0].next_discovery_utc==now+86400);
  puts("service results scheduling: PASS");
 }
@@ -516,6 +784,7 @@ int main(void) {
     def test_partial_season_does_not_replace_cache(self):
         source = (ROOT / 'main/pdkpass_season.c').read_text()
         code = PRELUDE + r'''
+#define ESP_ERR_NO_MEM 0x101
 typedef struct {pdkpass_race_t race;int64_t start_utc,meeting_end_utc;} race_build_t;
 typedef struct {race_build_t *build;size_t count;bool sprint_qualifying[7];
  int64_t now_utc;int latest_race_session;int64_t latest_race_end;} build_context_t;
@@ -535,6 +804,9 @@ static esp_err_t pdkpass_http_array(const char *url,bool (*item)(const void *,vo
 }
 static void preserve_track_details(pdkpass_season_snapshot_t *a,const pdkpass_season_snapshot_t *b) {(void)a;(void)b;}
 static bool fetch_standings(int key,int64_t date,pdkpass_season_snapshot_t *out) {(void)key;(void)date;(void)out;return false;}
+static void pdkpass_http_report_data_failure(const char *stage,esp_err_t err,size_t bytes) {
+ (void)stage;(void)err;(void)bytes;
+}
 '''
         code += function(source, 'static bool snapshot_valid(')
         code += function(source, 'static bool build_candidate(')
@@ -570,6 +842,7 @@ static race_cache_t s_cache[PDKPASS_MAX_RACES];
 static unsigned s_cache_year;
 static size_t s_cache_count, s_requested_race;
 static bool s_cache_dirty;
+static bool s_has_cached_data;
 static int nvs_open(const char *name,int mode,int *handle) {(void)name;(void)mode;*handle=1;return 0;}
 static int nvs_get_blob(int h,const char *key,void *out,size_t *size) {
  (void)h;(void)key; assert(*size>=payload_size);memcpy(out,payload,payload_size);*size=payload_size;return 0;
@@ -591,6 +864,7 @@ int main(void) {
  memcpy(legacy.races[0].podium_codes[0][0],"AAA",4);
  payload=&legacy;payload_size=sizeof(legacy);load_cache();
  assert(s_cache[0].sessions[0].ready);
+ assert(s_has_cached_data);
  update_session_identity(&s_cache[0].sessions[0],100,false,1788688800);
  assert(s_cache[0].sessions[0].ready);
  assert(strcmp(s_cache[0].sessions[0].podium_codes[0],"AAA")==0);
@@ -619,7 +893,45 @@ int main(void) {
  assert(s_cache[12].sessions[0].session_key==321);
  assert(!s_cache[0].sessions[0].ready);
  assert(!s_cache[13].sessions[0].ready);
+ assert(s_has_cached_data);
+ memset(&stored.races,0,sizeof(stored.races));
+ stored.race_count=23;payload=&stored;payload_size=sizeof(stored);load_cache();
+ assert(!s_has_cached_data);
  puts("cache v2 migration, v3 identity, meeting reorder and R13 shift: PASS");
+}
+'''
+        compile_run(code)
+
+    def test_sync_menu_distinguishes_legacy_cache_from_never_synced(self):
+        source = (ROOT / 'main/pdkpass_ui.c').read_text()
+        code = '#define _POSIX_C_SOURCE 200809L\n' + PRELUDE + r'''
+#include "pdkpass_sync_policy.h"
+#define BEIJING_OFFSET_SECONDS 28800LL
+'''
+        code += function(source, 'static void format_sync_line(')
+        code += r'''
+int main(void) {
+ char line[32];
+ format_sync_line(PDKPASS_SYNC_SEASON,2026,0,false,line,sizeof(line));
+ assert(strcmp(line,"CAL SYNC NEVER")==0);
+ format_sync_line(PDKPASS_SYNC_SEASON,2026,0,true,line,sizeof(line));
+ assert(strcmp(line,"CAL CACHE DATE?")==0);
+ format_sync_line(PDKPASS_SYNC_RESULTS,2026,0,true,line,sizeof(line));
+ assert(strcmp(line,"RESULT CACHE DATE?")==0);
+ format_sync_line(PDKPASS_SYNC_RESULTS,2026,0,false,line,sizeof(line));
+ assert(strcmp(line,"RESULTS NEVER")==0);
+ format_sync_line(PDKPASS_SYNC_SEASON,2026,1767225600LL,true,line,sizeof(line));
+ assert(strcmp(line,"CAL SYNC 26.01.01")==0);
+ // The UTC boundary at 16:00 is Beijing New Year, not the preceding season.
+ format_sync_line(PDKPASS_SYNC_SEASON,2027,1798732799LL,false,line,sizeof(line));
+ assert(strcmp(line,"CAL 2027 NO SYNC")==0);
+ format_sync_line(PDKPASS_SYNC_RESULTS,2027,1798732799LL,false,line,sizeof(line));
+ assert(strcmp(line,"RESULT 2027 NO SYNC")==0);
+ format_sync_line(PDKPASS_SYNC_RESULTS,2027,1798732799LL,true,line,sizeof(line));
+ assert(strcmp(line,"RESULT CACHE DATE?")==0);
+ format_sync_line(PDKPASS_SYNC_SEASON,2027,1798732800LL,false,line,sizeof(line));
+ assert(strcmp(line,"CAL SYNC 27.01.01")==0);
+ puts("sync menu distinguishes old cache, no cache and dated sync: PASS");
 }
 '''
         compile_run(code)
@@ -637,6 +949,7 @@ static lv_obj_t body, level, tip;
 static lv_obj_t *s_battery=&body, *s_battery_fill=&level, *s_battery_tip=&tip;
 static int s_battery_soc;
 static uint32_t s_status_background;
+static uint32_t s_battery_background=UINT32_MAX;
 static uint32_t lv_color_hex(uint32_t x) {return x;}
 static uint32_t contrast_color(uint32_t x) {(void)x;return 0xFFFFFF;}
 static void lv_obj_set_style_bg_color(lv_obj_t *o,uint32_t x,int sel) {(void)sel;o->bg=x;}

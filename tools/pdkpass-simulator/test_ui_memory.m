@@ -49,9 +49,41 @@ int main(void)
                           sizeof(pdkpass_race_t)) == 0);
         }
         simulator_initialize();
+        s_flush_pixels = 0; s_flush_calls = 0;
+        simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK); // home -> calendar
+        s_flush_pixels = 0; s_flush_calls = 0;
+        simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK); // same calendar page
+        printf("redraw calendar row: %zu pixels, %u flushes\n",
+               s_flush_pixels, s_flush_calls);
+        assert(s_flush_pixels > 0);
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // calendar -> home
+        s_flush_pixels = 0; s_flush_calls = 0;
+        pdkpass_ui_battery_update(88);
+        simulator_refresh();
+        printf("redraw unchanged battery: %zu pixels, %u flushes\n",
+               s_flush_pixels, s_flush_calls);
+        assert(s_flush_pixels == 0 && s_flush_calls == 0);
+        simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK); // home -> standings
+        s_flush_pixels = 0; s_flush_calls = 0;
+        simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK); // same standings page
+        printf("redraw standings row: %zu pixels, %u flushes\n",
+               s_flush_pixels, s_flush_calls);
+        assert(s_flush_pixels > 0 && s_flush_pixels < 240U * 320U / 2U);
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // standings -> home
+        s_flush_pixels = 0; s_flush_calls = 0;
+        simulator_set_network(PDKPASS_NETWORK_ONLINE); // duplicate status
+        printf("redraw unchanged network: %zu pixels, %u flushes\n",
+               s_flush_pixels, s_flush_calls);
+        assert(s_flush_pixels == 0 && s_flush_calls == 0);
         simulator_set_network(PDKPASS_NETWORK_OFFLINE);
         check_memory();
         simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // home -> network
+        s_flush_pixels = 0; s_flush_calls = 0;
+        simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK); // network selection
+        printf("redraw network selection: %zu pixels, %u flushes\n",
+               s_flush_pixels, s_flush_calls);
+        assert(s_flush_pixels > 0 && s_flush_pixels < 240U * 320U / 2U);
+        simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK); // restore first item
         check_memory();
         simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
         simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // manual setup
@@ -106,6 +138,7 @@ int main(void)
         }
         lv_tick_inc(90001);
         lv_timer_handler();
+        assert(pdkpass_ui_display_dark());
         assert(!lv_display_is_invalidation_enabled(lv_display_get_default()));
         assert(lv_timer_get_paused(lv_display_get_refr_timer(lv_display_get_default())));
         // Background updates while dark must not restart display refreshing.
@@ -119,6 +152,7 @@ int main(void)
         assert(!lv_display_is_invalidation_enabled(lv_display_get_default()));
         assert(lv_timer_get_paused(lv_display_get_refr_timer(lv_display_get_default())));
         simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+        assert(!pdkpass_ui_display_dark());
         assert(lv_display_is_invalidation_enabled(lv_display_get_default()));
         check_memory();
         lv_mem_monitor_t memory;

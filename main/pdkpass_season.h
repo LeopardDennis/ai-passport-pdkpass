@@ -26,6 +26,8 @@ esp_err_t pdkpass_season_start(pdkpass_season_callback_t callback);
 void pdkpass_season_set_network(bool online, bool time_valid);
 
 bool pdkpass_season_snapshot(pdkpass_season_snapshot_t *snapshot);
+// True only when the active season has a persisted snapshot, not a bundled calendar.
+bool pdkpass_season_has_cached_data(void);
 unsigned pdkpass_season_year(void);
 size_t pdkpass_season_race_count(void);
 size_t pdkpass_season_driver_count(void);

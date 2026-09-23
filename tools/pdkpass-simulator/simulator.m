@@ -5,6 +5,7 @@
 #include "pdkpass_data.h"
 #include "pdkpass_calendar.h"
 #include "pdkpass_network.h"
+#include "pdkpass_sync_policy.h"
 #include "pdkpass_results.h"
 #include "pdkpass_season.h"
 #include "pdkpass_ui.h"
@@ -20,10 +21,13 @@ enum {
     SIMULATOR_WIDTH = 240,
     SIMULATOR_HEIGHT = 320,
     SIMULATOR_SCALE = 3,
+    SIMULATOR_DRAW_LINES = 20,
 };
 
-static uint16_t s_draw_buffer[SIMULATOR_WIDTH * SIMULATOR_HEIGHT];
+static uint16_t s_draw_buffer[SIMULATOR_WIDTH * SIMULATOR_DRAW_LINES];
 static uint16_t s_framebuffer[SIMULATOR_WIDTH * SIMULATOR_HEIGHT];
+static size_t s_flush_pixels;
+static unsigned s_flush_calls;
 static size_t s_home_race_index = 12U;
 static unsigned s_preview_year = 2026;
 static NSLock *s_results_lock;
@@ -46,6 +50,8 @@ static void display_flush(lv_display_t *display, const lv_area_t *area,
     const uint16_t *source = (const uint16_t *)pixels;
     int width = area->x2 - area->x1 + 1;
     int height = area->y2 - area->y1 + 1;
+    s_flush_pixels += (size_t)width * (size_t)height;
+    s_flush_calls++;
     for (int y = 0; y < height; y++) {
         memcpy(&s_framebuffer[(area->y1 + y) * SIMULATOR_WIDTH + area->x1],
                &source[y * width], (size_t)width * sizeof(uint16_t));
@@ -140,6 +146,8 @@ bool pdkpass_season_snapshot(pdkpass_season_snapshot_t *snapshot)
     }
     return true;
 }
+
+bool pdkpass_season_has_cached_data(void) { return false; }
 static NSString *results_cache_path(void)
 {
     NSFileManager *manager = NSFileManager.defaultManager;
@@ -463,6 +471,8 @@ bool pdkpass_results_get(size_t race_index, pdkpass_session_kind_t session,
     return true;
 }
 
+bool pdkpass_results_has_cached_data(void) { return false; }
+
 void pdkpass_results_request_race(size_t race_index)
 {
     if (!s_results_lock || race_index >= PDKPASS_MAX_RACES) return;
@@ -516,6 +526,12 @@ static void simulator_set_network(pdkpass_network_state_t state)
     simulator_refresh();
 }
 
+int64_t pdkpass_sync_last_success(pdkpass_sync_service_t service)
+{
+    (void)service;
+    return 0;
+}
+
 // UI preview only: radio/timers are exercised by firmware service tests.
 void pdkpass_network_request(pdkpass_network_command_t command)
 {
@@ -531,7 +547,6 @@ static void simulator_send_button(bsp_btn_t button, bsp_btn_ev_t event)
 
 static void simulator_refresh(void)
 {
-    lv_obj_invalidate(lv_screen_active());
     lv_refr_now(NULL);
 }
 
@@ -545,7 +560,7 @@ static void simulator_initialize(void)
     lv_init();
     lv_display_t *display = lv_display_create(SIMULATOR_WIDTH, SIMULATOR_HEIGHT);
     lv_display_set_buffers(display, s_draw_buffer, NULL, sizeof(s_draw_buffer),
-                           LV_DISPLAY_RENDER_MODE_FULL);
+                           LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(display, display_flush);
     pdkpass_ui_enter(true);
     pdkpass_ui_battery_update(bsp_battery_soc());

@@ -80,12 +80,15 @@ void ui_pixel_screen_set_theme(lv_obj_t *screen, uint32_t color,
     // left theme rail, right theme rail, title shadow, then title plate.
     lv_obj_t *left_rail = lv_obj_get_child(screen, 2);
     lv_obj_t *right_rail = lv_obj_get_child(screen, 3);
-    lv_obj_set_style_bg_color(screen, lv_color_hex(dark_color), 0);
+    if ((lv_color_to_u32(lv_obj_get_style_bg_color(screen, 0)) & 0xFFFFFFU) != dark_color)
+        lv_obj_set_style_bg_color(screen, lv_color_hex(dark_color), 0);
     if (left_rail) {
-        lv_obj_set_style_bg_color(left_rail, lv_color_hex(color), 0);
+        if ((lv_color_to_u32(lv_obj_get_style_bg_color(left_rail, 0)) & 0xFFFFFFU) != color)
+            lv_obj_set_style_bg_color(left_rail, lv_color_hex(color), 0);
     }
     if (right_rail) {
-        lv_obj_set_style_bg_color(right_rail, lv_color_hex(dark_color), 0);
+        if ((lv_color_to_u32(lv_obj_get_style_bg_color(right_rail, 0)) & 0xFFFFFFU) != dark_color)
+            lv_obj_set_style_bg_color(right_rail, lv_color_hex(dark_color), 0);
     }
 }
 

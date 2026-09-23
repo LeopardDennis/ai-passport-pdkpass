@@ -90,8 +90,14 @@ To add a network, use the manual setup menu. Saving the same Wi-Fi name updates 
 name replaces the least recently connected network. The single network saved by
 older firmware is imported automatically. No phone app is required.
 
-The top status changes through `SETUP`, `WIFI...`, `TIME...`, and `ONLINE`.
-After time synchronization, the device keeps counting locally. It rechecks the
+The top status changes through `SETUP`, `WIFI...`, `TIME...`, and `WIFI OK`.
+`WIFI OK` indicates connectivity, not that calendar or results data is current.
+The network menu shows the Beijing dates of successful `CAL SYNC` and downloaded
+`RESULTS` updates for the active season. A date from another season is not shown
+as current: the menu says `CAL 2027 NO SYNC` or `RESULT 2027 NO SYNC` until that
+season is updated. An active-season cache without a recorded date says
+`CACHE DATE?`; `NEVER` means neither cached data nor a recorded update. After time
+synchronization, the device keeps counting locally. It rechecks the
 season at Beijing midnight and at the current round's switch boundary, as well
 as after the network becomes available. Each online round remains current until
 its recorded race end, then the dashboard advances to the following round. The
@@ -105,6 +111,9 @@ While dark, drawing and display invalidation pause; the clock and Beijing race
 switch timers continue. The first key press wakes the display without navigating.
 ADC keys are still scanned every 20 ms, rather than relying on unverified GPIO
 wake thresholds. No deep sleep is used.
+The battery worker reads the fuel gauge once a minute while the display is lit.
+It stops polling while the display is off and reads once immediately after a
+key wakes the screen; unchanged readings do not redraw the battery icon.
 
 The CPU stays at 160 MHz while the screen is lit, and may drop to 80 MHz and
 enter automatic light sleep while dark. Setup/connection work and an attached
@@ -116,7 +125,7 @@ When both data services have no work within the next minute and no HTTP
 transaction is active, the radio switches off. Their actual deadlines (daily
 updates, post-session results or retry backoff) trigger reconnection. Historical
 backfill and imminent work keep the link up to avoid repeated handshakes.
-`OFFLINE` after a successful update is therefore normal. Opening uncached race
+`WIFI OFF` after a successful update is therefore normal. Opening uncached race
 details/results can also wake an intentionally parked connection.
 
 Automatic wake is allowed only after this deliberate idle shutdown. Failed
@@ -148,7 +157,7 @@ Displayed session times are converted to China Standard Time (UTC+8).
 
 After the first successful connection, PDKPASS downloads and stores the Grand
 Prix calendar for the current Beijing-time year and the standings from the
-latest completed race. With a valid clock, Beijing New Year selects a newer
+latest completed race. With a clock synchronized during the current boot, Beijing New Year selects a newer
 bundled season even without Wi-Fi or successful HTTPS. The worker also checks
 at Beijing midnight while offline. A same-year/newer downloaded cache wins over
 the seed, and an unavailable future year keeps the last working season.
@@ -258,15 +267,26 @@ to the source race, not the day an old classification was downloaded. Current
 weekends take priority over historical backfill. API availability and rate limits
 can delay publication beyond these local retry intervals.
 
+An HTTP, JSON parsing, or allocation failure emits a `pdk_http` serial log
+line with the failure stage, HTTP status, error and response byte count.
+It also reports free heap and largest contiguous block before the request, before cleanup,
+and after cleanup; `low` is the minimum free heap since boot, not a
+request-only measurement. JSON parsing/allocation failures after download
+use the same format. No URL or response body is logged. Capture these lines
+and the surrounding network events when diagnosing a device; redact any
+unrelated personal or network information before sharing logs.
+
 Setup uses a new random password each time it starts. Wait for an in-flight
 connection test to finish before submitting another network. `NTP ERR` means
 Wi-Fi connected but time synchronization is still retrying. A clock successfully
 synchronized during this boot remains usable across reconnects; a restored NVS
 time is only an offline estimate and does not account for power-off duration.
+The home status prefixes its date with `~`; this estimate does not trigger
+automatic round or season changes until time synchronization succeeds.
 
 Normal firmware disables the USB screenshot worker to save resources. Enable
 `CONFIG_PDKPASS_SCREENSHOT` in menuconfig for device screenshot debugging; capture
 has a two-second output deadline. The native simulator remains available for
-screenshots. Screen-off stops the UI idle timer, but this build does not enable
-automatic Light-sleep; ADC-button wake behavior and battery current still require
-board validation.
+screenshots. Screen-off stops the UI idle timer; automatic light sleep is
+configured, but ADC-button responsiveness and actual battery current still
+require board validation.

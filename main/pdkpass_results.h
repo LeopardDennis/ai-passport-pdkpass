@@ -50,3 +50,5 @@ void pdkpass_results_request_race(size_t race_index);
 // Copy one thread-safe result snapshot for rendering.
 bool pdkpass_results_get(size_t race_index, pdkpass_session_kind_t session,
                          pdkpass_result_snapshot_t *snapshot);
+// True when the active season has persisted session/discovery information.
+bool pdkpass_results_has_cached_data(void);

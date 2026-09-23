@@ -18,7 +18,10 @@ typedef enum {
 
 typedef struct {
     pdkpass_network_state_t state;
+    // Only a time synchronized during this boot may drive race/year changes.
     bool time_valid;
+    // Restored NVS time advances while powered on, but omits power-off time.
+    bool time_estimated;
     const char *setup_ssid;
     const char *setup_password;
     const char *setup_error; // Optional short, credential-free failure message.

@@ -116,6 +116,7 @@ static size_t s_history_cursor;
 static unsigned s_cache_year;
 static size_t s_cache_count;
 static bool s_cache_dirty;
+static bool s_has_cached_data;
 
 static void reset_race_cache(size_t race_index, race_cache_t *cache)
 {
@@ -172,6 +173,7 @@ static void load_cache(void)
     }
 
     bool valid = false;
+    bool cached_data = false;
     nvs_handle_t handle;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) == ESP_OK) {
         size_t size = sizeof(*stored);
@@ -203,6 +205,8 @@ static void load_cache(void)
                 int match = stored_index(stored, i, &loaded[i]);
                 if (match < 0) continue;
                 const persisted_race_t *source = &stored->races[match];
+                cached_data |= source->discovered || source->present_mask ||
+                               source->cancelled_mask || source->ready_mask;
                 loaded[i].discovered = source->discovered;
                 for (size_t session = 0; session < PDKPASS_SESSION_COUNT;
                      session++) {
@@ -227,6 +231,7 @@ static void load_cache(void)
         s_cache_year = pdkpass_season_year();
         s_cache_count = pdkpass_season_race_count();
         s_cache_dirty = false;
+        s_has_cached_data = cached_data;
         s_requested_race = SIZE_MAX;
         xSemaphoreGive(s_lock);
     }
@@ -248,6 +253,7 @@ static esp_err_t save_cache(void)
     size_t race_count = pdkpass_season_race_count();
     if (race_count > PDKPASS_MAX_RACES) race_count = PDKPASS_MAX_RACES;
     stored->race_count = (uint8_t)race_count;
+    bool cached_data = false;
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(2000)) != pdTRUE) {
         free(stored);
         return ESP_ERR_TIMEOUT;
@@ -271,6 +277,10 @@ static esp_err_t save_cache(void)
                    s_cache[i].sessions[session].podium_codes,
                    sizeof(stored->races[i].podium_codes[session]));
         }
+        cached_data |= stored->races[i].discovered ||
+                       stored->races[i].present_mask ||
+                       stored->races[i].cancelled_mask ||
+                       stored->races[i].ready_mask;
     }
     xSemaphoreGive(s_lock);
 
@@ -280,6 +290,10 @@ static esp_err_t save_cache(void)
         err = nvs_set_blob(handle, NVS_KEY, stored, sizeof(*stored));
         if (err == ESP_OK) err = nvs_commit(handle);
         nvs_close(handle);
+    }
+    if (err == ESP_OK && xSemaphoreTake(s_lock, pdMS_TO_TICKS(2000)) == pdTRUE) {
+        s_has_cached_data = cached_data;
+        xSemaphoreGive(s_lock);
     }
     free(stored);
     return err;
@@ -330,8 +344,12 @@ static bool discover_sessions(size_t race_index, race_cache_t *cache,
     char *body = NULL;
     if (http_get_json(url, &body) != ESP_OK) return false;
     cJSON *root = cJSON_Parse(body);
+    bool valid = cJSON_IsArray(root);
+    if (!valid)
+        pdkpass_http_report_data_failure("results-sessions-json",
+                                         ESP_ERR_INVALID_RESPONSE, strlen(body));
     free(body);
-    if (!cJSON_IsArray(root)) {
+    if (!valid) {
         cJSON_Delete(root);
         return false;
     }
@@ -370,6 +388,8 @@ static bool parse_top_three(const char *body,
 {
     cJSON *root = cJSON_Parse(body);
     if (!cJSON_IsArray(root)) {
+        pdkpass_http_report_data_failure("results-podium-json",
+                                         ESP_ERR_INVALID_RESPONSE, strlen(body));
         cJSON_Delete(root);
         return false;
     }
@@ -407,6 +427,8 @@ static bool merge_driver_details(const char *body,
 {
     cJSON *root = cJSON_Parse(body);
     if (!cJSON_IsArray(root)) {
+        pdkpass_http_report_data_failure("results-drivers-json",
+                                         ESP_ERR_INVALID_RESPONSE, strlen(body));
         cJSON_Delete(root);
         return false;
     }
@@ -565,6 +587,7 @@ static process_outcome_t process_race(size_t race_index, int64_t now_utc)
     xSemaphoreGive(s_lock);
 
     bool changed = false;
+    bool fetched = false;
     if (discovery_due(&cache, now_utc)) {
         race_cache_t before_discovery = cache;
         bool discovered = discover_sessions(race_index, &cache, now_utc);
@@ -585,6 +608,7 @@ static process_outcome_t process_race(size_t race_index, int64_t now_utc)
             now_utc - session->last_attempt_utc < retry_interval) continue;
         session->last_attempt_utc = now_utc;
         if (fetch_result(session)) {
+            fetched = true;
             ESP_LOGI(TAG, "R%u %s podium cached", race.round,
                      pdkpass_session_label((pdkpass_session_kind_t)i));
             changed = true;
@@ -610,6 +634,8 @@ static process_outcome_t process_race(size_t race_index, int64_t now_utc)
         }
         if (err == ESP_OK) s_cache_dirty = false;
     }
+    if (fetched && !s_cache_dirty)
+        pdkpass_sync_mark_success(PDKPASS_SYNC_RESULTS, (int64_t)time(NULL));
     if (changed && s_callback) s_callback(race_index);
     return outcome;
 }
@@ -815,4 +841,12 @@ bool pdkpass_results_get(size_t race_index, pdkpass_session_kind_t session,
         snapshot->status = PDKPASS_RESULT_UNKNOWN;
     }
     return true;
+}
+
+bool pdkpass_results_has_cached_data(void)
+{
+    if (!s_lock || xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    bool cached = s_has_cached_data;
+    xSemaphoreGive(s_lock);
+    return cached;
 }

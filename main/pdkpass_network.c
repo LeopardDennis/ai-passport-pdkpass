@@ -143,7 +143,8 @@ static void publish_state(pdkpass_network_state_t state)
     int64_t remaining = s_in_setup ? setup_deadline() - esp_timer_get_time() : 0;
     pdkpass_network_update_t update = {
         .state = state,
-        .time_valid = current_time_valid(),
+        .time_valid = s_time_synced_boot && current_time_valid(),
+        .time_estimated = !s_time_synced_boot && current_time_valid(),
         .setup_ssid = s_in_setup ? s_setup_ssid : "",
         .setup_password = s_in_setup ? s_setup_password : "",
         .setup_error = s_setup_error,

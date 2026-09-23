@@ -25,5 +25,5 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES bsp esp_event esp_http_client esp_http_server esp_hw_support
              esp_netif esp_wifi esp_driver_usb_serial_jtag json lwip mbedtls
-             nvs_flash esp_timer esp_pm
+             nvs_flash esp_timer esp_pm heap
 )

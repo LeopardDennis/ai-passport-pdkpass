@@ -53,6 +53,7 @@ static const char *NVS_KEY = "current";
 static SemaphoreHandle_t s_lock;
 static EventGroupHandle_t s_events;
 static pdkpass_season_snapshot_t s_season;
+static bool s_has_cached_data;
 static pdkpass_season_callback_t s_callback;
 static bool s_online;
 static bool s_time_valid;
@@ -142,6 +143,7 @@ static bool snapshot_valid(const pdkpass_season_snapshot_t *season)
 static void load_cache(void)
 {
     initialize_fallback();
+    s_has_cached_data = false;
     nvs_handle_t handle;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return;
     season_cache_t *stored = malloc(sizeof(*stored));
@@ -157,6 +159,7 @@ static void load_cache(void)
         stored->version == SEASON_CACHE_VERSION &&
         snapshot_valid(&stored->season)) {
         s_season = stored->season;
+        s_has_cached_data = true;
         s_season.race_count = (uint8_t)pdkpass_restore_legacy_calendar(
             s_season.year, s_season.races, s_season.race_count,
             PDKPASS_MAX_RACES);
@@ -406,9 +409,14 @@ static bool fetch_standings(int session_key, int64_t now_utc,
 
     cJSON *drivers = cJSON_Parse(drivers_body);
     cJSON *standings = cJSON_Parse(standings_body);
+    bool valid = cJSON_IsArray(drivers) && cJSON_IsArray(standings);
+    if (!valid) {
+        pdkpass_http_report_data_failure("standings-json", ESP_ERR_INVALID_RESPONSE,
+                                         strlen(drivers_body) + strlen(standings_body));
+    }
     free(drivers_body);
     free(standings_body);
-    if (!cJSON_IsArray(drivers) || !cJSON_IsArray(standings)) {
+    if (!valid) {
         cJSON_Delete(drivers);
         cJSON_Delete(standings);
         return false;
@@ -471,7 +479,11 @@ static bool build_candidate(unsigned year, int64_t now_utc,
 {
     char url[128];
     race_build_t *build = calloc(PDKPASS_MAX_RACES, sizeof(*build));
-    if (!build) return false;
+    if (!build) {
+        pdkpass_http_report_data_failure("season-build-alloc", ESP_ERR_NO_MEM,
+                                         PDKPASS_MAX_RACES * sizeof(*build));
+        return false;
+    }
     build_context_t context = {.build = build, .now_utc = now_utc};
     snprintf(url, sizeof(url), "https://api.openf1.org/v1/meetings?year=%u", year);
     if (pdkpass_http_array(url, parse_meeting, &context) != ESP_OK ||
@@ -548,6 +560,8 @@ static bool synchronize(int64_t now_utc)
     pdkpass_season_snapshot_t *current = malloc(sizeof(*current));
     pdkpass_season_snapshot_t *candidate = malloc(sizeof(*candidate));
     if (!current || !candidate) {
+        pdkpass_http_report_data_failure("season-snapshot-alloc", ESP_ERR_NO_MEM,
+                                         sizeof(*current) + sizeof(*candidate));
         free(current);
         free(candidate);
         return false;
@@ -569,6 +583,7 @@ static bool synchronize(int64_t now_utc)
             success = false;
         } else if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(2000)) == pdTRUE) {
             s_season = *candidate;
+            s_has_cached_data = true;
             xSemaphoreGive(s_lock);
         } else {
             updated = false;
@@ -605,8 +620,10 @@ static void refresh_builtin_year(int64_t now_utc)
     pdkpass_http_begin();
     bool changed = false;
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(2000)) == pdTRUE) {
-        if (s_time_valid && year > s_season.year)
+        if (s_time_valid && year > s_season.year) {
             changed = pdkpass_calendar_load(year, &s_season);
+            if (changed) s_has_cached_data = false;
+        }
         xSemaphoreGive(s_lock);
     }
     if (changed) {
@@ -655,6 +672,7 @@ static void season_task(void *arg)
         s_last_attempt_utc = now_utc;
         bool success = synchronize(now_utc);
         pdkpass_http_end();
+        if (success) pdkpass_sync_mark_success(PDKPASS_SYNC_SEASON, (int64_t)time(NULL));
         int64_t finished = (int64_t)time(NULL);
         // Compute from the attempt start so a due boundary crossed while HTTP
         // was active is not silently skipped.
@@ -704,6 +722,14 @@ bool pdkpass_season_snapshot(pdkpass_season_snapshot_t *snapshot)
     *snapshot = s_season;
     xSemaphoreGive(s_lock);
     return true;
+}
+
+bool pdkpass_season_has_cached_data(void)
+{
+    if (!s_lock || xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    bool cached = s_has_cached_data;
+    xSemaphoreGive(s_lock);
+    return cached;
 }
 
 unsigned pdkpass_season_year(void)

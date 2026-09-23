@@ -25,3 +25,10 @@ void pdkpass_ui_season_update(void);
 
 // Publish a worker-sampled SOC; caller holds the LVGL lock. No I2C in UI timers.
 void pdkpass_ui_battery_update(int soc);
+
+// Read the backlight-off state while holding the LVGL lock. The battery worker
+// skips I2C reads while dark and samples promptly after the wake key.
+bool pdkpass_ui_display_dark(void);
+
+// Refresh the network page when a data service confirms a new update day.
+void pdkpass_ui_sync_status_update(void);

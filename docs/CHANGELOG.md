@@ -6,6 +6,35 @@
 
 ## Unreleased
 
+- Add failure-only HTTP and post-download parsing diagnostics: identify the
+  failing stage, status, error, response size, free/largest heap before and
+  after client cleanup, and the boot-wide low-water mark. Cover successful,
+  truncated, oversized, malformed, rate-limited, transport and allocation
+  paths with deterministic host fault injection; leave the suspected HTTPS
+  memory issue unresolved until device measurements are available.
+
+- Scope network-menu sync dates to the active season. After an offline year
+  switch, a preceding-season date becomes `CAL 2027 NO SYNC` or
+  `RESULT 2027 NO SYNC` instead of appearing to confirm the new season;
+  active-season caches without a known date still show `CACHE DATE?`.
+
+- Distinguish a legacy cached calendar or results without a recorded sync date
+  from a service that has never cached data. The network menu now shows
+  `CAL CACHE DATE?` / `RESULT CACHE DATE?` for undated cache, `NEVER` when
+  absent, and the Beijing date after a successful tracked sync.
+
+- Avoid redundant full-screen invalidation during list navigation and repeated
+  status/battery updates. In the partial-buffer simulator, moving one standings
+  row drops from 76,800 to about 15,848 flushed pixels, and moving the network
+  menu selection from 49,984 to about 16,800; unchanged status and battery
+  reports flush none. Stop fuel-gauge polling while dark and resume on
+  the wake key, without changing the ADC key scan interval.
+
+- Treat time restored after power-off as an estimate: mark its home date with
+  `~` and wait for a current-boot time sync before automatic round/year changes.
+  Separate `WIFI OK` connectivity from the network menu's persisted dates of
+  successful calendar and results updates.
+
 - Spread the 27 circuit background themes apart, especially the formerly similar
   red, blue, teal and green pairs. Give every circuit its own accent color for
   status and selected-calendar elements; the same circuit keeps its colors
