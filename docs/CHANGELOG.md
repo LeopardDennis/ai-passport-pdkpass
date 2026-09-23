@@ -6,6 +6,12 @@
 
 ## Unreleased
 
+- Spread the 27 circuit background themes apart, especially the formerly similar
+  red, blue, teal and green pairs. Give every circuit its own accent color for
+  status and selected-calendar elements; the same circuit keeps its colors
+  across the 2026 and 2027 calendars. Give 2027 Bahrain a deep plum background
+  and Portugal a brighter violet background.
+
 - Bundle the official 2027 date-only calendar (24 rounds, 10 Sprints). Select it
   at Beijing New Year even offline, preserve accepted same-year/newer caches,
   and reuse circuit colors. Unknown times/laps/standings remain pending.

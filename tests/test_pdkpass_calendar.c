@@ -10,6 +10,11 @@ int main(void)
     pdkpass_season_snapshot_t season;
     assert(pdkpass_calendar_load(2026, &season));
     assert(season.race_count == 23 && season.driver_count > 0);
+    for (size_t i = 0; i < season.race_count; i++) {
+        const pdkpass_track_info_t *track =
+            pdkpass_track_find(season.races[i].circuit);
+        assert(track && track->accent == pdkpass_races[i].accent);
+    }
     assert(pdkpass_calendar_load(2027, &season));
     assert(season.year == 2027 && season.race_count == 24 && season.driver_count == 0);
     assert(strcmp(season.standings_as_of, "PENDING") == 0);

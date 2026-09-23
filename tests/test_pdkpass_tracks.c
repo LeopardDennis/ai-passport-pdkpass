@@ -3,6 +3,15 @@
 #include <assert.h>
 #include <string.h>
 
+// Compare the colors after the 5/6/5 channel precision used by the display.
+static unsigned background_distance_squared(uint32_t first, uint32_t second)
+{
+    int red = (int)((first >> 16) & 0xF8U) - (int)((second >> 16) & 0xF8U);
+    int green = (int)((first >> 8) & 0xFCU) - (int)((second >> 8) & 0xFCU);
+    int blue = (int)(first & 0xF8U) - (int)(second & 0xF8U);
+    return (unsigned)(red * red + green * green + blue * blue);
+}
+
 static void assert_track(const char *circuit)
 {
     pdkpass_track_geometry_t geometry = { 0 };
@@ -44,8 +53,11 @@ int main(void)
         assert(pdkpass_track_find(track->name) == track);
         assert_track(track->id);
         for (size_t j = 0; j < i; j++) {
-            assert(strcmp(track->id, pdkpass_track_at(j)->id) != 0);
-            assert(track->background != pdkpass_track_at(j)->background);
+            const pdkpass_track_info_t *previous = pdkpass_track_at(j);
+            assert(strcmp(track->id, previous->id) != 0);
+            assert(track->accent != previous->accent);
+            assert(background_distance_squared(track->background,
+                                               previous->background) >= 900U);
         }
     }
     assert(!pdkpass_track_at(27));
