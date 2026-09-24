@@ -55,6 +55,10 @@ run_static_checks() {
         -o "${test_dir}/test_pdkpass_results_core"
     "${test_dir}/test_pdkpass_results_core"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_pdkpass_sound_core.c main/pdkpass_sound_core.c \
+        -o "${test_dir}/test_pdkpass_sound_core"
+    "${test_dir}/test_pdkpass_sound_core"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_pdkpass_season_core.c main/pdkpass_season_core.c \
         -o "${test_dir}/test_pdkpass_season_core"
     "${test_dir}/test_pdkpass_season_core"

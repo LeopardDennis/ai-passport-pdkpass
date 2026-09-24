@@ -207,6 +207,8 @@ MCU 是 I2S master，ES8311 是 slave；I2S0 的 TX/RX 全双工通道共享 MCL
 - `no_dac_ref=true` 对单声道麦克风录音是必要的；改为 false 会让读入通道成为 DAC reference，表现为录音恒零。
 - 麦克风模拟输入增益当前为 30 dB；输出音量 API 为 0–100%。增益和音量不是同一个概念。
 - `bsp_audio_read/write` 是阻塞调用，不能放在按键回调或 LVGL 任务中。
+- `bsp_audio_stop()` 在短音效后关闭 PCM 并停止 I2S 时钟；下次调用
+  `bsp_audio_set_format()` 会复用已分配通道重新打开 codec。
 - I2S DMA 当前为 6 个 descriptor、每个 240 frame。更改 DMA 或 LVGL buffer 前必须联合评估内部 RAM。
 
 Audio demo 使用独立 4 KB 栈任务：OK 播放 1 秒 1 kHz 方波，UP 录 3 秒再回放。录音缓冲约 96 KB，是当前最显著的瞬时堆分配，可能因碎片或其他功能增大而失败。新增长录音应优先采用分块流式处理或外部存储，不可假设存在 PSRAM。

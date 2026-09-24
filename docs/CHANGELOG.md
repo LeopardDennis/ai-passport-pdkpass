@@ -6,6 +6,10 @@
 
 ## Unreleased
 
+- Add a quiet, two-note pixel-style cue for UP, DOWN, OK, and long-press
+  actions. Audio plays on a separate worker, coalesces rapid keys, and closes
+  the codec after each cue so button handling and display sleep stay responsive.
+
 - Fit all bundled home race names to the available width while retaining a
   readable height, including Australia, the Netherlands and Saudi Arabia.
   Show Spa-Francorchamps as `SPA` in the UI. Fit the bottom action hint and

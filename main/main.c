@@ -13,6 +13,7 @@
 #include "pdkpass_results.h"
 #include "pdkpass_screenshot.h"
 #include "pdkpass_season.h"
+#include "pdkpass_sound.h"
 #include "pdkpass_sync_policy.h"
 #include "pdkpass_ui.h"
 
@@ -113,6 +114,7 @@ static void ui_worker(void *arg)
             bool waking = pdkpass_ui_display_dark();
             pdkpass_ui_key(key.button, key.event);
             bsp_lvgl_unlock();
+            pdkpass_sound_key(key.button, key.event);
             if (waking) {
                 battery_paused_for_dark = false;
                 next_battery = xTaskGetTickCount();
@@ -172,6 +174,9 @@ void app_main(void)
     if (!s_keys || xTaskCreate(ui_worker, "pdk_ui_io", 3072,
                               (void *)(uintptr_t)battery_available, 3, NULL) != pdPASS) {
         ESP_LOGE(TAG, "UI worker failed to start");
+    }
+    if (pdkpass_sound_start() != ESP_OK) {
+        ESP_LOGW(TAG, "Button sounds unavailable");
     }
     if (bsp_button_init(on_key, NULL) != ESP_OK) {
         ESP_LOGE(TAG, "Button init failed; the current screen remains readable");

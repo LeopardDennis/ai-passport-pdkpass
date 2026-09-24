@@ -150,6 +150,8 @@ The MCU is I2S master and the ES8311 is slave. I2S0 TX/RX shares MCLK GPIO6, BCL
 - Keep `no_dac_ref=true` for mono microphone input; false can produce all-zero capture.
 - Microphone analog gain is 30 dB; output volume is a separate 0–100% value.
 - `bsp_audio_read/write` block and must not run in button callbacks or the LVGL task.
+- `bsp_audio_stop()` closes a short PCM stream and stops I2S clocks. The next
+  `bsp_audio_set_format()` reopens the codec without allocating new channels.
 - I2S DMA uses six descriptors of 240 frames each.
 
 The audio demo's three-second recording buffer is about 96 KB and is the largest transient heap allocation. Prefer chunked streaming for longer audio. Production task shutdown needs a cancellable loop and explicit exit handshake rather than deleting a task blocked in codec I/O.

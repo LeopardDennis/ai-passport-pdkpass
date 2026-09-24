@@ -17,6 +17,7 @@ static i2s_chan_handle_t      s_tx, s_rx;
 static uint32_t s_hz;
 static uint8_t  s_bits, s_ch;
 static bool     s_opened;
+static bool     s_reopen_after_stop;
 
 static esp_err_t i2s_full_duplex_init(void) {
     i2s_chan_config_t chan = {
@@ -129,10 +130,14 @@ esp_err_t bsp_audio_set_format(uint32_t hz, uint8_t bits, uint8_t ch) {
     if (s_opened) {
         esp_codec_dev_close(s_dev);
         s_opened = false;
+        s_reopen_after_stop = true;
+    }
+    if (s_reopen_after_stop) {
         // close 把 I2S 通道退回 READY,而接下来的 open 内部又会 disable 一次 →
         // 会打 "channel has not been enabled yet"。补一次 enable 让它合法。
         if (s_tx) i2s_channel_enable(s_tx);
         if (s_rx) i2s_channel_enable(s_rx);
+        s_reopen_after_stop = false;
     }
 
     esp_codec_dev_sample_info_t fs = {
@@ -163,6 +168,13 @@ esp_err_t bsp_audio_write(const void *pcm, size_t bytes) {
 esp_err_t bsp_audio_read(void *pcm, size_t bytes) {
     if (!s_dev) return ESP_ERR_INVALID_STATE;
     return esp_codec_dev_read(s_dev, pcm, bytes) == 0 ? ESP_OK : ESP_FAIL;
+}
+
+void bsp_audio_stop(void) {
+    if (!s_dev || !s_opened) return;
+    esp_codec_dev_close(s_dev);
+    s_opened = false;
+    s_reopen_after_stop = true;
 }
 
 void bsp_audio_set_volume(uint8_t percent) {

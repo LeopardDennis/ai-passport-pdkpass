@@ -20,5 +20,9 @@ esp_err_t bsp_audio_set_format(uint32_t hz, uint8_t bits, uint8_t ch);
 esp_err_t bsp_audio_write(const void *pcm, size_t bytes);
 esp_err_t bsp_audio_read(void *pcm, size_t bytes);
 
+// Close the active PCM stream and stop I2S clocks between short sounds.
+// A later bsp_audio_set_format() reopens the codec without reallocating I2S.
+void bsp_audio_stop(void);
+
 // 输出音量 0..100(%)。
 void bsp_audio_set_volume(uint8_t percent);

@@ -12,6 +12,8 @@ idf_component_register(
          "pdkpass_results.c"
          "pdkpass_results_core.c"
          "pdkpass_schedule.c"
+         "pdkpass_sound.c"
+         "pdkpass_sound_core.c"
          "pdkpass_sync.c"
          "pdkpass_sync_policy.c"
          "pdkpass_screenshot.c"
