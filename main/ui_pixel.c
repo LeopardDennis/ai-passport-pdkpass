@@ -1,5 +1,6 @@
 #include "ui_pixel.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static lv_obj_t *block(lv_obj_t *parent, int x, int y, int w, int h,
@@ -55,6 +56,7 @@ lv_obj_t *ui_pixel_screen_create(const char *title)
                                               UI_PAPER, true);
     lv_obj_t *heading = ui_pixel_label(plate, title, &lv_font_unscii_16,
                                        UI_INK);
+    lv_obj_set_user_data(heading, NULL);
     lv_obj_center(heading);
     lv_obj_set_user_data(scr, heading);
     return scr;
@@ -65,11 +67,72 @@ void ui_pixel_screen_set_title(lv_obj_t *screen, const char *title)
     if (!screen || !title) return;
     lv_obj_t *heading = lv_obj_get_user_data(screen);
     if (heading) {
+        lv_obj_t *dot = lv_obj_get_user_data(heading);
+        if (dot) lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_transform_scale_x(heading, 256, 0);
+        lv_obj_set_style_transform_scale_y(heading, 256, 0);
+        lv_obj_set_style_text_letter_space(heading, 0, 0);
+        lv_obj_set_width(heading, LV_SIZE_CONTENT);
         lv_label_set_text(heading, title);
         lv_obj_set_style_text_font(heading,
             strlen(title) > 13U ? &lv_font_unscii_8 : &lv_font_unscii_16, 0);
         lv_obj_center(heading);
     }
+}
+
+void ui_pixel_screen_set_track_title(lv_obj_t *screen, const char *circuit,
+                                     unsigned round)
+{
+    if (!screen || !circuit) return;
+    lv_obj_t *heading = lv_obj_get_user_data(screen);
+    if (!heading) return;
+
+    char title[48];
+    char gap_start[48];
+    char gap_end[48];
+    snprintf(title, sizeof(title), "%s   R%u", circuit, round);
+    snprintf(gap_start, sizeof(gap_start), "%s ", circuit);
+    snprintf(gap_end, sizeof(gap_end), "%s  ", circuit);
+
+    // Keep one font and one letter spacing for every round. Long names are
+    // fitted horizontally, so their glyph height and weight stay consistent.
+    const lv_font_t *font = &lv_font_unscii_16;
+    const int32_t letter_space = -2;
+    lv_point_t size;
+    lv_text_get_size(&size, title, font, letter_space, 0,
+                     LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    if (size.x <= 0) return;
+    int32_t source_width = size.x + 2;
+    int32_t scale_x = source_width > 208 ? 208 * 256 / source_width : 256;
+
+    lv_label_set_text(heading, title);
+    lv_obj_set_style_text_font(heading, font, 0);
+    lv_obj_set_style_text_letter_space(heading, letter_space, 0);
+    lv_obj_set_width(heading, source_width);
+    lv_obj_set_style_text_align(heading, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_transform_pivot_x(heading, source_width / 2, 0);
+    lv_obj_set_style_transform_pivot_y(heading, size.y / 2, 0);
+    lv_obj_set_style_transform_scale_x(heading, scale_x, 0);
+    lv_obj_set_style_transform_scale_y(heading, 320, 0);
+    lv_obj_center(heading);
+
+    // The font's period sits on the baseline. Draw a separate pixel in the
+    // middle of the three-space gap at the title's vertical center instead.
+    lv_obj_t *dot = lv_obj_get_user_data(heading);
+    if (!dot) {
+        dot = block(lv_obj_get_parent(heading), 0, 14, 4, 4, UI_INK);
+        lv_obj_set_user_data(heading, dot);
+    }
+    lv_point_t before, after;
+    lv_text_get_size(&before, gap_start, font, letter_space, 0,
+                     LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    lv_text_get_size(&after, gap_end, font, letter_space, 0,
+                     LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    int32_t gap_middle = (before.x + after.x) / 2;
+    int32_t dot_x = (226 - source_width * scale_x / 256) / 2 +
+                    gap_middle * scale_x / 256 - 2;
+    lv_obj_set_pos(dot, dot_x, 14);
+    lv_obj_remove_flag(dot, LV_OBJ_FLAG_HIDDEN);
 }
 
 void ui_pixel_screen_set_theme(lv_obj_t *screen, uint32_t color,

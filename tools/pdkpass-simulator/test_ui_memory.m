@@ -13,7 +13,8 @@ static void check_body_text(lv_obj_t *obj)
         const lv_font_t *font = lv_obj_get_style_text_font(obj, 0);
         if (font->line_height == 14) {
             lv_point_t size;
-            lv_text_get_size(&size, lv_label_get_text(obj), font, 0, 0,
+            lv_text_get_size(&size, lv_label_get_text(obj), font,
+                             lv_obj_get_style_text_letter_space(obj, 0), 0,
                              LV_COORD_MAX, LV_TEXT_FLAG_NONE);
             if (size.x > lv_obj_get_content_width(obj)) {
                 fprintf(stderr, "Clipped body text: %s (%ld > %ld)\n",
@@ -66,6 +67,31 @@ int main(void)
         assert(lv_obj_get_style_transform_scale_x(australia, 0) > 256);
         assert(lv_obj_get_style_transform_scale_x(australia, 0) < 512);
         check_memory(); // Includes the home hint's full text width.
+        // A maximum-length podium name must occupy one line without clipping.
+        [s_results_lock lock];
+        for (size_t session = 0; session < PDKPASS_SESSION_COUNT; session++)
+            s_results[0][session].status = PDKPASS_RESULT_NOT_HELD;
+        pdkpass_result_snapshot_t *sample =
+            &s_results[0][PDKPASS_SESSION_FP1];
+        sample->status = PDKPASS_RESULT_READY;
+        const char *codes[] = {"VER", "HUL", "BOR"};
+        const char *names[] = {"VERSTAPPEN", "HULKENBERG", "BORTOLETO"};
+        for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
+            sample->podium[i].position = (unsigned)i + 1U;
+            snprintf(sample->podium[i].code, sizeof(sample->podium[i].code),
+                     "%s", codes[i]);
+            snprintf(sample->podium[i].name, sizeof(sample->podium[i].name),
+                     "%s", names[i]);
+        }
+        [s_results_lock unlock];
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // home -> detail
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // detail -> results
+        assert(find_label(lv_screen_active(), "MAX VERSTAPPEN"));
+        assert(find_label(lv_screen_active(), "NICO HULKENBERG"));
+        assert(find_label(lv_screen_active(), "GABRIEL BORTOLETO"));
+        check_memory();
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // results -> detail
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // detail -> home
         s_flush_pixels = 0; s_flush_calls = 0;
         simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK); // home -> calendar
         s_flush_pixels = 0; s_flush_calls = 0;

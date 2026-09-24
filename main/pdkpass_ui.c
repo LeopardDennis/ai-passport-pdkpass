@@ -132,6 +132,23 @@ static lv_obj_t *make_center_label(lv_obj_t *parent, const char *text,
     return label;
 }
 
+static lv_obj_t *make_fit_body_label(lv_obj_t *parent, const char *text,
+                                     int x, int y, int width, uint32_t color)
+{
+    lv_point_t size;
+    lv_text_get_size(&size, text, &pdkpass_body_font, 0, 0,
+                     LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    int source_width = size.x + 2;
+    lv_obj_t *label = make_label(parent, text, x, y, source_width,
+                                 &pdkpass_body_font, color);
+    if (source_width > width) {
+        lv_obj_set_style_transform_pivot_x(label, 0, 0);
+        lv_obj_set_style_transform_scale_x(label,
+                                           width * 256 / source_width, 0);
+    }
+    return label;
+}
+
 static lv_obj_t *make_zoom_label(lv_obj_t *parent, const char *text,
                                  int x, int y, int width, uint32_t color)
 {
@@ -186,7 +203,11 @@ static lv_obj_t *make_fit_zoom_label(lv_obj_t *parent, const char *text,
         lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_transform_pivot_x(label, logical_width / 2, 0);
         lv_obj_set_style_transform_pivot_y(label, 8, 0);
-        lv_obj_set_style_transform_scale(label, scale, 0);
+        lv_obj_set_style_transform_scale_x(label, scale, 0);
+        // Long names need a narrow fit, but should keep the same visual
+        // prominence as shorter races instead of shrinking in both axes.
+        lv_obj_set_style_transform_scale_y(label,
+            scale < 384 ? 384 : scale, 0);
         return label;
     }
     return make_medium_label(parent, text, x, y, width, color);
@@ -219,6 +240,21 @@ static uint32_t result_driver_accent(const pdkpass_podium_driver_t *result,
     return fallback;
 }
 
+static void podium_display_name(const pdkpass_podium_driver_t *result,
+                                char *out, size_t capacity)
+{
+    const char *surname = result->name[0] ? result->name : result->code;
+    for (size_t i = 0; i < s_season.driver_count; i++) {
+        const pdkpass_driver_t *known = &s_season.drivers[i];
+        if (strncmp(result->code, known->code, sizeof(result->code)) == 0 &&
+            known->first_name[0] && strcmp(surname, known->name) == 0) {
+            snprintf(out, capacity, "%s %s", known->first_name, surname);
+            return;
+        }
+    }
+    snprintf(out, capacity, "%s", surname);
+}
+
 static void set_gradient(lv_obj_t *obj, uint32_t top, uint32_t bottom)
 {
     lv_obj_set_style_bg_color(obj, lv_color_hex(top), 0);
@@ -246,6 +282,11 @@ static pdkpass_theme_t theme_for_race(const pdkpass_race_t *race)
     };
     if (race) pdkpass_theme_get(race->circuit, &theme);
     return theme;
+}
+
+static const char *circuit_display_name(const char *circuit)
+{
+    return strcmp(circuit, "SPA-FRANCORCHAMPS") == 0 ? "SPA" : circuit;
 }
 
 static const char *detail_session_short_label(pdkpass_session_kind_t session)
@@ -578,8 +619,15 @@ static void render_home(void)
     snprintf(round, sizeof(round), "R%u", race->round);
     make_zoom_label(s_content, round, 0, 3, INNER_W, 0xFFFFFF);
     make_fit_zoom_label(s_content, race->country, 0, 35, INNER_W, UI_PAPER);
-    make_center_label(s_content, race->circuit, 0, 73, INNER_W,
-                      &lv_font_unscii_16, 0xFFFFFF);
+    const char *circuit_name = circuit_display_name(race->circuit);
+    lv_point_t circuit_size;
+    lv_text_get_size(&circuit_size, circuit_name, &lv_font_unscii_16,
+                     0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    const lv_font_t *circuit_font = circuit_size.x > INNER_W - 6
+                                        ? &lv_font_unscii_8
+                                        : &lv_font_unscii_16;
+    make_center_label(s_content, circuit_name, 0, 73, INNER_W,
+                      circuit_font, 0xFFFFFF);
     char weekend[20];
     if (strlen(race->weekend) == 9U && race->weekend[2] == '-' &&
         race->weekend[5] == ' ') {
@@ -807,9 +855,9 @@ static void render_detail(void)
     if (s_state.selected_race >= s_season.race_count) return;
     const pdkpass_race_t *race = &s_season.races[s_state.selected_race];
     pdkpass_theme_t theme = theme_for_race(race);
-    char title[40];
-    snprintf(title, sizeof(title), "%s . R%u", race->circuit, race->round);
-    set_title(title);
+    ui_pixel_screen_set_track_title(s_screen,
+                                    circuit_display_name(race->circuit),
+                                    race->round);
     char status[32];
     snprintf(status, sizeof(status), "%s GP", race->country);
     set_status(status, theme.top);
@@ -905,12 +953,13 @@ static void render_results(void)
             lv_obj_t *row = make_card(s_content, 2, 7 + (int)i * 55,
                                       206, 49, background, 3);
             char position[4];
+            char display_name[32];
             snprintf(position, sizeof(position), "P%u", driver->position);
+            podium_display_name(driver, display_name, sizeof(display_name));
             make_label(row, position, 7, 5, 32, &lv_font_unscii_16, ink);
-            make_label(row, driver->code, 47, 9, 32,
+            make_label(row, driver->code, 7, 27, 32,
                        &lv_font_unscii_8, ink);
-            make_label(row, driver->name, 84, 5, 114,
-                       &pdkpass_body_font, ink);
+            make_fit_body_label(row, display_name, 45, 5, 153, ink);
             make_label(row, driver->team, 45, 27, 153,
                        &lv_font_unscii_8, ink);
         }

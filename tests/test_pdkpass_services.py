@@ -389,9 +389,10 @@ static int pdkpass_http_array(const char *url,bool (*item)(const cJSON *,void *)
   cJSON a={.key="driver_number",.valueint=i,.type=2};
   cJSON b={.key="name_acronym",.valuestring=codes[i-1],.type=1};
   cJSON c={.key="last_name",.valuestring=names[i-1],.type=1};
-  cJSON d={.key="team_name",.valuestring="TEAM",.type=1};
-  cJSON e={.key="team_colour",.valuestring="123456",.type=1};
-  a.next=&b;b.next=&c;c.next=&d;d.next=&e;
+  cJSON d={.key="first_name",.valuestring=i==1?"Alice":"Bob",.type=1};
+  cJSON e={.key="team_name",.valuestring="TEAM",.type=1};
+  cJSON f={.key="team_colour",.valuestring="123456",.type=1};
+  a.next=&b;b.next=&c;c.next=&d;d.next=&e;e.next=&f;
   cJSON obj={.child=&a};assert(item(&obj,ctx));
   if(fail_driver_stream)return ESP_FAIL;
  }
@@ -402,6 +403,7 @@ void pdkpass_format_beijing_date(int64_t now,char *out,size_t size) {
 }
 '''
         for signature in ['static void copy_text(', 'static void copy_upper(',
+                          'static void fill_known_first_name(',
                           'static const char *json_string(', 'static bool json_number(',
                           'static uint32_t parse_colour(', 'static int compare_drivers(',
                           'static bool parse_standing_item(', 'static bool parse_standing_driver(',
@@ -420,11 +422,12 @@ int main(void) {
  assert(candidate.drivers[0].position==1&&candidate.drivers[0].points_tenths==255);
  assert(strcmp(candidate.drivers[0].code,"AAA")==0);
  assert(strcmp(candidate.drivers[1].name,"BETA")==0);
+ assert(strcmp(candidate.drivers[1].first_name,"BOB")==0);
  assert(candidate.drivers[1].accent==0x123456);
  puts("streamed standings commit only complete responses: PASS");
 }
 '''
-        compile_run(code)
+        compile_run(code, ['main/pdkpass_data.c'])
 
     def test_dark_display_skips_battery_i2c(self):
         source = (ROOT / 'main/main.c').read_text()
@@ -862,38 +865,55 @@ int main(void) {
         defines = '\n'.join(x for x in source.splitlines()
                             if x.startswith('#define SEASON_CACHE_'))
         types = source[source.index('typedef struct {'):
-                       source.index('} season_cache_t;') + len('} season_cache_t;')]
+                       source.index('} legacy_season_cache_t;') + len('} legacy_season_cache_t;')]
         code = PRELUDE + defines + '\n' + types + r'''
 #define NVS_READONLY 0
 typedef int nvs_handle_t;
 static const char *NVS_NAMESPACE="test", *NVS_KEY="test";
 static pdkpass_season_snapshot_t s_season;
 static bool s_has_cached_data;
-static season_cache_t payload;
+static season_cache_t current;
+static legacy_season_cache_t legacy;
+static const void *payload=&current;
+static size_t payload_size=sizeof(current);
 static int nvs_open(const char *n,int m,int *h) {(void)n;(void)m;*h=1;return 0;}
 static int nvs_get_blob(int h,const char *k,void *out,size_t *size) {
- (void)h;(void)k;assert(*size==sizeof(payload));memcpy(out,&payload,*size);return 0;
+ (void)h;(void)k;assert(*size>=payload_size);
+ memcpy(out,payload,payload_size);*size=payload_size;return 0;
 }
 static void nvs_close(int h) {(void)h;}
 '''
-        for signature in ['static void copy_text(', 'static void apply_track_details(', 'static void initialize_fallback(',
-                          'static bool snapshot_valid(', 'static void load_cache(']:
+        for signature in ['static void copy_text(', 'static void fill_known_first_name(',
+                          'static void apply_track_details(', 'static void initialize_fallback(',
+                          'static bool snapshot_valid(', 'static bool restore_legacy_cache(',
+                          'static void load_cache(']:
             code += function(source, signature)
         code += r'''
 int main(void) {
  initialize_fallback();assert(s_season.race_count==23);
- payload.magic=SEASON_CACHE_MAGIC;payload.version=SEASON_CACHE_VERSION;
- payload.season=s_season;payload.season.race_count=11;
- memcpy(payload.season.races,pdkpass_races+12,11*sizeof(pdkpass_race_t));
- payload.season.drivers[0].points_tenths=999;
- strcpy(payload.season.standings_as_of,"15 SEP");
+ current.magic=SEASON_CACHE_MAGIC;current.version=SEASON_CACHE_VERSION;
+ current.season=s_season;current.season.race_count=11;
+ memcpy(current.season.races,pdkpass_races+12,11*sizeof(pdkpass_race_t));
+ current.season.drivers[0].points_tenths=999;
+ strcpy(current.season.standings_as_of,"15 SEP");
  load_cache();
  assert(s_season.race_count==23);assert(snapshot_valid(&s_season));
  assert(s_has_cached_data);
  assert(s_season.drivers[0].points_tenths==999);
  assert(strcmp(s_season.standings_as_of,"15 SEP")==0);
- payload.season.year=2027;load_cache();assert(s_season.race_count==11);
- payload.magic=0;load_cache();assert(s_season.race_count==23);
+ current.season.year=2027;load_cache();assert(s_season.race_count==11);
+ legacy.magic=SEASON_CACHE_MAGIC;
+ legacy.version=SEASON_CACHE_LEGACY_VERSION;
+ legacy.season.year=2026;legacy.season.race_count=11;legacy.season.driver_count=1;
+ memcpy(legacy.season.races,pdkpass_races+12,11*sizeof(pdkpass_race_t));
+ strcpy(legacy.season.drivers[0].code,"VER");
+ strcpy(legacy.season.drivers[0].name,"VERSTAPPEN");
+ legacy.season.drivers[0].points_tenths=777;
+ payload=&legacy;payload_size=sizeof(legacy);load_cache();
+ assert(s_has_cached_data&&s_season.race_count==23);
+ assert(s_season.drivers[0].points_tenths==777);
+ assert(strcmp(s_season.drivers[0].first_name,"MAX")==0);
+ legacy.magic=0;load_cache();assert(s_season.race_count==23);
  assert(!s_has_cached_data);
  puts("season fallback and legacy cache load: PASS");
 }

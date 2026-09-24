@@ -15,6 +15,8 @@
 
 lv_obj_t *ui_pixel_screen_create(const char *title);
 void ui_pixel_screen_set_title(lv_obj_t *screen, const char *title);
+void ui_pixel_screen_set_track_title(lv_obj_t *screen, const char *circuit,
+                                     unsigned round);
 void ui_pixel_screen_set_theme(lv_obj_t *screen, uint32_t color,
                                uint32_t dark_color);
 lv_obj_t *ui_pixel_ticket_create(lv_obj_t *parent, int x, int y, int w, int h,

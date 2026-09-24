@@ -11,6 +11,7 @@
 #define PDKPASS_SESSION_LINE_LEN 24
 #define PDKPASS_API_COUNTRY_LEN 32
 #define PDKPASS_DRIVER_NAME_LEN 16
+#define PDKPASS_DRIVER_FIRST_NAME_LEN 10
 #define PDKPASS_TEAM_LEN 18
 
 typedef struct {
@@ -38,6 +39,7 @@ typedef struct {
     char code[4];
     char name[PDKPASS_DRIVER_NAME_LEN];
     char team[PDKPASS_TEAM_LEN];
+    char first_name[PDKPASS_DRIVER_FIRST_NAME_LEN];
 } pdkpass_driver_t;
 
 extern const pdkpass_race_t pdkpass_races[];

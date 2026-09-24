@@ -6,9 +6,24 @@
 
 ## Unreleased
 
-- Scale medium-length home race names to the available width, so Australia no
-  longer drops to the small title size. Fit the bottom action hint and center
-  its visible text with equal margins inside the ticket.
+- Fit all bundled home race names to the available width while retaining a
+  readable height, including Australia, the Netherlands and Saudi Arabia.
+  Show Spa-Francorchamps as `SPA` in the UI. Fit the bottom action hint and
+  center its visible text with equal margins inside the ticket.
+
+- Fit each track-detail header within its title ticket instead of shrinking
+  longer circuit and round labels to the tiny 8 px font. Use the same font and
+  visible height for all 47 bundled detail titles, fitting long names only in
+  width. Center the separating dot vertically with the letters.
+
+- Make the track-title separator easier to see. Give podium driver names a
+  full line beside the position number; put each three-letter code beside the
+  team on the second line so longer names remain visible.
+
+- Show given names with surnames on podium rows, including `MAX VERSTAPPEN`.
+  Fit longer full names within one line. Keep surnames on the standings page
+  and migrate saved season snapshots so cached calendars and standings survive
+  the added given-name field.
 
 - On the home screen, short UP/DOWN browses the previous/next race; long
   UP opens driver standings and long DOWN opens the calendar. OK opens the
