@@ -27,6 +27,17 @@ static void check_body_text(lv_obj_t *obj)
         check_body_text(lv_obj_get_child(obj, i));
 }
 
+static lv_obj_t *find_label(lv_obj_t *obj, const char *text)
+{
+    if (lv_obj_check_type(obj, &lv_label_class) &&
+        strcmp(lv_label_get_text(obj), text) == 0) return obj;
+    for (uint32_t i = 0; i < lv_obj_get_child_count(obj); i++) {
+        lv_obj_t *found = find_label(lv_obj_get_child(obj, i), text);
+        if (found) return found;
+    }
+    return NULL;
+}
+
 static void check_memory(void)
 {
     simulator_refresh();
@@ -48,7 +59,13 @@ int main(void)
             assert(memcmp(&snapshot.races[i], &pdkpass_races[i],
                           sizeof(pdkpass_race_t)) == 0);
         }
+        s_home_race_index = 0; // Australia's medium-length name exercises fitted scaling.
         simulator_initialize();
+        lv_obj_t *australia = find_label(lv_screen_active(), "AUSTRALIA");
+        assert(australia);
+        assert(lv_obj_get_style_transform_scale_x(australia, 0) > 256);
+        assert(lv_obj_get_style_transform_scale_x(australia, 0) < 512);
+        check_memory(); // Includes the home hint's full text width.
         s_flush_pixels = 0; s_flush_calls = 0;
         simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK); // home -> calendar
         s_flush_pixels = 0; s_flush_calls = 0;

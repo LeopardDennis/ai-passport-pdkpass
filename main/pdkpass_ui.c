@@ -177,8 +177,17 @@ static lv_obj_t *make_fit_zoom_label(lv_obj_t *parent, const char *text,
         return make_zoom_label(parent, text, x, y, width, color);
     }
     if (scale >= 256) {
-        return make_center_label(parent, text, x + margin / 2, y + 8,
-                                 available_width, &lv_font_unscii_16, color);
+        // Keep the title at its fitted size instead of dropping straight from
+        // double-size to the unscaled font for medium-length race names.
+        int logical_width = available_width * 256 / scale;
+        lv_obj_t *label = make_label(parent, text,
+            x + (width - logical_width) / 2, y + 8, logical_width,
+            &lv_font_unscii_16, color);
+        lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_transform_pivot_x(label, logical_width / 2, 0);
+        lv_obj_set_style_transform_pivot_y(label, 8, 0);
+        lv_obj_set_style_transform_scale(label, scale, 0);
+        return label;
     }
     return make_medium_label(parent, text, x, y, width, color);
 }
@@ -1120,8 +1129,11 @@ void pdkpass_ui_enter(bool battery_available)
                                       CONTENT_W, CONTENT_H, UI_SKY);
     s_hint_box = ui_pixel_ticket_create(s_screen, FOOTER_X, FOOTER_Y,
                                         FOOTER_W, FOOTER_H, UI_PAPER, true);
-    s_hint = make_center_label(s_hint_box, "", 4, 9, 210,
-                               &lv_font_unscii_8, UI_INK);
+    // Center the visible glyphs inside the ticket; the centered-label helper's
+    // extra 3 px inset makes this full-width hint look shifted to the right.
+    s_hint = make_label(s_hint_box, "", 0, 9, FOOTER_W - 6,
+                        &lv_font_unscii_8, UI_INK);
+    lv_obj_set_style_text_align(s_hint, LV_TEXT_ALIGN_CENTER, 0);
 
     render();
     pdkpass_ui_battery_update(-1);

@@ -6,6 +6,10 @@
 
 ## Unreleased
 
+- Scale medium-length home race names to the available width, so Australia no
+  longer drops to the small title size. Fit the bottom action hint and center
+  its visible text with equal margins inside the ticket.
+
 - On the home screen, short UP/DOWN browses the previous/next race; long
   UP opens driver standings and long DOWN opens the calendar. OK opens the
   displayed race. After 90 seconds of inactivity turns the screen off, the

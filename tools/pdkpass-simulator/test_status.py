@@ -1,5 +1,6 @@
 """Pixel regression checks against the production LVGL simulator (requires Pillow)."""
 from pathlib import Path
+import os
 import subprocess
 import tempfile
 import unittest
@@ -7,7 +8,9 @@ import unittest
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[2]
-BINARY = ROOT / "build/pdkpass-simulator/pdkpass-simulator"
+BINARY = Path(os.environ.get(
+    "PDKPASS_SIMULATOR_BINARY",
+    ROOT / "build/pdkpass-simulator/pdkpass-simulator"))
 
 
 class StatusPixels(unittest.TestCase):
@@ -35,6 +38,15 @@ class StatusPixels(unittest.TestCase):
                 ink = [y for y in rows if any(
                     min(image.getpixel((x, y))) > 180 for x in range(left, right))]
                 self.assertEqual(min(ink) - 55, 71 - max(ink))
+
+    def test_home_hint_has_equal_side_margins(self):
+        image = self.frames[88]
+        # Ticket border occupies x=8..10 and x=229..231. Measure the visible
+        # glyphs, since the font's ink does not start at its label origin.
+        ink_x = [x for y in range(292, 303) for x in range(11, 229)
+                 if max(image.getpixel((x, y))) < 100]
+        self.assertTrue(ink_x)
+        self.assertEqual(min(ink_x) - 11, 228 - max(ink_x))
 
     def test_red_at_or_below_twenty(self):
         for soc, image in self.frames.items():
