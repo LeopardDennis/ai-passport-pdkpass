@@ -55,6 +55,28 @@ CI calls the same script. Fix the shared script or environment if local and CI b
 
 Hardware-affecting changes must also run the applicable on-device checklist in the hardware guide. Report compilation separately from physical-device validation.
 
+## macOS device log capture
+
+On the test Mac, check out the same commit as the firmware being flashed. The
+log collector uses only Python 3's standard library; ESP-IDF and extra Python
+packages are not needed for capture. After flashing and Wi-Fi setup, close the
+flasher and other serial monitors, then keep the USB data cable connected:
+
+```bash
+python3 tools/device-test/serial_capture.py --list-ports
+python3 tools/device-test/serial_capture.py --seconds 300
+# If auto-detection finds no unique /dev/cu.usbmodem* port:
+python3 tools/device-test/serial_capture.py --port /dev/cu.usbmodemXXXX --seconds 300
+```
+
+Start capture before restarting the board once, so the boot and reconnection
+logs are included. The collector never flashes, erases, or sends commands to
+the device. It saves a private raw log under `/tmp/pdkpass-device-logs/` and
+prints counts for observed startup, cache, and error messages. Those counts
+cannot prove display, button, sound, battery, or timing behavior; follow the
+hardware guide's on-device checklist. Inspect and redact network or personal
+details before sharing a raw log.
+
 Never upload the app-only `build/FoloToy-AI-Passport.bin` to the community. Only
 the validated `build/FoloToy-AI-Passport-full.bin` contains the structure the
 mini-program can inspect and transform safely.

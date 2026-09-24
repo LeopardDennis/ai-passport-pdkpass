@@ -52,5 +52,24 @@ cc -std=c11 -Wall -Wextra -Werror -Imain \
 
 涉及物理外设的改动必须在真机运行硬件指南验收清单，并把“编译通过”与“硬件验证通过”分开记录。
 
+## macOS 真机日志采集
+
+测试用 Mac 应检出与烧录固件相同的提交。采集工具只依赖 Python 3 标准库，采集时
+不需要 ESP-IDF 或额外 Python 包。刷机并完成 Wi-Fi 配置后，关闭刷机页面和其他
+串口监视器，保持 USB 数据线连接：
+
+```bash
+python3 tools/device-test/serial_capture.py --list-ports
+python3 tools/device-test/serial_capture.py --seconds 300
+# 如果无法唯一识别 /dev/cu.usbmodem*，从列表中指定实际端口：
+python3 tools/device-test/serial_capture.py --port /dev/cu.usbmodemXXXX --seconds 300
+```
+
+先开始采集，再重启设备一次，才能记录完整启动与重新联网过程。采集工具不会烧录、
+擦除或向设备发送命令。原始日志以私有权限保存在 `/tmp/pdkpass-device-logs/`，终端
+只汇总观察到的启动、缓存和错误消息。这些计数不能证明屏幕、按键、声音、电池或
+定时行为正常；这些项目仍按硬件指南在真机验收。分享原始日志前应检查并遮盖网络或
+个人信息。
+
 社区只能上传验证通过的 `build/FoloToy-AI-Passport-full.bin`，不得上传应用单镜像
 `build/FoloToy-AI-Passport.bin`，后者没有小程序可安全解析与转换的完整结构。
