@@ -25,6 +25,13 @@
   and migrate saved season snapshots so cached calendars and standings survive
   the added given-name field.
 
+- Tint podium team names with a readable dark or light shade of each team's
+  color, including Mercedes blue, distinct from driver names while retaining
+  the card backgrounds.
+
+- Use the same full-height, width-fitted round title on result pages as on
+  track-detail pages, with the separator centered vertically for every race.
+
 - On the home screen, short UP/DOWN browses the previous/next race; long
   UP opens driver standings and long DOWN opens the calendar. OK opens the
   displayed race. After 90 seconds of inactivity turns the screen off, the

@@ -240,6 +240,26 @@ static uint32_t result_driver_accent(const pdkpass_podium_driver_t *result,
     return fallback;
 }
 
+static uint32_t result_team_text_color(const char *team, uint32_t background,
+                                       uint32_t driver_ink)
+{
+    if (team && strcmp(team, "MERCEDES") == 0) return 0x002855;
+    unsigned r = (background >> 16) & 0xff;
+    unsigned g = (background >> 8) & 0xff;
+    unsigned b = background & 0xff;
+    // The card already uses the team's color. Keep its color family in the
+    // team label, but shift brightness to read against the same background.
+    if (r * 299 + g * 587 + b * 114 < 70000) {
+        return (((r * 3 + 255 * 7) / 10) << 16) |
+               (((g * 3 + 255 * 7) / 10) << 8) |
+               ((b * 3 + 255 * 7) / 10);
+    }
+    unsigned retain = driver_ink == UI_INK ? 3 : 1;
+    return ((r * retain / 10) << 16) |
+           ((g * retain / 10) << 8) |
+           (b * retain / 10);
+}
+
 static void podium_display_name(const pdkpass_podium_driver_t *result,
                                 char *out, size_t capacity)
 {
@@ -855,7 +875,7 @@ static void render_detail(void)
     if (s_state.selected_race >= s_season.race_count) return;
     const pdkpass_race_t *race = &s_season.races[s_state.selected_race];
     pdkpass_theme_t theme = theme_for_race(race);
-    ui_pixel_screen_set_track_title(s_screen,
+    ui_pixel_screen_set_round_title(s_screen,
                                     circuit_display_name(race->circuit),
                                     race->round);
     char status[32];
@@ -912,9 +932,7 @@ static void render_results(void)
 {
     if (s_state.selected_race >= s_season.race_count) return;
     const pdkpass_race_t *race = &s_season.races[s_state.selected_race];
-    char title[40];
-    snprintf(title, sizeof(title), "%s . R%u", race->country, race->round);
-    set_title(title);
+    ui_pixel_screen_set_round_title(s_screen, race->country, race->round);
     set_status(pdkpass_session_label(s_state.selected_session), race->accent);
     content_reset(0x17202A, 0x263743);
 
@@ -950,6 +968,8 @@ static void render_results(void)
             const pdkpass_podium_driver_t *driver = &result.podium[i];
             uint32_t background = result_driver_accent(driver, race->accent);
             uint32_t ink = contrast_color(background);
+            uint32_t team_ink = result_team_text_color(driver->team,
+                                                       background, ink);
             lv_obj_t *row = make_card(s_content, 2, 7 + (int)i * 55,
                                       206, 49, background, 3);
             char position[4];
@@ -961,7 +981,7 @@ static void render_results(void)
                        &lv_font_unscii_8, ink);
             make_fit_body_label(row, display_name, 45, 5, 153, ink);
             make_label(row, driver->team, 45, 27, 153,
-                       &lv_font_unscii_8, ink);
+                       &lv_font_unscii_8, team_ink);
         }
     }
     set_hint("UP/DN SESS  OK:BACK");

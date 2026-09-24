@@ -80,19 +80,19 @@ void ui_pixel_screen_set_title(lv_obj_t *screen, const char *title)
     }
 }
 
-void ui_pixel_screen_set_track_title(lv_obj_t *screen, const char *circuit,
+void ui_pixel_screen_set_round_title(lv_obj_t *screen, const char *label,
                                      unsigned round)
 {
-    if (!screen || !circuit) return;
+    if (!screen || !label) return;
     lv_obj_t *heading = lv_obj_get_user_data(screen);
     if (!heading) return;
 
     char title[48];
     char gap_start[48];
     char gap_end[48];
-    snprintf(title, sizeof(title), "%s   R%u", circuit, round);
-    snprintf(gap_start, sizeof(gap_start), "%s ", circuit);
-    snprintf(gap_end, sizeof(gap_end), "%s  ", circuit);
+    snprintf(title, sizeof(title), "%s   R%u", label, round);
+    snprintf(gap_start, sizeof(gap_start), "%s ", label);
+    snprintf(gap_end, sizeof(gap_end), "%s  ", label);
 
     // Keep one font and one letter spacing for every round. Long names are
     // fitted horizontally, so their glyph height and weight stay consistent.

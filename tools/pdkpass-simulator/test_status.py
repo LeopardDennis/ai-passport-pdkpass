@@ -124,6 +124,27 @@ class StatusPixels(unittest.TestCase):
                                 dots.append((min(ys), max(ys)))
                     self.assertEqual(dots, [(23, 26)])
 
+    def test_every_bundled_result_title_matches_track_height(self):
+        for year, count in ((2026, 23), (2027, 24)):
+            for race in range(1, count + 1):
+                with self.subTest(year=year, race=race):
+                    path = Path(self.directory.name) / f"result-{year}-r{race:02}.png"
+                    subprocess.run([str(BINARY), "--year", str(year),
+                                    "--race", str(race), "--page", "results",
+                                    "--screenshot", str(path)],
+                                   check=True, capture_output=True)
+                    with Image.open(path) as source:
+                        image = source.convert("RGB")
+                    ink = [(x, y) for y in range(11, 40)
+                           for x in range(12, 228)
+                           if image.getpixel((x, y)) == (16, 32, 41)]
+                    self.assertTrue(ink)
+                    left, right = min(x for x, _ in ink), max(x for x, _ in ink)
+                    top, bottom = min(y for _, y in ink), max(y for _, y in ink)
+                    self.assertGreaterEqual(left, 16)
+                    self.assertLessEqual(right, 223)
+                    self.assertEqual(bottom - top + 1, 16)
+
     def test_red_at_or_below_twenty(self):
         for soc, image in self.frames.items():
             with self.subTest(soc=soc):
