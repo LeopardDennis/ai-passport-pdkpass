@@ -6,7 +6,6 @@
 #include "pdkpass_wifi_form.h"
 #include "pdkpass_wifi_profiles.h"
 #include "esp_event.h"
-#include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -443,9 +442,7 @@ static esp_err_t start_setup(void)
     s_setup_started = esp_timer_get_time();
     s_setup_idle_since = s_setup_started;
     s_testing_candidate = false;
-    ESP_LOGI(TAG, "Wi-Fi setup ready; heap=%lu largest=%lu",
-             (unsigned long)esp_get_free_heap_size(),
-             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    ESP_LOGI(TAG, "Wi-Fi setup ready");
     publish_state(PDKPASS_NETWORK_SETUP);
     return ESP_OK;
 }
@@ -873,6 +870,8 @@ static void network_task(void *arg)
             if (s_time_synced_boot && pdkpass_sync_idle() && pdkpass_http_try_begin()) {
                 if (pdkpass_sync_idle()) {
                     s_auto_parked = go_offline() == ESP_OK;
+                    if (s_auto_parked)
+                        ESP_LOGD(TAG, "Wi-Fi parked until next data sync");
                 }
                 pdkpass_http_end();
             }

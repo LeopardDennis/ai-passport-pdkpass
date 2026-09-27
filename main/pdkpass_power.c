@@ -11,7 +11,7 @@ esp_err_t pdkpass_power_init(void)
     if (err == ESP_OK) err = esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "pdk_network", &s_network_awake);
     if (err == ESP_OK) {
         pdkpass_power_display(true);
-        esp_pm_config_t config = {.max_freq_mhz = 160, .min_freq_mhz = 80,
+        esp_pm_config_t config = {.max_freq_mhz = 160, .min_freq_mhz = 40,
                                   .light_sleep_enable = true};
         err = esp_pm_configure(&config);
     }

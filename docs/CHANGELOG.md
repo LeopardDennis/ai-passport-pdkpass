@@ -6,9 +6,93 @@
 
 ## Unreleased
 
+- Keep the team-points heading at the same 16 px font size as driver standings,
+  fitting long titles horizontally instead of switching to small text.
+
+- Replace home long-DOWN calendar access with a `TEAM POINTS` page. Show five
+  constructor rankings per page with team colors; UP/DOWN scroll, long OK returns
+  home and short OK stays. Download authoritative Jolpica constructor totals in
+  bounded pages, preserve valid data on failures and persist an independent,
+  season-isolated cache. Keep driver standings on long UP and race browsing on
+  short UP/DOWN. Add pending-data, pagination and simulator coverage.
+
+- Use the reminded round’s circuit theme for the entire reminder screen,
+  keeping yellow countdown/session highlights and resetting the outer frame
+  independently of the previously displayed page.
+
+- Give the four network/settings actions single-line cards with centered text
+  and wider row gaps, removing cramped secondary labels.
+
+- Add locally scheduled ten-minute reminders for every actual session, using
+  the approved three-second melody at 80% and a 15-second display notice.
+  Preserve 50% button cues. Any key dismisses without navigating; NETWORK has
+  a persisted ALERTS toggle. Cache API start times, cancellation and delivery
+  identities for offline operation with a valid clock and restart deduplication.
+  Reuse existing workers and stream PCM from flash. Late sync catches up only
+  before the start; missing schedules are never inferred. Device acceptance is pending.
+
+- Switch championship points and standings driver/team metadata exclusively to
+  Jolpica. Fetch four drivers per page with bounded responses, pin the source
+  round across pages, validate decimal points and duplicate/missing records,
+  and use the corresponding Jolpica round date. Preserve cached points on any
+  failure. OpenF1 calendar failures and rate limits no longer block same-season
+  standings downloads. Keep automatic refresh, retry and offline persistence;
+  device acceptance remains pending.
+
+- Clarify the results footer as `UP/DN:PAGE HOLD:BACK`, replacing the
+  abbreviated session label with an explicit paging action.
+
+- Follow the CW2017 sleep-to-active sequence (`0x30`, then `0x00`) and check
+  initialization failures, while leaving an already-active gauge running.
+  Preserve the reported percentage and existing battery profile; neither charger
+  termination nor full-charge accuracy is verified.
+
+- Enter ST7789 controller sleep after screen-off and wake it before restoring
+  drawing/backlight, retaining a dark screen if wake fails. Lower the idle CPU
+  floor from 80 to 40 MHz. Expire manually selected results priority after 15
+  minutes without another request, restoring normal background retry intervals
+  while retaining automatic current-weekend result checks. ADC key polling is
+  unchanged; actual standby current and battery life still need measurement.
+
+- Show only scheduled sessions when browsing a round's results, skipping
+  absent sprint or practice sessions in both directions. Use the calendar's
+  weekend format until session metadata is available; downloaded metadata
+  overrides it. Hide absent detail rows and move to a visible session when
+  an update removes the current one. Keep pending and cancelled sessions.
+
+- Reduce Wi-Fi buffer memory and release the verified peer certificate after
+  TLS handshakes, retaining full CA/hostname verification and 16 KB incoming
+  records. Fetch podium driver details individually instead of the full grid:
+  hardware logs showed 8-10 KB TLS record allocations failing during that step.
+  Completed sessions with missing podiums now show synchronization pending,
+  not a future result; missing clock/session times have distinct prompts.
+  Actual downloads and Wi-Fi compatibility still require device retesting.
+
+- Keep an explicitly requested round ahead of background results work across
+  all discovery/podium transactions. Its failed requests retry after five
+  minutes while unrelated historical rounds retain daily backoff. A manual
+  request received during HTTP now overrides the worker's later deadline,
+  instead of waiting behind it. Log each round's discovery/download stage and
+  intentional Wi-Fi parking for device diagnostics.
+
+- Trigger button sounds on press, before click recognition or UI rendering.
+  Prepare audio on its worker at startup, set volume to 50%, and
+  keep the codec open for 250 ms between nearby cues before stopping it.
+  Session results now return only on long OK; short OK leaves the page in
+  place, matching the updated footer and button guide.
+
+- Enable ESP-IDF dynamic TLS buffers to reduce handshake memory pressure
+  observed on hardware (`0x4290` certificate verification and `-0x7F00` SSL
+  allocation failures). Retain the full CA bundle, certificate verification,
+  16 KB incoming records and 4 KB outgoing records. Successful OpenF1 sync
+  still requires a device retest.
+
+- Clarify the home footer as `UP/DN:RACE OK:VIEW`, matching short OK to
+  open race details. The season-complete screen prompts race browsing first.
+
 - Add a quiet, two-note pixel-style cue for UP, DOWN, OK, and long-press
   actions. Audio plays on a separate worker, coalesces rapid keys, and closes
-  the codec after each cue so button handling and display sleep stay responsive.
+  the codec after a short idle interval so button handling and display sleep stay responsive.
 
 - Fit all bundled home race names to the available width while retaining a
   readable height, including Australia, the Netherlands and Saudi Arabia.

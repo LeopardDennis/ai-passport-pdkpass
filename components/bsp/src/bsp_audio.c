@@ -156,7 +156,7 @@ esp_err_t bsp_audio_set_format(uint32_t hz, uint8_t bits, uint8_t ch) {
     esp_codec_dev_set_in_gain(s_dev, 30.0f);
 
     s_opened = true; s_hz = hz; s_bits = bits; s_ch = ch;
-    ESP_LOGI(TAG, "codec 打开 %luHz/%ubit/%uch", (unsigned long)hz, bits, ch);
+    ESP_LOGD(TAG, "codec 打开 %luHz/%ubit/%uch", (unsigned long)hz, bits, ch);
     return ESP_OK;
 }
 

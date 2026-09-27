@@ -43,6 +43,22 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=64
 # bearer token is embedded in the community firmware.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# Allocate TLS records on demand so handshake verification can use the heap.
+# Keep full-size incoming records and the standard 4 KB outgoing limit.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+# The application never inspects the peer certificate after verification.
+# Release it after the TLS 1.2 handshake to leave room for incoming records.
+CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=n
+
+# --- Wi-Fi RAM budget ---
+# One serialized HTTPS client, not a throughput benchmark. Static RX buffers
+# consume about 1.6 KB each; keep the AMPDU window within that count.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_RX_BA_WIN=4
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
 
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000

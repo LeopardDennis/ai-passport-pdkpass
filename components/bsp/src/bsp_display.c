@@ -16,6 +16,7 @@ static const char *TAG = "bsp_disp";
 static esp_lcd_panel_handle_t    s_panel;
 static esp_lcd_panel_io_handle_t s_io;
 static bool                      s_bl_ready;
+static bool                      s_panel_sleeping;
 
 // ---------------------------------------------------------------------------
 // ST7789P3 厂商专属初始化序列(porch / power / gamma)。
@@ -146,4 +147,18 @@ void bsp_display_backlight(uint8_t percent) {
     uint32_t duty = (max_duty * percent) / 100u;
     ledc_set_duty(BSP_BL_LEDC_MODE, BSP_BL_LEDC_CHANNEL, duty);
     ledc_update_duty(BSP_BL_LEDC_MODE, BSP_BL_LEDC_CHANNEL);
+}
+
+
+esp_err_t bsp_display_sleep(bool sleep)
+{
+    if (!s_panel) return ESP_ERR_INVALID_STATE;
+    if (s_panel_sleeping == sleep) return ESP_OK;
+    // Keep the backlight dark until the controller has completed SLPOUT.
+    // ESP-IDF's ST7789 driver drains SPI and waits for the sleep transition.
+    bsp_display_backlight(0);
+    esp_err_t err = esp_lcd_panel_disp_sleep(s_panel, sleep);
+    if (err == ESP_OK) s_panel_sleeping = sleep;
+    else ESP_LOGW(TAG, "Panel sleep=%d failed: %s", sleep, esp_err_to_name(err));
+    return err;
 }

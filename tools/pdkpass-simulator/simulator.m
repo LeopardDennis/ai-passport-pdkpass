@@ -9,6 +9,8 @@
 #include "pdkpass_results.h"
 #include "pdkpass_season.h"
 #include "pdkpass_ui.h"
+#include "pdkpass_reminder.h"
+#include "pdkpass_sound.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -98,9 +100,24 @@ static BOOL save_framebuffer_png(NSString *path)
 
 static int s_simulator_battery = 88;
 
+static bool s_reminders_enabled = true;
+static bool s_reminder_sound_playing;
+bool pdkpass_reminder_enabled(void) { return s_reminders_enabled; }
+void pdkpass_reminder_set_enabled(bool enabled) { s_reminders_enabled = enabled; }
+void pdkpass_sound_reminder_play(void) { s_reminder_sound_playing = true; }
+void pdkpass_sound_reminder_stop(void) { s_reminder_sound_playing = false; }
+
 int bsp_battery_soc(void)
 {
     return s_simulator_battery;
+}
+
+static bool s_panel_sleeping, s_panel_wake_fail;
+esp_err_t bsp_display_sleep(bool sleep)
+{
+    if (!sleep && s_panel_wake_fail) return -1;
+    s_panel_sleeping = sleep;
+    return ESP_OK;
 }
 
 void bsp_display_backlight(uint8_t percent)
@@ -144,6 +161,33 @@ bool pdkpass_season_snapshot(pdkpass_season_snapshot_t *snapshot)
             ? now - (int64_t)(s_home_race_index - i) * 86400
             : now + (int64_t)(i - s_home_race_index + 1U) * 86400;
     }
+    return true;
+}
+
+// Explicit preview fixture captured from Jolpica on 26 September 2026.
+// It is never bundled into the device's production cache.
+static bool s_team_preview;
+static const pdkpass_team_snapshot_t s_team_fixture = {
+    .year = 2026, .count = 11, .as_of = "26 SEP", .teams = {
+        {.accent=0x00A19C, .points_tenths=5030, .position=1, .id="mercedes", .name="MERCEDES"},
+        {.accent=0xE32636, .points_tenths=3580, .position=2, .id="ferrari", .name="FERRARI"},
+        {.accent=0xFF8700, .points_tenths=3060, .position=3, .id="mclaren", .name="MCLAREN"},
+        {.accent=0x3671C6, .points_tenths=2300, .position=4, .id="red_bull", .name="RED BULL"},
+        {.accent=0x6692FF, .points_tenths=770, .position=5, .id="rb", .name="RACING BULLS"},
+        {.accent=0x2293D1, .points_tenths=680, .position=6, .id="alpine", .name="ALPINE"},
+        {.accent=0xB6BABD, .points_tenths=210, .position=7, .id="haas", .name="HAAS"},
+        {.accent=0xF50537, .points_tenths=170, .position=8, .id="audi", .name="AUDI"},
+        {.accent=0x64C4FF, .points_tenths=110, .position=9, .id="williams", .name="WILLIAMS"},
+        {.accent=0x229971, .points_tenths=30, .position=10, .id="aston_martin", .name="ASTON MARTIN"},
+        {.accent=0x1B2D57, .points_tenths=0, .position=11, .id="cadillac", .name="CADILLAC"},
+    }
+};
+bool pdkpass_season_team_snapshot(pdkpass_team_snapshot_t *snapshot)
+{
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->year = s_preview_year;
+    snprintf(snapshot->as_of, sizeof(snapshot->as_of), "PENDING");
+    if (s_team_preview && s_preview_year == 2026) *snapshot = s_team_fixture;
     return true;
 }
 
@@ -773,9 +817,9 @@ static void simulator_initialize(void)
 
 static void print_usage(const char *program)
 {
-    printf("Usage: %s [--year 2026|2027] [--race 1-24] [--page home|calendar|standings|track|results] [--sync-results] [--network-view menu|retry|setup|confirm] "
+    printf("Usage: %s [--year 2026|2027] [--race 1-24] [--page home|teams|standings|track|results] [--sync-results] [--team-preview] [--network-view menu|retry|setup|confirm] "
            "[--battery -1..100] [--screenshot FILE.png]\n", program);
-    printf("\nKeyboard: Up/Down browse, hold Up/Down for home standings/calendar,\n");
+    printf("\nKeyboard: Up/Down browse, hold Up/Down for home driver/team standings,\n");
     printf("          Return/Space select, hold Return or Esc back,\n");
     printf("          1-5 network states, S or Command-S screenshot.\n");
 }
@@ -796,7 +840,7 @@ int main(int argc, const char *argv[])
             }
             if (strcmp(argv[i], "--page") == 0 && i + 1 < argc) {
                 pageView = argv[++i];
-                if (strcmp(pageView, "home") && strcmp(pageView, "calendar") &&
+                if (strcmp(pageView, "home") && strcmp(pageView, "teams") &&
                     strcmp(pageView, "standings") && strcmp(pageView, "track") &&
                     strcmp(pageView, "results")) return 2;
                 continue;
@@ -834,6 +878,7 @@ int main(int argc, const char *argv[])
                 screenshotPath = [NSString stringWithUTF8String:argv[++i]];
                 continue;
             }
+            if (strcmp(argv[i], "--team-preview") == 0) { s_team_preview = true; continue; }
             if (strcmp(argv[i], "--sync-results") == 0) {
                 syncResults = YES;
                 continue;
@@ -847,7 +892,7 @@ int main(int argc, const char *argv[])
         if (screenshotPath || syncResults) {
             simulator_initialize();
             if (!networkView && !syncResults) {
-                if (strcmp(pageView, "calendar") == 0)
+                if (strcmp(pageView, "teams") == 0)
                     simulator_send_button(BSP_BTN_DOWN, BSP_BTN_LONG);
                 else if (strcmp(pageView, "standings") == 0)
                     simulator_send_button(BSP_BTN_UP, BSP_BTN_LONG);

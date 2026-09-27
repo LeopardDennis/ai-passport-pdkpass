@@ -158,9 +158,17 @@ The audio demo's three-second recording buffer is about 96 KB and is the largest
 
 ## 9. CW2017 fuel gauge
 
-Initialization reads VERSION, writes CONFIG `0x00`, waits 100 ms, and uses the chip's built-in Li-Poly profile. The repository intentionally does not write a custom cell profile.
+Initialization reads VERSION and CONFIG. A sleeping/reset gauge receives
+`0x30`, then `0x00`, with write-error checks and CONFIG readback. An already
+active gauge is left running to preserve its SOC estimate. The driver retains
+the existing battery profile; the embedded standard Li-Poly profile is for
+testing and is not proof of calibration for the installed cell.
+See the manufacturer's [CW2017 datasheet, sections Power State, Battery Profile,
+and CONFIG](https://uploadcdn.oneyac.com/upload/document/1737612108523_8373.pdf).
 
 - SOC uses registers `0x04–0x05`; values above 100 are treated as not ready and return `-1`.
+- SOC reads do not log raw samples or read voltage as a side effect. PDKPASS
+  polls SOC only while lit/on wake; use the voltage API explicitly when needed.
 - Voltage uses the 14-bit value at `0x02–0x03`, converted as `raw × 312.5 µV`, and returned in mV.
 - Transactions use a 100 ms timeout at 100 kHz.
 - A missing device returns `ESP_ERR_NOT_FOUND`; the battery page is disabled without stopping the application.

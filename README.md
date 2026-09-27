@@ -51,13 +51,12 @@ supported weekend session.
 
 | Screen | UP / DOWN | Hold UP / DOWN | OK | Hold OK |
 | --- | --- | --- | --- | --- |
-| Home | Previous / next race | Standings / calendar | Displayed race details | Network menu |
+| Home | Previous / next race | Driver / team points | Displayed race details | Network menu |
 | Network menu | Select action | — | Confirm | Home |
 | Retry / setup | — | — | Back after retry failure | Cancel / close hotspot |
-| Calendar | Select race | — | Race details | Home |
-| Standings | Scroll drivers | — | — | Home |
+| Driver / team standings | Scroll rankings | — | — | Home |
 | Race details | Previous / next race | — | Session results | Back |
-| Session results | Previous / next session | — | Race details | Race details |
+| Session results | Previous / next session | — | — | Race details |
 
 ## No app required
 
@@ -104,10 +103,37 @@ its recorded race end, then the dashboard advances to the following round. The
 bundled offline fallback uses a four-hour window from the scheduled race start.
 After the final round it displays `SEASON COMPLETE`.
 
+## Session reminders
+
+Reminders default to on. In `NETWORK`, select `ALERTS: ON/OFF` and press OK to
+change the saved setting. Every scheduled FP1, FP2, FP3, sprint qualifying,
+sprint, qualifying and race session rings once, ten minutes before its start.
+Missing or cancelled sessions do not ring. Schedule updates change the deadline.
+
+The approved three-second melody plays at 80%; button cues remain at 50%.
+A notice wakes the display for up to 15 seconds, showing the round, session and
+start time. Any key silences and dismisses it without navigating. It then
+restores the previous page and returns to sleep if the display was already dark.
+
+The existing background session sync caches exact API start times locally.
+No results-page visit is needed. A valid synchronized clock and cached schedule
+allow reminders while offline or in screen-off/light sleep. After a full power
+cycle, time must be synchronized again; a fully powered-off device cannot ring.
+Initial API access failures, including live-session authentication restrictions,
+can prevent the schedule from being downloaded. There is no guessed-time fallback.
+
+A successful sync inside the ten-minute window produces one catch-up reminder;
+none is issued after the session starts. Delivered session IDs persist before
+ringing to prevent duplicates after reconnect/restart. If saving fails, delivery
+waits and retries after five seconds. A power failure between that save and the
+actual sound can skip that reminder. Timers use the existing worker; there is
+no new task or per-second network polling. Real-device loudness, wake-up, power
+consumption and simultaneous TLS/audio headroom still require testing.
+
 ## Power saving
 
 The display dims after 30 seconds and turns its backlight off after 90 seconds.
-While dark, drawing and display invalidation pause; the clock and Beijing race
+While dark, the LCD controller enters sleep and drawing/invalidation pause; the clock and Beijing race
 switch timers continue. The first key press wakes the display without navigating.
 If you browse other rounds on the home screen, the displayed round returns to
 the current weekend when the screen turns off after 90 seconds of inactivity.
@@ -117,7 +143,7 @@ The battery worker reads the fuel gauge once a minute while the display is lit.
 It stops polling while the display is off and reads once immediately after a
 key wakes the screen; unchanged readings do not redraw the battery icon.
 
-The CPU stays at 160 MHz while the screen is lit, and may drop to 80 MHz and
+The CPU stays at 160 MHz while the screen is lit, and may drop to 40 MHz and
 enter automatic light sleep while dark. Setup/connection work and an attached
 USB console prevent light sleep. The LVGL clock reads monotonic time instead of
 requiring a periodic 5 ms tick interrupt.
@@ -143,9 +169,18 @@ FP2, FP3, sprint qualifying, sprint, qualifying, and race results. PDKPASS waits
 at least 30 minutes after the recorded session end, then checks for the top
 three. The background worker retries at a low rate, so a free result normally
 appears about 30–40 minutes after the session and remains available offline once
-cached. A normal weekend reports `NO SESSION` for sprint-only slots.
-Opening a historical result or waking its page retries unfinished data after
-five minutes, even when low-power background backfill has a longer delay.
+cached. Results navigation only includes sessions scheduled for that round:
+normal weekends skip sprint qualifying/sprint, and sprint weekends skip FP2/FP3.
+Before session metadata arrives, the bundled calendar supplies the weekend
+format; downloaded metadata takes precedence. Scheduled sessions remain
+visible while results are pending, and cancelled sessions retain their notice.
+Opening a result or waking its page prioritizes that round across successive
+session downloads. Failed requests for that round retry after five minutes,
+even when background backfill has a longer delay. Selecting another round
+moves the priority; already cached podiums are not downloaded again.
+Manual priority expires 15 minutes after the last request, so an unattended
+historical round returns to daily result retry instead of keeping five-minute
+retries indefinitely. Current-weekend automatic result checks remain active.
 
 Historical session classifications and driver metadata come from the unofficial
 [OpenF1 API](https://openf1.org/docs/). PDKPASS uses the unauthenticated
@@ -160,8 +195,8 @@ The first-use fallback is an offline snapshot captured on 31 August 2026 from th
 Displayed session times are converted to China Standard Time (UTC+8).
 
 After the first successful connection, PDKPASS downloads and stores the Grand
-Prix calendar for the current Beijing-time year and the standings from the
-latest completed race. With a clock synchronized during the current boot, Beijing New Year selects a newer
+Prix calendar for the current Beijing-time year and the latest published
+Jolpica championship standings. With a clock synchronized during the current boot, Beijing New Year selects a newer
 bundled season even without Wi-Fi or successful HTTPS. The worker also checks
 at Beijing midnight while offline. A same-year/newer downloaded cache wins over
 the seed, and an unavailable future year keeps the last working season.
@@ -176,14 +211,32 @@ Until session metadata arrives, automatic round selection uses midnight after
 the last published date in the venue's time zone, not a claimed race-end time.
 Downloaded session end times replace this date-only boundary. Istanbul remains
 subject to FIA circuit homologation. Existing circuit colors remain unchanged.
-OpenF1 arrays are processed item by item to avoid allocating the entire HTTP
-response. The earlier 16 KB response-buffer failure has been removed from the
-calendar, standings, and results paths; on-device sync still needs validation.
+OpenF1 calendar/results arrays are processed item by item. Jolpica standings
+are downloaded in pages of four drivers with a 4 KB response cap and paced
+requests. All pages must agree on the season, round and total; incomplete or
+invalid responses retain the previous points and date. Device memory and TLS
+behaviour still need validation.
 
 The most recent valid time, accepted season, standings, and downloaded podiums
 remain available offline. After a long powered-off period, reconnect to refresh
-them. Dynamic calendar, standings, session classifications, and driver metadata
-come from the unofficial [OpenF1 API](https://openf1.org/docs/).
+them. Championship points and their driver/team metadata come exclusively from
+[Jolpica](https://github.com/jolpica/jolpica-f1/blob/main/docs/endpoints/driverStandings.md).
+Calendar and session results continue to use [OpenF1](https://openf1.org/docs/).
+An OpenF1 calendar failure does not block same-season Jolpica updates; each
+provider has independent rate-limit backoff. Standings publish only after the
+complete snapshot is validated and saved. Drivers with multiple constructors
+in the season show `MULTIPLE TEAMS`, since their order does not identify the
+current team.
+
+Hold DOWN on home to open `TEAM POINTS`; hold UP for driver standings.
+UP/DOWN scroll through rankings; hold OK to return home. Short OK does not exit.
+The home DOWN hold no longer opens the calendar list; short UP/DOWN still browse races.
+Team points come directly from Jolpica constructor standings, including provider
+adjustments, rather than a sum of driver scores. They refresh automatically with
+the season worker and have an independent offline cache for up to 16 teams.
+Until the first complete download, the page shows pending data. New Year clears
+the visible old-season teams until current-season data arrives; driver points,
+team points and calendar failures do not discard one another's valid caches.
 
 ### Year-independent circuit catalog
 
@@ -267,9 +320,16 @@ respective owners.
 
 ## Reliability and debug builds
 
+Normal logs retain startup, accepted season/result caches, reminders and errors.
+Codec-open, background progress and Wi-Fi parking messages use DEBUG level.
+Battery polling no longer logs raw SOC or performs extra voltage reads; startup
+and setup no longer sample memory solely for informational logs. HTTP failure
+heap diagnostics remain available for actionable network/allocation failures.
+
 Standings are checked again 30 minutes after the recorded race end; failed
 synchronization retries after five minutes. The displayed standings date refers
-to the source race, not the day an old classification was downloaded. Current
+to Jolpica's corresponding round date (converted to Beijing time), not the
+download date. Published Sprint points may precede that round's scheduled race. Current
 weekends take priority over historical backfill. API availability and rate limits
 can delay publication beyond these local retry intervals.
 

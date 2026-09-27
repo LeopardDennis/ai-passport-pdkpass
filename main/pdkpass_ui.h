@@ -2,6 +2,7 @@
 
 #include "bsp_button.h"
 #include "pdkpass_network.h"
+#include "pdkpass_reminder_core.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -32,3 +33,7 @@ bool pdkpass_ui_display_dark(void);
 
 // Refresh the network page when a data service confirms a new update day.
 void pdkpass_ui_sync_status_update(void);
+// Caller holds LVGL lock. Shows a 15-second notice, waking a sleeping display
+// and restoring its previous page and sleep state afterwards.
+void pdkpass_ui_reminder_show(const pdkpass_reminder_entry_t *alert);
+void pdkpass_ui_reminder_dismiss(void);

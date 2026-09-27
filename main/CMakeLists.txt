@@ -9,6 +9,8 @@ idf_component_register(
          "pdkpass_network.c"
          "pdkpass_http.c"
          "pdkpass_json_stream.c"
+         "pdkpass_reminder.c"
+         "pdkpass_reminder_core.c"
          "pdkpass_results.c"
          "pdkpass_results_core.c"
          "pdkpass_schedule.c"

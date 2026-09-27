@@ -63,7 +63,7 @@ cmake --build build/pdkpass-simulator -j
 | Mac 输入 | 对应设备操作 |
 | --- | --- |
 | 上 / 下方向键 | 首页切换上一场 / 下一场；其他页面滚动浏览 |
-| 在首页按住上 / 下 0.65 秒 | 车手积分 / 赛历 |
+| 在首页按住上 / 下 0.65 秒 | 车手积分 / 车队积分 |
 | 回车或空格 | 确认 |
 | 按住回车 0.65 秒 | 返回 |
 | Esc | 返回 |
@@ -72,7 +72,7 @@ cmake --build build/pdkpass-simulator -j
 
 如需不打开窗口直接渲染并做冒烟测试：
 
-使用 `--page home|calendar|standings|track|results` 与 `--screenshot` 可渲染指定
+使用 `--page home|teams|standings|track|results` 与 `--screenshot` 可渲染指定
 实际页面；网络预览和成绩同步参数优先。
 
 加入 `--network-view menu|retry|setup|confirm` 可截取实际网络界面。无线操作为
@@ -93,3 +93,7 @@ cmake --build build/pdkpass-simulator -j
 模拟器从 `sdkconfig.defaults` 读取 LVGL 内存池大小。构建后运行
 `ctest --test-dir build/pdkpass-simulator --output-on-failure`，验证启动、配网、
 积分榜、赛历、成绩、电量状态和唤醒过程不超出预算。此测试不测量设备系统堆或 Wi-Fi/TLS 内存。
+
+车队积分使用 `--page teams`，默认显示待更新。
+加上 `--team-preview` 可显示 2026 年 9 月 26 日采集的 Jolpica 积分快照。
+该视觉测试样本不会编入设备固件；指定 `--year 2027` 时仍显示车队数据待更新。

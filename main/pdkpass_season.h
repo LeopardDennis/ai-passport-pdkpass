@@ -15,10 +15,30 @@ typedef struct {
     pdkpass_driver_t drivers[PDKPASS_MAX_DRIVERS];
 } pdkpass_season_snapshot_t;
 
+#define PDKPASS_MAX_TEAMS 16
+
+typedef struct {
+    uint32_t accent;
+    uint16_t points_tenths;
+    uint8_t position;
+    char id[32];
+    char name[PDKPASS_TEAM_LEN];
+} pdkpass_team_t;
+
+typedef struct {
+    uint16_t year;
+    uint8_t count;
+    char as_of[12];
+    pdkpass_team_t teams[PDKPASS_MAX_TEAMS];
+} pdkpass_team_snapshot_t;
+
+// Independent cache, filtered to the active season; empty until first sync.
+bool pdkpass_season_team_snapshot(pdkpass_team_snapshot_t *snapshot);
+
 typedef void (*pdkpass_season_callback_t)(void);
 
 // Loads the last complete snapshot; a valid clock selects a newer bundled
-// season even offline. Starts the daily OpenF1 calendar/standings synchronizer.
+// season even offline. Starts the OpenF1 calendar and Jolpica standings synchronizer.
 esp_err_t pdkpass_season_start(pdkpass_season_callback_t callback);
 
 // Network state includes time validity so an unset RTC cannot select a bogus

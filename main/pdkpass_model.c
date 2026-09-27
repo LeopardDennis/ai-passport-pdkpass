@@ -10,13 +10,34 @@ static size_t wrap_next(size_t value, size_t count)
     return count == 0 ? 0 : (value + 1) % count;
 }
 
+static pdkpass_session_kind_t visible_session(uint32_t mask,
+                                               size_t start, bool previous)
+{
+    for (size_t i = 0; i < PDKPASS_SESSION_COUNT; i++) {
+        size_t kind = previous
+            ? (start + PDKPASS_SESSION_COUNT - i) % PDKPASS_SESSION_COUNT
+            : (start + i) % PDKPASS_SESSION_COUNT;
+        if (mask & (1U << kind)) return (pdkpass_session_kind_t)kind;
+    }
+    return PDKPASS_SESSION_COUNT;
+}
+
+void pdkpass_state_set_sessions(pdkpass_state_t *state, uint32_t mask)
+{
+    state->session_mask = mask & ((1U << PDKPASS_SESSION_COUNT) - 1U);
+    state->selected_session = visible_session(state->session_mask,
+                                               state->selected_session, false);
+}
+
 void pdkpass_state_init(pdkpass_state_t *state)
 {
     state->page = PDKPASS_PAGE_HOME;
     state->detail_origin = PDKPASS_PAGE_HOME;
     state->selected_race = 0;
     state->selected_driver = 0;
+    state->selected_team = 0;
     state->selected_session = PDKPASS_SESSION_FP1;
+    state->session_mask = (1U << PDKPASS_SESSION_COUNT) - 1U;
     state->home_race = 0;
     state->home_browsing = false;
     state->season_complete = false;
@@ -44,22 +65,15 @@ void pdkpass_state_reset_home_race(pdkpass_state_t *state, size_t race_count)
 // Pure navigation state machine. UI rendering and hardware access intentionally
 // stay out of this function so every button path can be covered by host tests.
 void pdkpass_state_handle(pdkpass_state_t *state, pdkpass_input_t input,
-                          size_t race_count, size_t driver_count)
+                          size_t race_count, size_t driver_count, size_t team_count)
 {
     pdkpass_page_t previous_page = state->page;
     switch (state->page) {
     case PDKPASS_PAGE_HOME:
         if (input == PDKPASS_INPUT_BACK) state->page = PDKPASS_PAGE_NETWORK;
         if (input == PDKPASS_INPUT_UP_LONG) state->page = PDKPASS_PAGE_STANDINGS;
-        if (input == PDKPASS_INPUT_DOWN_LONG) {
-            if (race_count > 0) {
-                state->selected_race = state->home_browsing
-                                           ? state->selected_race
-                                           : (state->season_complete ? race_count - 1
-                                                                     : state->home_race);
-            }
-            state->page = PDKPASS_PAGE_CALENDAR;
-        }
+        if (input == PDKPASS_INPUT_DOWN_LONG)
+            state->page = PDKPASS_PAGE_TEAM_STANDINGS;
         if ((input == PDKPASS_INPUT_UP || input == PDKPASS_INPUT_DOWN) &&
             race_count > 0) {
             size_t current = state->season_complete && !state->home_browsing
@@ -78,11 +92,11 @@ void pdkpass_state_handle(pdkpass_state_t *state, pdkpass_input_t input,
 
     case PDKPASS_PAGE_NETWORK:
         if (input == PDKPASS_INPUT_UP)
-            state->network_selection = (state->network_selection + 2U) % 3U;
+            state->network_selection = (state->network_selection + 3U) % 4U;
         if (input == PDKPASS_INPUT_DOWN)
-            state->network_selection = (state->network_selection + 1U) % 3U;
+            state->network_selection = (state->network_selection + 1U) % 4U;
         if (input == PDKPASS_INPUT_BACK ||
-            (input == PDKPASS_INPUT_OK && state->network_selection == 2U))
+            (input == PDKPASS_INPUT_OK && state->network_selection == 3U))
             state->page = PDKPASS_PAGE_HOME;
         break;
     case PDKPASS_PAGE_NETWORK_CONFIRM:
@@ -112,6 +126,15 @@ void pdkpass_state_handle(pdkpass_state_t *state, pdkpass_input_t input,
         }
         break;
 
+    case PDKPASS_PAGE_TEAM_STANDINGS:
+        if (input == PDKPASS_INPUT_UP)
+            state->selected_team = wrap_previous(state->selected_team, team_count);
+        else if (input == PDKPASS_INPUT_DOWN)
+            state->selected_team = wrap_next(state->selected_team, team_count);
+        else if (input == PDKPASS_INPUT_BACK)
+            state->page = PDKPASS_PAGE_HOME;
+        break;
+
     case PDKPASS_PAGE_RACE_DETAIL:
         if (input == PDKPASS_INPUT_UP) {
             state->selected_race = wrap_previous(state->selected_race, race_count);
@@ -127,12 +150,14 @@ void pdkpass_state_handle(pdkpass_state_t *state, pdkpass_input_t input,
 
     case PDKPASS_PAGE_RESULTS:
         if (input == PDKPASS_INPUT_UP) {
-            state->selected_session = (pdkpass_session_kind_t)wrap_previous(
-                state->selected_session, PDKPASS_SESSION_COUNT);
+            state->selected_session = visible_session(state->session_mask,
+                wrap_previous(state->selected_session, PDKPASS_SESSION_COUNT), true);
         } else if (input == PDKPASS_INPUT_DOWN) {
-            state->selected_session = (pdkpass_session_kind_t)wrap_next(
-                state->selected_session, PDKPASS_SESSION_COUNT);
-        } else if (input == PDKPASS_INPUT_OK || input == PDKPASS_INPUT_BACK) {
+            state->selected_session = visible_session(state->session_mask,
+                state->selected_session < PDKPASS_SESSION_COUNT
+                    ? wrap_next(state->selected_session, PDKPASS_SESSION_COUNT) : 0,
+                false);
+        } else if (input == PDKPASS_INPUT_BACK) {
             state->page = PDKPASS_PAGE_RACE_DETAIL;
         }
         break;

@@ -217,9 +217,15 @@ Audio demo 使用独立 4 KB 栈任务：OK 播放 1 秒 1 kHz 方波，UP 录 3
 
 ## 9. CW2017 电池计
 
-CW2017 在共享 I2C 地址 0x63。初始化读取 VERSION 确认在线，将 CONFIG 写为 0x00 进入正常模式，等待 100 ms 后使用芯片自带 Li-Poly profile。仓库刻意不写自定义电池 profile，因为开源用户的电池可能不同。
+CW2017 在共享 I2C 地址 0x63。初始化读取 VERSION 和 CONFIG。休眠/复位中的
+电量计按 `0x30`、`0x00` 顺序启动，检查写入错误并回读 CONFIG；已经运行的电量计
+保持运行，保留已有 SOC 估算。驱动保留现有电池 profile，不写自定义参数；芯片内置
+标准 Li-Poly profile 用于测试，不代表已经匹配实际电芯。
+参见厂商 [CW2017 手册的 Power State、Battery Profile 和 CONFIG 章节](https://uploadcdn.oneyac.com/upload/document/1737612108523_8373.pdf)。
 
 - SOC：读 0x04–0x05，仅返回高字节整数百分比；大于 100 视为未就绪并返回 `-1`。
+- 读取 SOC 不再打印原始采样日志，也不附带读取电压。PDKPASS 仅亮屏及唤醒时采样，
+  需要电压时显式调用电压接口。
 - 电压：读 0x02–0x03 的 14 bit 值，换算为 `raw × 312.5 µV`，API 返回 mV。
 - 事务超时当前为 100 ms，设备时钟为 100 kHz。
 - 芯片不应答时初始化返回 `ESP_ERR_NOT_FOUND`，菜单标记失败，但整机继续运行。

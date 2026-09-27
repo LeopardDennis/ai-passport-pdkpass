@@ -70,7 +70,7 @@ Pillow) to check pixel centering, battery states and invalid preview arguments.
 | Mac input | Device action |
 | --- | --- |
 | Up / Down | Browse previous / next race on home; scroll on other screens |
-| Hold Up / Down for 0.65 seconds on home | Driver standings / calendar |
+| Hold Up / Down for 0.65 seconds on home | Driver / team standings |
 | Return or Space | OK |
 | Hold Return for 0.65 seconds | Back |
 | Escape | Back |
@@ -79,7 +79,7 @@ Pillow) to check pixel centering, battery states and invalid preview arguments.
 
 For a headless render suitable for a smoke test:
 
-Use `--page home|calendar|standings|track|results` with `--screenshot` to render
+Use `--page home|teams|standings|track|results` with `--screenshot` to render
 a specific production page. Network views and result syncing take precedence.
 
 Add `--network-view menu|retry|setup|confirm` to capture the production network
@@ -103,3 +103,8 @@ The simulator uses the LVGL pool size from `sdkconfig.defaults`. After building,
 run `ctest --test-dir build/pdkpass-simulator --output-on-failure` to check startup,
 setup, standings, calendar, results, battery states and wake-up within that pool.
 This does not measure the device system heap or Wi-Fi/TLS memory.
+
+For team standings, `--page teams` shows the pending-data state by default.
+Add `--team-preview` to display an explicit Jolpica snapshot captured on
+26 September 2026. This visual-test fixture is not bundled in device firmware;
+`--year 2027` still shows pending team data.

@@ -67,6 +67,31 @@ int main(void)
         assert(lv_obj_get_style_transform_scale_x(australia, 0) > 256);
         assert(lv_obj_get_style_transform_scale_x(australia, 0) < 512);
         check_memory(); // Includes the home hint's full text width.
+        simulator_send_button(BSP_BTN_DOWN, BSP_BTN_LONG);
+        assert(find_label(lv_screen_active(), "CONNECT TO UPDATE"));
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+        assert(find_label(lv_screen_active(), "CONNECT TO UPDATE"));
+        s_team_preview = true;
+        pdkpass_ui_season_update();
+        assert(find_label(lv_screen_active(), "TEAM POINTS 26"));
+        assert(find_label(lv_screen_active(), "MERCEDES"));
+        assert(find_label(lv_screen_active(), "503"));
+        for (unsigned i = 0; i < 11; i++) {
+            check_memory();
+            simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+        }
+        assert(find_label(lv_screen_active(), "MERCEDES"));
+        simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK);
+        assert(find_label(lv_screen_active(), "CADILLAC"));
+        s_preview_year = 2027;
+        pdkpass_ui_season_update();
+        assert(find_label(lv_screen_active(), "CONNECT TO UPDATE"));
+        assert(!find_label(lv_screen_active(), "503"));
+        check_memory();
+        s_preview_year = 2026;
+        pdkpass_ui_season_update();
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
+        assert(find_label(lv_screen_active(), "UP/DN:RACE OK:VIEW"));
         // A maximum-length podium name must occupy one line without clipping.
         [s_results_lock lock];
         for (size_t session = 0; session < PDKPASS_SESSION_COUNT; session++)
@@ -90,7 +115,104 @@ int main(void)
         assert(find_label(lv_screen_active(), "NICO HULKENBERG"));
         assert(find_label(lv_screen_active(), "GABRIEL BORTOLETO"));
         check_memory();
-        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // results -> detail
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // stays on results
+        assert(find_label(lv_screen_active(), "MAX VERSTAPPEN"));
+        assert(find_label(lv_screen_active(), "UP/DN:PAGE HOLD:BACK"));
+        // A downloaded schedule is not a downloaded result. Exercise the
+        // historical-session regression and missing timestamps restored from NVS.
+        sample->status = PDKPASS_RESULT_SCHEDULED;
+        sample->session_end_utc = (int64_t)time(NULL) - 3600;
+        pdkpass_ui_results_update(0);
+        assert(find_label(lv_screen_active(), "SYNC PENDING"));
+        assert(find_label(lv_screen_active(), "RESULT NOT DOWNLOADED"));
+        assert(!find_label(lv_screen_active(), "RESULT PENDING"));
+        assert(!find_label(lv_screen_active(), "SYNC ABOUT +30 MIN"));
+        check_memory();
+        sample->session_end_utc = (int64_t)time(NULL) + 3600;
+        pdkpass_ui_results_update(0);
+        assert(find_label(lv_screen_active(), "RESULT PENDING"));
+        sample->session_end_utc = (int64_t)time(NULL) - 60;
+        pdkpass_ui_results_update(0);
+        assert(find_label(lv_screen_active(), "SYNC ABOUT +30 MIN"));
+        sample->session_end_utc = 0;
+        pdkpass_ui_results_update(0);
+        assert(find_label(lv_screen_active(), "CHECKING SESSION TIME"));
+        assert(!find_label(lv_screen_active(), "RESULT PENDING"));
+        check_memory();
+        pdkpass_network_update_t offline = {
+            .state = PDKPASS_NETWORK_OFFLINE, .time_valid = true,
+        };
+        sample->session_end_utc = (int64_t)time(NULL) - 3600;
+        pdkpass_ui_network_update(&offline);
+        assert(find_label(lv_screen_active(), "CONNECT TO UPDATE"));
+        offline.state = PDKPASS_NETWORK_SYNCING; offline.time_valid = false;
+        pdkpass_ui_network_update(&offline);
+        assert(find_label(lv_screen_active(), "SYNC CLOCK"));
+        sample->status = PDKPASS_RESULT_READY;
+        simulator_set_network(PDKPASS_NETWORK_ONLINE);
+        // Offline format is available before metadata/results. Verify both
+        // directions through a normal weekend, then switch to a sprint round.
+        s_simulator_online = NO; // Keep fixture navigation independent of HTTP.
+        for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++)
+            s_results[0][i].status = PDKPASS_RESULT_UNKNOWN;
+        pdkpass_ui_results_update(0);
+        const pdkpass_session_kind_t normal[] = {
+            PDKPASS_SESSION_FP1, PDKPASS_SESSION_FP2, PDKPASS_SESSION_FP3,
+            PDKPASS_SESSION_QUALIFYING, PDKPASS_SESSION_RACE,
+        };
+        for (unsigned i = 0; i < 5; i++) {
+            assert(find_label(lv_screen_active(), pdkpass_session_label(normal[i])));
+            assert(!find_label(lv_screen_active(), "NO SESSION"));
+            simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+        }
+        assert(find_label(lv_screen_active(), "FP1"));
+        simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK);
+        assert(find_label(lv_screen_active(), "RACE"));
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
+        simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK); // detail R1 -> R2
+        for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++)
+            s_results[1][i].status = PDKPASS_RESULT_UNKNOWN;
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+        const pdkpass_session_kind_t sprint[] = {
+            PDKPASS_SESSION_FP1, PDKPASS_SESSION_SPRINT_QUALIFYING,
+            PDKPASS_SESSION_SPRINT, PDKPASS_SESSION_QUALIFYING, PDKPASS_SESSION_RACE,
+        };
+        for (unsigned i = 0; i < 5; i++) {
+            assert(find_label(lv_screen_active(), pdkpass_session_label(sprint[i])));
+            simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+        }
+        // Incoming metadata supersedes the offline format and can remove the
+        // current selection without leaving a blank/nonexistent session page.
+        for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++)
+            s_results[1][i].status = PDKPASS_RESULT_NOT_HELD;
+        for (unsigned i = 0; i < 5; i++)
+            s_results[1][normal[i]].status = PDKPASS_RESULT_SCHEDULED;
+        pdkpass_ui_results_update(1);
+        simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+        assert(find_label(lv_screen_active(), "FP2"));
+        s_results[1][PDKPASS_SESSION_FP2].status = PDKPASS_RESULT_CANCELLED;
+        pdkpass_ui_results_update(1);
+        assert(find_label(lv_screen_active(), "SESSION CANCELLED"));
+        s_results[1][PDKPASS_SESSION_FP2].status = PDKPASS_RESULT_NOT_HELD;
+        pdkpass_ui_results_update(1);
+        assert(find_label(lv_screen_active(), "FP3"));
+        for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++)
+            s_results[1][i].status = PDKPASS_RESULT_NOT_HELD;
+        pdkpass_ui_results_update(1);
+        assert(find_label(lv_screen_active(), "NO SESSIONS"));
+        simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+        assert(find_label(lv_screen_active(), "NO SESSIONS"));
+        check_memory();
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
+        assert(!find_label(lv_screen_active(), "NO SESSION")); // no absent detail rows
+        simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK); // detail R2 -> R1
+        for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++)
+            s_results[0][i].status = PDKPASS_RESULT_NOT_HELD;
+        sample->status = PDKPASS_RESULT_READY;
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+        assert(find_label(lv_screen_active(), "MAX VERSTAPPEN"));
+        s_simulator_online = YES;
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // results -> detail
         simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // detail -> home
         s_flush_pixels = 0; s_flush_calls = 0;
         simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK); // home -> calendar
@@ -182,6 +304,7 @@ int main(void)
         lv_tick_inc(90001);
         lv_timer_handler();
         assert(pdkpass_ui_display_dark());
+        assert(s_panel_sleeping);
         assert(!lv_display_is_invalidation_enabled(lv_display_get_default()));
         assert(lv_timer_get_paused(lv_display_get_refr_timer(lv_display_get_default())));
         // Background updates while dark must not restart display refreshing.
@@ -194,10 +317,58 @@ int main(void)
         assert(dark_timer_fired == 1);
         assert(!lv_display_is_invalidation_enabled(lv_display_get_default()));
         assert(lv_timer_get_paused(lv_display_get_refr_timer(lv_display_get_default())));
+        s_panel_wake_fail = true;
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+        assert(pdkpass_ui_display_dark() && s_panel_sleeping);
+        assert(!lv_display_is_invalidation_enabled(lv_display_get_default()));
+        s_panel_wake_fail = false;
         simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
         assert(!pdkpass_ui_display_dark());
+        assert(!s_panel_sleeping);
         assert(lv_display_is_invalidation_enabled(lv_display_get_default()));
         check_memory();
+        // Reminder temporarily wakes a dark screen and returns to sleep.
+        lv_tick_inc(90001);lv_timer_handler();
+        assert(pdkpass_ui_display_dark());
+        pdkpass_reminder_entry_t alert={.round=15,.kind=PDKPASS_SESSION_SPRINT_QUALIFYING,
+            .session_key=777,.start_utc=(int64_t)time(NULL)+600};
+        pdkpass_ui_reminder_show(&alert);
+        assert(!pdkpass_ui_display_dark()&&!s_panel_sleeping&&s_reminder_sound_playing);
+        assert(find_label(lv_screen_active(),"SPRINT QUALIFYING"));
+        assert(find_label(lv_screen_active(),"ANY KEY:DISMISS"));
+        check_memory();
+        pdkpass_ui_reminder_dismiss();
+        assert(pdkpass_ui_display_dark()&&s_panel_sleeping&&!s_reminder_sound_playing);
+        // Automatic dismissal after 15 seconds also restores dark sleep.
+        pdkpass_ui_reminder_show(&alert);
+        lv_tick_inc(15001);lv_timer_handler();
+        assert(pdkpass_ui_display_dark()&&!s_reminder_sound_playing);
+        // Wake failure still shows no pixels and the reminder has bounded life.
+        s_panel_wake_fail=true;pdkpass_ui_reminder_show(&alert);
+        assert(pdkpass_ui_display_dark()&&s_reminder_sound_playing);
+        pdkpass_ui_reminder_dismiss();s_panel_wake_fail=false;
+        simulator_send_button(BSP_BTN_OK,BSP_BTN_CLICK);
+        assert(!pdkpass_ui_display_dark());
+        pdkpass_ui_reminder_show(&alert);
+        simulator_send_button(BSP_BTN_OK,BSP_BTN_LONG);
+        assert(!s_reminder_sound_playing&&!find_label(lv_screen_active(),"ANY KEY:DISMISS"));
+        check_memory();
+        // Persistent toggle in the four-row network menu remains readable.
+        simulator_send_button(BSP_BTN_OK,BSP_BTN_LONG);
+        assert(find_label(lv_screen_active(),"ALERTS: ON"));
+        for(unsigned i=0;i<4;i++) {
+            lv_obj_t *label=find_label(lv_screen_active(),"ALERTS: ON");
+            assert(label);
+            if(lv_color_eq(lv_obj_get_style_bg_color(lv_obj_get_parent(label),0),
+                           lv_color_hex(0xFFD928))) break;
+            simulator_send_button(BSP_BTN_DOWN,BSP_BTN_CLICK);
+        }
+        simulator_send_button(BSP_BTN_OK,BSP_BTN_CLICK);
+        assert(!pdkpass_reminder_enabled());
+        assert(find_label(lv_screen_active(),"ALERTS: OFF"));
+        check_memory();
+        simulator_send_button(BSP_BTN_OK,BSP_BTN_CLICK);
+        assert(pdkpass_reminder_enabled());
         lv_mem_monitor_t memory;
         lv_mem_monitor(&memory);
         printf("UI memory PASS: configured=%u usable=%zu peak=%zu largest=%zu\n",

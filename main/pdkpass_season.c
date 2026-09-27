@@ -6,8 +6,6 @@
 
 #include "cJSON.h"
 #include "pdkpass_http.h"
-#include "esp_crt_bundle.h"
-#include "esp_http_client.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -79,6 +77,15 @@ static const char *NVS_KEY = "current";
 static SemaphoreHandle_t s_lock;
 static EventGroupHandle_t s_events;
 static pdkpass_season_snapshot_t s_season;
+static pdkpass_team_snapshot_t s_teams;
+#define TEAM_CACHE_MAGIC 0x5044544DU
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t reserved;
+    pdkpass_team_snapshot_t snapshot;
+} team_cache_t;
+_Static_assert(sizeof(team_cache_t) <= 1024, "Team cache exceeds RAM budget");
 static bool s_has_cached_data;
 static pdkpass_season_callback_t s_callback;
 static bool s_online;
@@ -294,9 +301,6 @@ typedef struct {
     race_build_t *build;
     size_t count;
     bool sprint_qualifying[PDKPASS_MAX_RACES];
-    int64_t now_utc;
-    int latest_race_session;
-    int64_t latest_race_end;
 } build_context_t;
 
 static bool parse_meeting(const cJSON *meeting, void *user)
@@ -401,11 +405,7 @@ static bool populate_session(const cJSON *session, void *user)
     } else if (kind == PDKPASS_SESSION_RACE) {
         copy_text(entry->race.race_cn, sizeof(entry->race.race_cn), line);
         entry->race.switch_at_utc = end_utc;
-        if (end_utc <= context->now_utc - PDKPASS_RESULT_DELAY_SECONDS &&
-            end_utc > context->latest_race_end) {
-            context->latest_race_end = end_utc;
-            context->latest_race_session = session_key;
-        }
+
     }
     return true;
 }
@@ -444,112 +444,388 @@ static void preserve_track_details(pdkpass_season_snapshot_t *candidate,
     }
 }
 
-static uint32_t parse_colour(const char *text)
+// Jolpica encodes numeric fields as decimal strings. Reject signs, trailing
+// garbage, overflow and fractional values except the single points decimal.
+static bool jolpica_decimal(const char *text, unsigned maximum,
+                             bool tenths, unsigned *value)
 {
-    if (!text || strlen(text) != 6U) return 0x3671C6;
-    char *end = NULL;
-    unsigned long value = strtoul(text, &end, 16);
-    return end && *end == '\0' ? (uint32_t)value : 0x3671C6;
-}
-
-static int compare_drivers(const void *left, const void *right)
-{
-    const pdkpass_driver_t *a = left;
-    const pdkpass_driver_t *b = right;
-    return a->position < b->position ? -1
-           : a->position > b->position ? 1
-                                       : 0;
-}
-
-typedef struct {
-    pdkpass_driver_t *drivers;
-    size_t count;
-} standings_context_t;
-
-static bool parse_standing_item(const cJSON *standing, void *user)
-{
-    standings_context_t *context = user;
-    if (context->count >= PDKPASS_MAX_DRIVERS) return true;
-    int number;
-    int position;
-    const cJSON *points =
-        cJSON_GetObjectItemCaseSensitive(standing, "points_current");
-    if (!json_number(standing, "driver_number", &number) ||
-        !json_number(standing, "position_current", &position) ||
-        !cJSON_IsNumber(points) || number < 0 || number > 255 ||
-        position <= 0 || position > 255) return true;
-
-    pdkpass_driver_t *output = &context->drivers[context->count++];
-    output->driver_number = (uint8_t)number;
-    output->position = (uint8_t)position;
-    double tenths = points->valuedouble * 10.0;
-    if (tenths < 0.0) tenths = 0.0;
-    output->points_tenths =
-        tenths > 65535.0 ? 65535U : (uint16_t)(tenths + 0.5);
-    return true;
-}
-
-static bool parse_standing_driver(const cJSON *driver, void *user)
-{
-    standings_context_t *context = user;
-    int number;
-    if (!json_number(driver, "driver_number", &number)) return true;
-    for (size_t i = 0; i < context->count; i++) {
-        pdkpass_driver_t *output = &context->drivers[i];
-        if (output->driver_number != number) continue;
-        copy_upper(output->code, sizeof(output->code),
-                   json_string(driver, "name_acronym"));
-        const char *last_name = json_string(driver, "last_name");
-        copy_upper(output->name, sizeof(output->name),
-                   last_name ? last_name : json_string(driver, "full_name"));
-        copy_upper(output->first_name, sizeof(output->first_name),
-                   json_string(driver, "first_name"));
-        fill_known_first_name(output);
-        copy_upper(output->team, sizeof(output->team),
-                   json_string(driver, "team_name"));
-        output->accent = parse_colour(json_string(driver, "team_colour"));
+    if (!text || *text < '0' || *text > '9') return false;
+    unsigned result = 0;
+    while (*text >= '0' && *text <= '9') {
+        result = result * 10U + (unsigned)(*text++ - '0');
+        if (result > maximum) return false;
     }
-    return true;
-}
-
-static bool fetch_standings(int session_key, int64_t now_utc,
-                            pdkpass_season_snapshot_t *candidate)
-{
-    if (session_key <= 0) return false;
-    char url[192];
-    pdkpass_driver_t parsed[PDKPASS_MAX_DRIVERS] = {0};
-    standings_context_t context = {.drivers = parsed};
-    snprintf(url, sizeof(url),
-             "https://api.openf1.org/v1/championship_drivers?session_key=%d",
-             session_key);
-    if (pdkpass_http_array(url, parse_standing_item, &context) != ESP_OK ||
-        context.count == 0U) return false;
-    snprintf(url, sizeof(url),
-             "https://api.openf1.org/v1/drivers?session_key=%d", session_key);
-    if (pdkpass_http_array(url, parse_standing_driver, &context) != ESP_OK)
-        return false;
-
-    for (size_t i = 0; i < context.count; i++) {
-        pdkpass_driver_t *output = &parsed[i];
-        if (output->code[0] == '\0') {
-            snprintf(output->code, sizeof(output->code), "%03u",
-                     (unsigned)output->driver_number);
+    if (tenths) {
+        result *= 10U;
+        if (*text == '.' && text[1] >= '0' && text[1] <= '9') {
+            result += (unsigned)(text[1] - '0');
+            text += 2;
         }
-        if (output->name[0] == '\0') copy_text(output->name, sizeof(output->name), output->code);
-        if (output->team[0] == '\0') copy_text(output->team, sizeof(output->team), "TEAM");
     }
-    qsort(parsed, context.count, sizeof(parsed[0]), compare_drivers);
-    candidate->driver_count = (uint8_t)context.count;
-    memcpy(candidate->drivers, parsed, context.count * sizeof(parsed[0]));
-    pdkpass_format_beijing_date(now_utc, candidate->standings_as_of,
-                                sizeof(candidate->standings_as_of));
+    if (*text || result > maximum) return false;
+    *value = result;
     return true;
 }
 
-static bool build_candidate(unsigned year, int64_t now_utc,
+static bool jolpica_uint(const cJSON *object, const char *key,
+                          unsigned maximum, unsigned *value)
+{
+    return jolpica_decimal(json_string(object, key), maximum, false, value);
+}
+
+static cJSON *jolpica_get(const char *url)
+{
+    char *body = NULL;
+    // Four drivers normally occupy about 2 KB. Bound both HTTP and JSON memory.
+    if (pdkpass_http_get(url, 4096, &body) != ESP_OK) return NULL;
+    cJSON *root = cJSON_ParseWithOpts(body, NULL, true);
+    if (!root) pdkpass_http_report_data_failure(
+        "jolpica-json", ESP_ERR_INVALID_RESPONSE, strlen(body));
+    free(body);
+    return root;
+}
+
+static void jolpica_constructor(const cJSON *team, char *name, size_t size,
+                                  uint32_t *accent)
+{
+    static const struct { const char *id, *name; uint32_t colour; } teams[] = {
+        {"mercedes", "MERCEDES", 0x00A19C}, {"ferrari", "FERRARI", 0xE32636},
+        {"mclaren", "MCLAREN", 0xFF8700}, {"red_bull", "RED BULL", 0x3671C6},
+        {"rb", "RACING BULLS", 0x6692FF}, {"alpine", "ALPINE", 0x2293D1},
+        {"haas", "HAAS", 0xB6BABD}, {"audi", "AUDI", 0xF50537},
+        {"williams", "WILLIAMS", 0x64C4FF},
+        {"aston_martin", "ASTON MARTIN", 0x229971},
+        {"cadillac", "CADILLAC", 0x1B2D57},
+    };
+    *accent = 0x3671C6;
+    const char *id = json_string(team, "constructorId");
+    copy_upper(name, size, json_string(team, "name"));
+    for (size_t i = 0; i < sizeof(teams) / sizeof(teams[0]); i++) {
+        if (id && strcmp(id, teams[i].id) == 0) {
+            copy_text(name, size, teams[i].name);
+            *accent = teams[i].colour;
+            return;
+        }
+    }
+}
+
+static void jolpica_team(const cJSON *constructors, pdkpass_driver_t *driver)
+{
+    driver->accent = 0x3671C6;
+    if (cJSON_GetArraySize(constructors) != 1) {
+        copy_text(driver->team, sizeof(driver->team), "MULTIPLE TEAMS");
+        return;
+    }
+    jolpica_constructor(cJSON_GetArrayItem(constructors, 0), driver->team,
+                         sizeof(driver->team), &driver->accent);
+}
+
+static bool jolpica_driver(const cJSON *item, pdkpass_driver_t *drivers,
+                            size_t count)
+{
+    const cJSON *driver = cJSON_GetObjectItemCaseSensitive(item, "Driver");
+    const cJSON *teams = cJSON_GetObjectItemCaseSensitive(item, "Constructors");
+    const char *code = json_string(driver, "code");
+    const char *name = json_string(driver, "familyName");
+    const char *first = json_string(driver, "givenName");
+    unsigned position, number, points;
+    if (!jolpica_uint(item, "position", PDKPASS_MAX_DRIVERS, &position) ||
+        position != count + 1U ||
+        !jolpica_uint(driver, "permanentNumber", 255, &number) || !number ||
+        !jolpica_decimal(json_string(item, "points"), 65535, true, &points) ||
+        !code || strlen(code) != 3U || !name || !*name || !first || !*first ||
+        !cJSON_IsArray(teams) || cJSON_GetArraySize(teams) < 1) return false;
+    for (size_t i = 0; i < 3U; i++)
+        if (code[i] < 'A' || code[i] > 'Z') return false;
+    for (size_t i = 0; i < count; i++) {
+        if (drivers[i].driver_number == number ||
+            strcmp(drivers[i].code, code) == 0) return false;
+    }
+    for (int i = 0; i < cJSON_GetArraySize(teams); i++) {
+        const cJSON *team = cJSON_GetArrayItem(teams, i);
+        const char *id = json_string(team, "constructorId");
+        const char *team_name = json_string(team, "name");
+        if (!id || !*id || !team_name || !*team_name) return false;
+    }
+    pdkpass_driver_t *out = &drivers[count];
+    out->position = (uint8_t)position;
+    out->driver_number = (uint8_t)number;
+    out->points_tenths = (uint16_t)points;
+    copy_text(out->code, sizeof(out->code), code);
+    copy_upper(out->name, sizeof(out->name), name);
+    copy_upper(out->first_name, sizeof(out->first_name), first);
+    fill_known_first_name(out);
+    jolpica_team(teams, out);
+    return true;
+}
+
+static unsigned standings_date_order(const char *date)
+{
+    static const char *months[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                                    "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+    if (!date || strlen(date) != 6U || date[2] != ' ') return 0;
+    unsigned day = 0;
+    char text[3] = {date[0], date[1], 0};
+    if (!jolpica_decimal(text, 31, false, &day) || !day) return 0;
+    for (unsigned i = 0; i < 12U; i++)
+        if (strcmp(date + 3, months[i]) == 0) return (i + 1U) * 32U + day;
+    return 0;
+}
+
+static bool jolpica_standings_date(unsigned year, unsigned round, int64_t now_utc,
+                                     const char *previous_date, char as_of[12])
+{
+    char url[160];
+    // Resolve the source date from Jolpica itself: OpenF1 availability and
+    // calendar round numbering must not gate or misdate championship points.
+    vTaskDelay(pdMS_TO_TICKS(300));
+    snprintf(url, sizeof(url), "https://api.jolpi.ca/ergast/f1/%u/%u/",
+             year, round);
+    cJSON *root = jolpica_get(url);
+    const cJSON *mr = cJSON_GetObjectItemCaseSensitive(root, "MRData");
+    const cJSON *table = cJSON_GetObjectItemCaseSensitive(mr, "RaceTable");
+    const cJSON *races = cJSON_GetObjectItemCaseSensitive(table, "Races");
+    const cJSON *race = cJSON_GetArrayItem(races, 0);
+    unsigned response_year, race_round;
+    const char *date = json_string(race, "date");
+    const char *time = json_string(race, "time");
+    char stamp[40];
+    int64_t race_utc = 0;
+    bool valid = cJSON_IsArray(races) && cJSON_GetArraySize(races) == 1 &&
+        jolpica_uint(race, "season", 2100, &response_year) && response_year == year &&
+        jolpica_uint(race, "round", PDKPASS_MAX_RACES, &race_round) && race_round == round &&
+        date && strlen(date) == 10U && (!time || strlen(time) == 9U);
+    if (valid) {
+        snprintf(stamp, sizeof(stamp), "%sT%s", date, time ? time : "00:00:00Z");
+        valid = pdkpass_parse_iso8601_utc(stamp, &race_utc) &&
+                strtoul(date, NULL, 10) == year &&
+                race_utc <= now_utc + 3LL * 86400LL;
+        // Published standings can already include a Sprint before Sunday's
+        // race. The round's scheduled date is a label, not a completion gate.
+    }
+    cJSON_Delete(root);
+    if (!valid) return false;
+    pdkpass_format_beijing_date(race_utc, as_of, 12);
+    if (standings_date_order(as_of) < standings_date_order(previous_date))
+        return false;
+    return true;
+}
+
+static bool fetch_standings(int64_t now_utc, pdkpass_season_snapshot_t *candidate)
+{
+    char url[160];
+    pdkpass_driver_t parsed[PDKPASS_MAX_DRIVERS] = {0};
+    unsigned total = 0, round = 0, count = 0;
+    do {
+        if (count) {
+            // Pin subsequent pages to the first response's round, preventing
+            // a newly published round from shifting the pagination midway.
+            snprintf(url, sizeof(url),
+                "https://api.jolpi.ca/ergast/f1/%u/%u/driverstandings/?limit=4&offset=%u",
+                candidate->year, round, count);
+            vTaskDelay(pdMS_TO_TICKS(300));
+        } else {
+            snprintf(url, sizeof(url),
+                "https://api.jolpi.ca/ergast/f1/%u/driverstandings/?limit=4&offset=0",
+                candidate->year);
+        }
+        cJSON *root = jolpica_get(url);
+        const cJSON *mr = cJSON_GetObjectItemCaseSensitive(root, "MRData");
+        const cJSON *table = cJSON_GetObjectItemCaseSensitive(mr, "StandingsTable");
+        const cJSON *lists = cJSON_GetObjectItemCaseSensitive(table, "StandingsLists");
+        const cJSON *list = cJSON_GetArrayItem(lists, 0);
+        const cJSON *rows = cJSON_GetObjectItemCaseSensitive(list, "DriverStandings");
+        unsigned page_total, offset, limit, year, page_round;
+        bool valid = cJSON_IsArray(lists) && cJSON_GetArraySize(lists) == 1 &&
+            jolpica_uint(mr, "total", PDKPASS_MAX_DRIVERS, &page_total) && page_total &&
+            jolpica_uint(mr, "offset", PDKPASS_MAX_DRIVERS, &offset) && offset == count &&
+            jolpica_uint(mr, "limit", 4, &limit) && limit == 4 &&
+            jolpica_uint(list, "season", 2100, &year) && year == candidate->year &&
+            jolpica_uint(list, "round", PDKPASS_MAX_RACES, &page_round) && page_round &&
+            cJSON_IsArray(rows);
+        if (valid && count == 0) { total = page_total; round = page_round; }
+        unsigned expected = total - count;
+        if (expected > 4U) expected = 4U;
+        valid = valid && page_total == total && page_round == round &&
+                (unsigned)cJSON_GetArraySize(rows) == expected;
+        for (unsigned i = 0; valid && i < expected; i++)
+            valid = jolpica_driver(cJSON_GetArrayItem(rows, (int)i), parsed, count + i);
+        cJSON_Delete(root);
+        if (!valid) return false;
+        count += expected;
+    } while (count < total);
+
+    char as_of[12];
+    if (!jolpica_standings_date(candidate->year, round, now_utc,
+                                candidate->standings_as_of, as_of)) return false;
+    candidate->driver_count = (uint8_t)total;
+    memset(candidate->drivers, 0, sizeof(candidate->drivers));
+    memcpy(candidate->drivers, parsed, total * sizeof(parsed[0]));
+    copy_text(candidate->standings_as_of, sizeof(candidate->standings_as_of), as_of);
+    ESP_LOGD(TAG, "Jolpica standings ready: year=%u round=%u drivers=%u as of %s",
+             candidate->year, round, total, as_of);
+    return true;
+}
+
+static bool jolpica_team_item(const cJSON *item, pdkpass_team_t *teams, size_t count)
+{
+    const cJSON *constructor = cJSON_GetObjectItemCaseSensitive(item, "Constructor");
+    const char *id = json_string(constructor, "constructorId");
+    const char *name = json_string(constructor, "name");
+    unsigned position, points;
+    if (!jolpica_uint(item, "position", PDKPASS_MAX_TEAMS, &position) ||
+        position != count + 1U || !id || !*id || strlen(id) >= sizeof(teams[0].id) ||
+        !name || !*name ||
+        !jolpica_decimal(json_string(item, "points"), 65535, true, &points)) return false;
+    for (size_t i = 0; i < count; i++)
+        if (strcmp(teams[i].id, id) == 0) return false;
+    pdkpass_team_t *out = &teams[count];
+    out->position = (uint8_t)position;
+    out->points_tenths = (uint16_t)points;
+    copy_text(out->id, sizeof(out->id), id);
+    jolpica_constructor(constructor, out->name, sizeof(out->name), &out->accent);
+    return true;
+}
+
+static bool fetch_team_standings(int64_t now_utc, pdkpass_team_snapshot_t *candidate)
+{
+    char url[160];
+    pdkpass_team_t parsed[PDKPASS_MAX_TEAMS] = {0};
+    unsigned total = 0, round = 0, count = 0;
+    do {
+        if (count) {
+            // Pin subsequent pages to the first response's round, preventing
+            // a newly published round from shifting the pagination midway.
+            snprintf(url, sizeof(url),
+                "https://api.jolpi.ca/ergast/f1/%u/%u/constructorstandings/?limit=4&offset=%u",
+                candidate->year, round, count);
+            vTaskDelay(pdMS_TO_TICKS(300));
+        } else {
+            snprintf(url, sizeof(url),
+                "https://api.jolpi.ca/ergast/f1/%u/constructorstandings/?limit=4&offset=0",
+                candidate->year);
+        }
+        cJSON *root = jolpica_get(url);
+        const cJSON *mr = cJSON_GetObjectItemCaseSensitive(root, "MRData");
+        const cJSON *table = cJSON_GetObjectItemCaseSensitive(mr, "StandingsTable");
+        const cJSON *lists = cJSON_GetObjectItemCaseSensitive(table, "StandingsLists");
+        const cJSON *list = cJSON_GetArrayItem(lists, 0);
+        const cJSON *rows = cJSON_GetObjectItemCaseSensitive(list, "ConstructorStandings");
+        unsigned page_total, offset, limit, year, page_round;
+        bool valid = cJSON_IsArray(lists) && cJSON_GetArraySize(lists) == 1 &&
+            jolpica_uint(mr, "total", PDKPASS_MAX_TEAMS, &page_total) && page_total &&
+            jolpica_uint(mr, "offset", PDKPASS_MAX_TEAMS, &offset) && offset == count &&
+            jolpica_uint(mr, "limit", 4, &limit) && limit == 4 &&
+            jolpica_uint(list, "season", 2100, &year) && year == candidate->year &&
+            jolpica_uint(list, "round", PDKPASS_MAX_RACES, &page_round) && page_round &&
+            cJSON_IsArray(rows);
+        if (valid && count == 0) { total = page_total; round = page_round; }
+        unsigned expected = total - count;
+        if (expected > 4U) expected = 4U;
+        valid = valid && page_total == total && page_round == round &&
+                (unsigned)cJSON_GetArraySize(rows) == expected;
+        for (unsigned i = 0; valid && i < expected; i++)
+            valid = jolpica_team_item(cJSON_GetArrayItem(rows, (int)i), parsed, count + i);
+        cJSON_Delete(root);
+        if (!valid) return false;
+        count += expected;
+    } while (count < total);
+
+    char as_of[12];
+    if (!jolpica_standings_date(candidate->year, round, now_utc,
+                                candidate->as_of, as_of)) return false;
+    candidate->count = (uint8_t)total;
+    memset(candidate->teams, 0, sizeof(candidate->teams));
+    memcpy(candidate->teams, parsed, total * sizeof(parsed[0]));
+    copy_text(candidate->as_of, sizeof(candidate->as_of), as_of);
+    ESP_LOGD(TAG, "Jolpica team standings ready: year=%u round=%u teams=%u as of %s",
+             candidate->year, round, total, as_of);
+    return true;
+}
+
+static bool team_snapshot_valid(const pdkpass_team_snapshot_t *snapshot)
+{
+    if (snapshot->year < 2026 || snapshot->year > 2100 ||
+        snapshot->count == 0 || snapshot->count > PDKPASS_MAX_TEAMS ||
+        !memchr(snapshot->as_of, '\0', sizeof(snapshot->as_of)) ||
+        standings_date_order(snapshot->as_of) == 0) return false;
+    for (size_t i = 0; i < snapshot->count; i++) {
+        const pdkpass_team_t *team = &snapshot->teams[i];
+        if (team->position != i + 1U || !team->id[0] || !team->name[0] ||
+            !memchr(team->id, '\0', sizeof(team->id)) ||
+            !memchr(team->name, '\0', sizeof(team->name))) return false;
+        for (size_t j = 0; j < i; j++)
+            if (strcmp(team->id, snapshot->teams[j].id) == 0) return false;
+    }
+    return true;
+}
+
+static void load_team_cache(void)
+{
+    memset(&s_teams, 0, sizeof(s_teams));
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return;
+    team_cache_t stored = {0};
+    size_t size = sizeof(stored);
+    esp_err_t err = nvs_get_blob(handle, "teams", &stored, &size);
+    nvs_close(handle);
+    if (err == ESP_OK && size == sizeof(stored) &&
+        stored.magic == TEAM_CACHE_MAGIC && stored.version == 1 &&
+        team_snapshot_valid(&stored.snapshot)) s_teams = stored.snapshot;
+}
+
+static esp_err_t save_team_cache(const pdkpass_team_snapshot_t *snapshot)
+{
+    team_cache_t stored = {.magic = TEAM_CACHE_MAGIC, .version = 1,
+                           .snapshot = *snapshot};
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_blob(handle, "teams", &stored, sizeof(stored));
+        if (err == ESP_OK) err = nvs_commit(handle);
+        nvs_close(handle);
+    }
+    return err;
+}
+
+bool pdkpass_season_team_snapshot(pdkpass_team_snapshot_t *snapshot)
+{
+    if (!snapshot || !s_lock ||
+        xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    if (s_teams.year == s_season.year) *snapshot = s_teams;
+    else {
+        memset(snapshot, 0, sizeof(*snapshot));
+        snapshot->year = s_season.year;
+        copy_text(snapshot->as_of, sizeof(snapshot->as_of), "PENDING");
+    }
+    xSemaphoreGive(s_lock);
+    return true;
+}
+
+static bool synchronize_teams(unsigned year, int64_t now_utc)
+{
+    pdkpass_team_snapshot_t candidate;
+    if (!pdkpass_season_team_snapshot(&candidate) || candidate.year != year)
+        return false;
+    if (!fetch_team_standings(now_utc, &candidate)) {
+        ESP_LOGW(TAG, "Jolpica team standings unchanged; retry scheduled");
+        return false;
+    }
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    bool changed = memcmp(&s_teams, &candidate, sizeof(candidate)) != 0;
+    xSemaphoreGive(s_lock);
+    if (!changed) return true;
+    if (save_team_cache(&candidate) != ESP_OK) return false;
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    s_teams = candidate;
+    xSemaphoreGive(s_lock);
+    if (s_callback) s_callback();
+    return true;
+}
+
+static bool build_candidate(unsigned year,
                             const pdkpass_season_snapshot_t *current,
-                            pdkpass_season_snapshot_t *candidate,
-                            bool *retry)
+                            pdkpass_season_snapshot_t *candidate)
 {
     char url[128];
     race_build_t *build = calloc(PDKPASS_MAX_RACES, sizeof(*build));
@@ -558,7 +834,7 @@ static bool build_candidate(unsigned year, int64_t now_utc,
                                          PDKPASS_MAX_RACES * sizeof(*build));
         return false;
     }
-    build_context_t context = {.build = build, .now_utc = now_utc};
+    build_context_t context = {.build = build};
     snprintf(url, sizeof(url), "https://api.openf1.org/v1/meetings?year=%u", year);
     if (pdkpass_http_array(url, parse_meeting, &context) != ESP_OK ||
         !pdkpass_season_candidate_valid(current->year, year, context.count)) {
@@ -599,10 +875,6 @@ static bool build_candidate(unsigned year, int64_t now_utc,
     for (size_t i = 0; i < context.count; i++) candidate->races[i] = build[i].race;
     free(build);
     preserve_track_details(candidate, current);
-    if (context.latest_race_session > 0 &&
-        !fetch_standings(context.latest_race_session, context.latest_race_end, candidate)) {
-        *retry = true;
-    }
     return snapshot_valid(candidate);
 }
 
@@ -646,9 +918,16 @@ static bool synchronize(int64_t now_utc)
         return false;
     }
     unsigned target_year = pdkpass_beijing_year(now_utc);
-    bool retry = false;
-    bool success = build_candidate(target_year, now_utc, current, candidate, &retry);
-    bool updated = success && memcmp(current, candidate, sizeof(*candidate)) != 0;
+    bool calendar_ok = build_candidate(target_year, current, candidate);
+    if (!calendar_ok) *candidate = *current;
+    // Standings have their own source. A failed OpenF1 calendar request must
+    // never prevent same-season Jolpica updates or discard the cached calendar.
+    bool standings_ok = candidate->year == target_year &&
+                        fetch_standings(now_utc, candidate);
+    if (!standings_ok) ESP_LOGW(TAG, "Jolpica standings unchanged; retry scheduled");
+    bool success = calendar_ok && standings_ok;
+    bool updated = (calendar_ok || standings_ok) &&
+                   memcmp(current, candidate, sizeof(*candidate)) != 0;
     if (updated) {
         esp_err_t err = save_cache(candidate);
         if (err != ESP_OK) {
@@ -671,7 +950,8 @@ static bool synchronize(int64_t now_utc)
     }
     free(current);
     free(candidate);
-    return success && !retry;
+    bool teams_ok = synchronize_teams(target_year, now_utc);
+    return success && teams_ok;
 }
 
 static bool clock_valid(void)
@@ -769,6 +1049,7 @@ esp_err_t pdkpass_season_start(pdkpass_season_callback_t callback)
     if (!s_lock || !s_events) return ESP_ERR_NO_MEM;
     s_callback = callback;
     load_cache();
+    load_team_cache();
     if (xTaskCreate(season_task, "pdk_season", SEASON_TASK_STACK, NULL,
                     SEASON_TASK_PRIORITY, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;

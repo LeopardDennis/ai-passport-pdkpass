@@ -13,6 +13,7 @@
 
 static SemaphoreHandle_t s_transaction;
 static int64_t s_retry_at_us;
+static int64_t s_jolpica_retry_at_us;
 static const char *TAG = "pdk_http";
 typedef struct {
     char *data;
@@ -130,7 +131,9 @@ static esp_err_t http_event(esp_http_client_event_t *event)
 
 static esp_err_t perform(const char *url, response_t *r)
 {
-    if (esp_timer_get_time() < s_retry_at_us) return ESP_ERR_TIMEOUT;
+    int64_t *retry_at = strncmp(url, "https://api.jolpi.ca/", sizeof("https://api.jolpi.ca/") - 1U) == 0
+                            ? &s_jolpica_retry_at_us : &s_retry_at_us;
+    if (esp_timer_get_time() < *retry_at) return ESP_ERR_TIMEOUT;
     heap_sample_t before = sample_heap();
     esp_http_client_config_t config = {
         .url = url, .event_handler = http_event, .user_data = r,
@@ -156,7 +159,7 @@ static esp_err_t perform(const char *url, response_t *r)
     esp_http_client_cleanup(client);
     if (status == 429 || status == 503) {
         unsigned seconds = r->retry_seconds ? r->retry_seconds : 60;
-        s_retry_at_us = esp_timer_get_time() + (int64_t)seconds * 1000000LL;
+        *retry_at = esp_timer_get_time() + (int64_t)seconds * 1000000LL;
     }
     if (err != ESP_OK) {
         const char *stage = r->failure_stage ? r->failure_stage

@@ -1,6 +1,6 @@
 // components/bsp/src/bsp_battery.c
 // 移植自 trae_card/components/platform/platform_esp32/src/battery_cw2017.c
-// (去掉了电池 profile 写入部分:开源硬件用户电池各异,用芯片自带 Li-Poly profile 更通用)
+// 保留电量计已有 profile,不写未经电芯供应商验证的自定义参数。
 #include "bsp_battery.h"
 #include "bsp_i2c.h"
 #include "bsp_pins.h"
@@ -28,6 +28,22 @@ static int cw_write(uint8_t reg, uint8_t val) {
     return i2c_master_transmit(s_dev, b, 2, 100) == ESP_OK ? 0 : -1;
 }
 
+// CW2017-DS V1.1, Power State / CONFIG (0x08): wake requires
+// 0x30 followed by 0x00. Do not restart an already-running gauge on each
+// MCU reboot: its ongoing SOC estimate is more useful than a new OCV estimate.
+static esp_err_t cw_ensure_active(void) {
+    uint8_t config;
+    if (cw_read(CW_REG_CONFIG, &config, 1) != 0) return ESP_FAIL;
+    if ((config & 0xF0U) == 0) return ESP_OK;
+    if (cw_write(CW_REG_CONFIG, 0x30) != 0) return ESP_FAIL;
+    vTaskDelay(pdMS_TO_TICKS(20));
+    if (cw_write(CW_REG_CONFIG, 0x00) != 0) return ESP_FAIL;
+    vTaskDelay(pdMS_TO_TICKS(100));
+    if (cw_read(CW_REG_CONFIG, &config, 1) != 0 ||
+        (config & 0xF0U) != 0) return ESP_FAIL;
+    return ESP_OK;
+}
+
 esp_err_t bsp_battery_init(void) {
     if (s_dev) return ESP_OK;
 
@@ -52,10 +68,13 @@ esp_err_t bsp_battery_init(void) {
     }
     ESP_LOGI(TAG, "检测到 CW2017 VERSION=0x%02X", ver);
 
-    // 确保处于正常工作模式(非睡眠/复位态)。用芯片自带 Li-Poly profile,不写自定义 profile。
-    cw_write(CW_REG_CONFIG, 0x00);
-    vTaskDelay(pdMS_TO_TICKS(100));   // 等首次 SOC 计算完成
-
+    e = cw_ensure_active();
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "CW2017 mode initialization failed");
+        i2c_master_bus_rm_device(s_dev);
+        s_dev = NULL;
+        return e;
+    }
     return ESP_OK;
 }
 

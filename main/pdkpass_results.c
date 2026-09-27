@@ -1,11 +1,10 @@
 #include "pdkpass_results.h"
+#include "pdkpass_reminder.h"
 #include "pdkpass_sync_policy.h"
 #include "pdkpass_network.h"
 
 #include "cJSON.h"
 #include "pdkpass_http.h"
-#include "esp_crt_bundle.h"
-#include "esp_http_client.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -27,6 +26,7 @@
 #define RESULTS_IDLE_DELAY_MS (24U * 60U * 60U * 1000U)
 #define RESULTS_DISCOVERY_INTERVAL_SECONDS (6LL * 60LL * 60LL)
 #define RESULTS_MANUAL_RETRY_SECONDS (5LL * 60LL)
+#define RESULTS_PRIORITY_SECONDS (15LL * 60LL)
 #define RESULTS_WINDOW_SECONDS (5LL * 24LL * 60LL * 60LL)
 #define RESULTS_GRACE_SECONDS (24LL * 60LL * 60LL)
 #define RESULTS_CACHE_MAGIC 0x50444B52U
@@ -112,6 +112,9 @@ static EventGroupHandle_t s_events;
 static pdkpass_results_callback_t s_callback;
 static bool s_online;
 static size_t s_requested_race = SIZE_MAX;
+// Worker-owned focus survives individual discovery/podium transactions.
+static size_t s_priority_race = SIZE_MAX;
+static int64_t s_priority_until_utc;
 static size_t s_history_cursor;
 static unsigned s_cache_year;
 static size_t s_cache_count;
@@ -233,6 +236,8 @@ static void load_cache(void)
         s_cache_dirty = false;
         s_has_cached_data = cached_data;
         s_requested_race = SIZE_MAX;
+        s_priority_race = SIZE_MAX;
+        s_priority_until_utc = 0;
         xSemaphoreGive(s_lock);
     }
     if (!valid && nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
@@ -324,11 +329,52 @@ typedef struct {
     race_cache_t *cache;
     int64_t window_start, window_end;
     bool matched;
+    bool reminder_valid, reminder_matched;
+    int32_t meeting_key, reminder_meeting;
+    pdkpass_reminder_entry_t reminders[PDKPASS_SESSION_COUNT];
 } session_discovery_t;
+
+static void parse_reminder_session(const cJSON *item, session_discovery_t *d)
+{
+    const cJSON *name = cJSON_GetObjectItemCaseSensitive(item, "session_name");
+    if (!cJSON_IsString(name)) { d->reminder_valid = false; return; }
+    pdkpass_session_kind_t kind = pdkpass_session_kind_from_name(name->valuestring);
+    if (kind >= PDKPASS_SESSION_COUNT) return;
+    const cJSON *key = cJSON_GetObjectItemCaseSensitive(item, "session_key");
+    const cJSON *meeting = cJSON_GetObjectItemCaseSensitive(item, "meeting_key");
+    if (d->meeting_key > 0 && cJSON_IsNumber(meeting) && meeting->valueint != d->meeting_key)
+        return;
+    const cJSON *start = cJSON_GetObjectItemCaseSensitive(item, "date_start");
+    const cJSON *end = cJSON_GetObjectItemCaseSensitive(item, "date_end");
+    int64_t start_utc = 0, end_utc = 0;
+    bool has_start = cJSON_IsString(start) && pdkpass_parse_iso8601_utc(start->valuestring, &start_utc);
+    bool has_end = cJSON_IsString(end) && pdkpass_parse_iso8601_utc(end->valuestring, &end_utc);
+    if ((has_start && (start_utc < d->window_start || start_utc > d->window_end)) ||
+        (has_end && (end_utc < d->window_start || end_utc > d->window_end))) return;
+    bool cancelled = json_bool(item, "is_cancelled");
+    if (!cJSON_IsNumber(key) || key->valueint <= 0 || d->reminders[kind].session_key ||
+        (!cancelled && (!has_start || !has_end || start_utc >= end_utc)) ||
+        (!has_start && !has_end && d->meeting_key <= 0)) {
+        d->reminder_valid = false;
+        return;
+    }
+    int32_t reminder_meeting = cJSON_IsNumber(meeting) ? meeting->valueint : d->meeting_key;
+    if (reminder_meeting <= 0 || (d->reminder_meeting && d->reminder_meeting != reminder_meeting)) {
+        d->reminder_valid = false;
+        return;
+    }
+    d->reminder_meeting = reminder_meeting;
+    d->reminders[kind] = (pdkpass_reminder_entry_t){
+        .session_key = key->valueint, .start_utc = start_utc,
+        .flags = cancelled ? PDKPASS_REMINDER_CANCELLED : 0,
+    };
+    d->reminder_matched = true;
+}
 
 static bool parse_discovered_session(const cJSON *item, void *user)
 {
     session_discovery_t *discovery = user;
+    parse_reminder_session(item, discovery);
     const cJSON *name = cJSON_GetObjectItemCaseSensitive(item, "session_name");
     const cJSON *key = cJSON_GetObjectItemCaseSensitive(item, "session_key");
     const cJSON *date_end = cJSON_GetObjectItemCaseSensitive(item, "date_end");
@@ -370,12 +416,17 @@ static bool discover_sessions(size_t race_index, race_cache_t *cache,
     race_cache_t parsed = *cache;
     session_discovery_t discovery = {
         .cache = &parsed,
+        .reminder_valid = true,
+        .meeting_key = race.meeting_key,
         .window_start = race.switch_at_utc - RESULTS_WINDOW_SECONDS,
         .window_end = race.switch_at_utc,
     };
     if (pdkpass_http_array(url, parse_discovered_session, &discovery) != ESP_OK)
         return false;
     if (discovery.matched) parsed.discovered = 1;
+    if (discovery.reminder_matched && discovery.reminder_valid)
+        pdkpass_reminder_update_round(pdkpass_season_year(), race.round,
+                                      discovery.reminder_meeting, discovery.reminders);
     *cache = parsed;
     cache->last_discovery_utc = now_utc;
     return discovery.matched;
@@ -451,13 +502,19 @@ static bool fetch_result(session_cache_t *session)
     if (pdkpass_http_array(url, parse_podium_item, top) != ESP_OK ||
         !podium_complete(top)) return false;
 
-    snprintf(url, sizeof(url),
-             "https://api.openf1.org/v1/drivers?session_key=%ld",
-             (long)session->session_key);
     char podium_codes[PDKPASS_PODIUM_SIZE][4] = {0};
     podium_details_t details = {.top = top, .podium_codes = podium_codes};
-    bool parsed = pdkpass_http_array(url, parse_podium_driver, &details) == ESP_OK &&
-                  podium_drivers_complete((const char (*)[4])podium_codes);
+    // The full grid arrives in an 8-10 KB TLS record on OpenF1. Streaming
+    // JSON cannot shrink that record: TLS must first allocate/decrypt it.
+    // Fetch only the three required drivers, keeping each response small.
+    for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
+        snprintf(url, sizeof(url),
+                 "https://api.openf1.org/v1/drivers?session_key=%ld&driver_number=%d",
+                 (long)session->session_key, top[i].driver_number);
+        if (pdkpass_http_array(url, parse_podium_driver, &details) != ESP_OK ||
+            podium_codes[i][0] == '\0') return false;
+    }
+    bool parsed = podium_drivers_complete((const char (*)[4])podium_codes);
     if (parsed) {
         memcpy(session->podium_codes, podium_codes, sizeof(podium_codes));
         session->ready = 1;
@@ -471,6 +528,8 @@ static int64_t retry_interval_seconds(size_t race_index, int64_t now_utc)
     if (!pdkpass_season_race_get(race_index, &race)) {
         return RESULTS_IDLE_DELAY_MS / 1000U;
     }
+    if (race_index == s_priority_race && now_utc < s_priority_until_utc)
+        return RESULTS_MANUAL_RETRY_SECONDS;
     return now_utc > race.switch_at_utc + RESULTS_GRACE_SECONDS
                ? RESULTS_IDLE_DELAY_MS / 1000U
                : RESULTS_ACTIVE_DELAY_MS / 1000U;
@@ -534,21 +593,20 @@ static void expedite_requested_race(size_t race_index, int64_t now_utc)
 {
     if (now_utc < 1767225600LL || !race_is_eligible(race_index, now_utc))
         return;
-    int64_t retry_interval = retry_interval_seconds(race_index, now_utc);
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return;
     race_cache_t *cache = &s_cache[race_index];
     if (!cache_complete(race_index, cache, now_utc)) {
         // Do this in the results worker, after any in-flight request has
         // published its cache. The UI only queues the requested race.
-        if (now_utc - cache->last_discovery_utc >= RESULTS_MANUAL_RETRY_SECONDS &&
-            cache->next_discovery_utc > now_utc)
-            cache->next_discovery_utc = now_utc;
+        int64_t retry_at = cache->last_discovery_utc + RESULTS_MANUAL_RETRY_SECONDS;
+        if (retry_at < now_utc) retry_at = now_utc;
+        if (cache->next_discovery_utc > retry_at)
+            cache->next_discovery_utc = retry_at;
         for (size_t i = 0; i < PDKPASS_SESSION_COUNT; i++) {
             session_cache_t *session = &cache->sessions[i];
             if (session->present && !session->cancelled && !session->ready &&
                 pdkpass_session_result_due(now_utc, session->end_utc) &&
-                now_utc - session->last_attempt_utc >= RESULTS_MANUAL_RETRY_SECONDS &&
-                now_utc - session->last_attempt_utc < retry_interval)
+                now_utc - session->last_attempt_utc >= RESULTS_MANUAL_RETRY_SECONDS)
                 session->last_attempt_utc = 0;
         }
     }
@@ -565,9 +623,20 @@ static size_t select_race(int64_t now_utc)
         xSemaphoreGive(s_lock);
     }
     if (requested < race_count) {
+        s_priority_race = race_is_eligible(requested, now_utc) ? requested : SIZE_MAX;
+        s_priority_until_utc = now_utc + RESULTS_PRIORITY_SECONDS;
         expedite_requested_race(requested, now_utc);
-        if (race_needs_work(requested, now_utc)) return requested;
+        pdkpass_race_t race;
+        if (pdkpass_season_race_get(requested, &race))
+            ESP_LOGD(TAG, "Prioritize R%u results", race.round);
     }
+    // A briefly viewed historical round must not keep the radio retrying
+    // every five minutes for the rest of the day. Further requests renew it.
+    if (now_utc >= s_priority_until_utc) s_priority_race = SIZE_MAX;
+    if (s_priority_race < race_count &&
+        race_needs_work(s_priority_race, now_utc)) return s_priority_race;
+    // While the requested race is waiting, other rounds may make progress.
+    // Keep its focus so the next podium/retry is not lost to the active weekend.
     // Active weekend first; historical backfill rotates independently.
     for (size_t i = race_count; i > 0; i--) {
         pdkpass_race_t race;
@@ -607,7 +676,10 @@ static process_outcome_t process_race(size_t race_index, int64_t now_utc)
     bool fetched = false;
     if (discovery_due(&cache, now_utc)) {
         race_cache_t before_discovery = cache;
+        ESP_LOGD(TAG, "R%u discovering sessions", race.round);
         bool discovered = discover_sessions(race_index, &cache, now_utc);
+        ESP_LOGD(TAG, "R%u session discovery %s", race.round,
+                 discovered ? "complete" : "pending retry");
         cache.last_discovery_utc = now_utc;
         cache.next_discovery_utc = now_utc + (discovered
             ? RESULTS_DISCOVERY_INTERVAL_SECONDS : retry_interval_seconds(race_index, now_utc));
@@ -624,6 +696,8 @@ static process_outcome_t process_race(size_t race_index, int64_t now_utc)
             !pdkpass_session_result_due(now_utc, session->end_utc) ||
             now_utc - session->last_attempt_utc < retry_interval) continue;
         session->last_attempt_utc = now_utc;
+        ESP_LOGD(TAG, "R%u %s fetching podium", race.round,
+                 pdkpass_session_label((pdkpass_session_kind_t)i));
         if (fetch_result(session)) {
             fetched = true;
             ESP_LOGI(TAG, "R%u %s podium cached", race.round,
@@ -704,6 +778,16 @@ static TickType_t next_scheduled_wait(int64_t now_utc)
     return pdMS_TO_TICKS((uint32_t)best_seconds * 1000U);
 }
 
+static bool request_pending(void)
+{
+    bool pending = false;
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        pending = s_requested_race != SIZE_MAX;
+        xSemaphoreGive(s_lock);
+    }
+    return pending;
+}
+
 static bool online_snapshot(void)
 {
     bool online = false;
@@ -720,7 +804,10 @@ static void results_task(void *arg)
     TickType_t delay = pdMS_TO_TICKS(RESULTS_IDLE_DELAY_MS);
     for (;;) {
         xEventGroupWaitBits(s_events, EVENT_WAKE, pdTRUE, pdFALSE, delay);
-        uint32_t wait_ms = pdkpass_sync_wait_ms(PDKPASS_SYNC_RESULTS);
+        // A UI request may arrive inside HTTP work, before that work writes
+        // its next deadline. The queued request must override that stale wait.
+        uint32_t wait_ms = request_pending() ? 0 :
+                           pdkpass_sync_wait_ms(PDKPASS_SYNC_RESULTS);
         if (!online_snapshot()) {
             if (!wait_ms) pdkpass_network_request(PDKPASS_NETWORK_SYNC);
             delay = wait_ms ? pdMS_TO_TICKS(wait_ms) : portMAX_DELAY;

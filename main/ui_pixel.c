@@ -74,8 +74,18 @@ void ui_pixel_screen_set_title(lv_obj_t *screen, const char *title)
         lv_obj_set_style_text_letter_space(heading, 0, 0);
         lv_obj_set_width(heading, LV_SIZE_CONTENT);
         lv_label_set_text(heading, title);
-        lv_obj_set_style_text_font(heading,
-            strlen(title) > 13U ? &lv_font_unscii_8 : &lv_font_unscii_16, 0);
+        // Keep the same glyph height as the driver standings title. Fit long
+        // headings horizontally instead of abruptly switching to an 8 px font.
+        lv_obj_set_style_text_font(heading, &lv_font_unscii_16, 0);
+        lv_point_t size;
+        lv_text_get_size(&size, title, &lv_font_unscii_16, 0, 0,
+                         LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        int32_t width = size.x + 2;
+        if (width > 208) {
+            lv_obj_set_width(heading, width);
+            lv_obj_set_style_transform_pivot_x(heading, width / 2, 0);
+            lv_obj_set_style_transform_scale_x(heading, 208 * 256 / width, 0);
+        }
         lv_obj_center(heading);
     }
 }

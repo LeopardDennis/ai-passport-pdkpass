@@ -20,6 +20,11 @@ esp_lcd_panel_io_handle_t bsp_display_io(void);
 // 背光亮度 0..100(%)。LEDC PWM,0=全灭。
 void bsp_display_backlight(uint8_t percent);
 
+// Enter/leave controller sleep (not just backlight off). Caller serializes
+// panel access and pauses drawing first. May block for the panel wake delay;
+// call from a task, never an ISR/button callback. Wake leaves backlight off.
+esp_err_t bsp_display_sleep(bool sleep);
+
 // ---------------------------------------------------------------------------
 // LVGL 接入(可选层)。必须先 bsp_display_init() 成功后再调。
 // 不想用 LVGL 的开发者可忽略本段,直接用 bsp_display_panel() 自己画。
