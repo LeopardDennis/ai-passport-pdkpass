@@ -54,6 +54,14 @@ cc -std=c11 -Wall -Wextra -Werror -Imain \
 
 ## macOS 真机日志采集
 
+充电排查使用 `./tools/validate.sh --battery-diagnostics`，运行静态和固件验证，在临时
+默认配置中启用 `CONFIG_PDKPASS_BATTERY_DIAGNOSTICS=y` 并检查生效，输出
+`build/FoloToy-AI-Passport-battery-diagnostics-full.bin`。普通默认配置与普通合并固件
+保持不变。每 60 秒采样，熄屏也继续，因此该版本不用于待机功耗基准测试。
+刷入后关闭刷机工具，至少采集 180 秒。采集脚本统计 `battery_sample` 和
+`battery_read_issue`，将原始日志时间与手动观察的充电灯变化对应；这些数据不等于
+已证明充电终止或电芯校准正确。
+
 测试用 Mac 应检出与烧录固件相同的提交。采集工具只依赖 Python 3 标准库，采集时
 不需要 ESP-IDF 或额外 Python 包。刷机并完成 Wi-Fi 配置后，关闭刷机页面和其他
 串口监视器，保持 USB 数据线连接：

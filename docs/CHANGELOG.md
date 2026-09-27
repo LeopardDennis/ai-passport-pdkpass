@@ -6,6 +6,16 @@
 
 ## Unreleased
 
+- Add an opt-in battery diagnostic image with read-only CW2017 samples every
+  60 seconds, including while dark. Report raw SOC, voltage, mode and per-field
+  failures without remapping percentages or changing charge settings. Normal
+  builds keep diagnostics off; charger termination remains unverified.
+
+- Remove default driver points from all bundled calendars. Show pending data
+  until a downloaded cache is available; retain successful offline caches and
+  clear the recognizable old default standings from v1/v2 caches without
+  discarding their calendars. Add migration and first-use UI coverage.
+
 - Keep the team-points heading at the same 16 px font size as driver standings,
   fitting long titles horizontally instead of switching to small text.
 

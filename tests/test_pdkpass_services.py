@@ -1221,6 +1221,8 @@ int main(void) {
 #include "bsp_battery.h"
 #include "esp_err.h"
 int bsp_battery_mv(void);
+#define ESP_ERR_INVALID_ARG 0x102
+#define ESP_ERR_INVALID_STATE 0x103
 #define ESP_FAIL -1
 #define I2C_ADDR_BIT_LEN_7 0
 #define BSP_I2C_CW2017_ADDR 0x63
@@ -1266,7 +1268,8 @@ static int cw_write(uint8_t reg,uint8_t value) {
 '''
         code += '\n'.join(x for x in source.splitlines() if x.startswith('#define CW_REG_'))+'\n'
         for signature in ['static esp_err_t cw_ensure_active(', 'esp_err_t bsp_battery_init(',
-                          'int bsp_battery_soc(', 'int bsp_battery_mv(']:
+                          'int bsp_battery_soc(', 'int bsp_battery_mv(',
+                          'esp_err_t bsp_battery_read_diagnostics(']:
             code += function(source, signature)
         code += r'''
 int main(void) {
@@ -1298,9 +1301,97 @@ int main(void) {
  assert(bsp_battery_soc()==96 && voltage_reads==1);
  assert(bsp_battery_mv()==-1);
  fail_read=4;assert(bsp_battery_soc()==-1);
+ bsp_battery_diagnostics_t sample;
+ unsigned previous_writes=writes;
+ fail_read=-1;raw_soc=96*256+128;config=0;
+ assert(bsp_battery_read_diagnostics(&sample)==ESP_OK);
+ assert(sample.raw_soc==24704&&sample.raw_vcell==11840&&sample.cell_mv==3700);
+ assert(sample.config==0&&sample.version==0xa0&&writes==previous_writes);
+ // Each failed register is distinguishable; other successful readings survive.
+ const int registers[]={0,2,4,8};
+ for(unsigned i=0;i<4;i++) {
+  fail_read=registers[i];
+  assert(bsp_battery_read_diagnostics(&sample)==ESP_FAIL);
+  assert(sample.raw_soc==(fail_read==4?-1:24704));
+  assert(sample.cell_mv==(fail_read==2?-1:3700));
+  assert(sample.config==(fail_read==8?-1:0));
+  assert(sample.version==(fail_read==0?-1:0xa0));
+ }
+ fail_read=-1;raw_soc=255*256;config=0xf0;
+ assert(bsp_battery_read_diagnostics(&sample)==ESP_OK);
+ assert(sample.raw_soc==65280&&sample.config==0xf0); // report, never repair/reset
+ assert(writes==previous_writes);
+ s_dev=NULL;
+ assert(bsp_battery_read_diagnostics(&sample)==ESP_ERR_INVALID_STATE);
+ assert(sample.raw_soc==-1&&sample.cell_mv==-1&&sample.config==-1&&sample.version==-1);
+ assert(bsp_battery_read_diagnostics(NULL)==ESP_ERR_INVALID_ARG);
 }
 '''
         compile_run(code)
+
+    def test_battery_diagnostics_interval_and_disabled_build(self):
+        source = (ROOT / 'main/pdkpass_battery_diagnostics.c').read_text()
+        for header in ('sdkconfig.h', 'esp_log.h', 'esp_timer.h'):
+            source = source.replace('#include "' + header + '"', '')
+        for enabled in (0, 1):
+            code = '#define CONFIG_PDKPASS_BATTERY_DIAGNOSTICS %d\n' % enabled
+            code += r"""
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
+#include "bsp_battery.h"
+static int64_t now;
+static unsigned reads, logs;
+static int fail;
+static char last_log[512];
+static int64_t esp_timer_get_time(void) { return now; }
+esp_err_t bsp_battery_read_diagnostics(bsp_battery_diagnostics_t *out) {
+ reads++;now+=2000;
+ *out=(bsp_battery_diagnostics_t){.raw_soc=24704,.raw_vcell=11840,
+  .cell_mv=3700,.config=0,.version=160};
+ if(fail) {out->raw_soc=-1;out->cell_mv=-1;out->config=-1;return -1;}
+ return 0;
+}
+static void capture(const char *tag,const char *fmt,...) {
+ assert(strcmp(tag,"battery_diag")==0);logs++;
+ va_list args;va_start(args,fmt);vsnprintf(last_log,sizeof(last_log),fmt,args);va_end(args);
+}
+#define ESP_LOGI(...) capture(__VA_ARGS__)
+""" + source + r"""
+int main(void) {
+#if CONFIG_PDKPASS_BATTERY_DIAGNOSTICS
+ assert(pdkpass_battery_diagnostics_wait_ms()==0);
+ pdkpass_battery_diagnostics_poll();
+ assert(reads==1&&logs==1);
+ assert(strstr(last_log,"soc_x100=9650 soc_valid=1"));
+ assert(strstr(last_log,"cell_mv=3700 config=0 mode=ACTIVE version=160 read_error=0"));
+ assert(pdkpass_battery_diagnostics_wait_ms()==60000);
+ // Repeated key/reminder wakeups do not cause extra reads or output.
+ for(unsigned i=0;i<100;i++)pdkpass_battery_diagnostics_poll();
+ assert(reads==1&&logs==1);
+ now+=59999999;
+ assert(pdkpass_battery_diagnostics_wait_ms()==1);
+ pdkpass_battery_diagnostics_poll();assert(reads==1);
+ now++;
+ pdkpass_battery_diagnostics_poll();assert(reads==2&&logs==2);
+ fail=1;now+=60000000;
+ pdkpass_battery_diagnostics_poll();assert(reads==3&&logs==3);
+ assert(strstr(last_log,"soc_raw=-1 soc_x100=-1 soc_valid=0"));
+ assert(strstr(last_log,"mode=UNKNOWN")&&strstr(last_log,"read_error=-1"));
+ assert(pdkpass_battery_diagnostics_wait_ms()==60000);
+#else
+ for(unsigned i=0;i<100;i++) {
+  now+=60000000;pdkpass_battery_diagnostics_poll();
+  assert(pdkpass_battery_diagnostics_wait_ms()==UINT32_MAX);
+ }
+ assert(reads==0&&logs==0);
+#endif
+ puts("Battery diagnostics: rate limit, partial failures and disabled mode: PASS");
+}
+"""
+            compile_run(code)
 
     def test_panel_sleep_transitions_and_failure_retry(self):
         source = (ROOT / 'components/bsp/src/bsp_display.c').read_text()
@@ -1544,14 +1635,17 @@ static void nvs_close(int h) {(void)h;}
         for signature in ['static void copy_text(', 'static void fill_known_first_name(',
                           'static void apply_track_details(', 'static void initialize_fallback(',
                           'static bool snapshot_valid(', 'static bool restore_legacy_cache(',
+                          'static void discard_bundled_standings(',
                           'static void load_cache(']:
             code += function(source, signature)
         code += r'''
 int main(void) {
- initialize_fallback();assert(s_season.race_count==23);
+ initialize_fallback();assert(s_season.race_count==23&&s_season.driver_count==0);
+ assert(strcmp(s_season.standings_as_of,"PENDING")==0);
  current.magic=SEASON_CACHE_MAGIC;current.version=SEASON_CACHE_VERSION;
  current.season=s_season;current.season.race_count=11;
  memcpy(current.season.races,pdkpass_races+12,11*sizeof(pdkpass_race_t));
+ current.season.driver_count=1;
  current.season.drivers[0].points_tenths=999;
  strcpy(current.season.standings_as_of,"15 SEP");
  load_cache();
@@ -1571,8 +1665,40 @@ int main(void) {
  assert(s_has_cached_data&&s_season.race_count==23);
  assert(s_season.drivers[0].points_tenths==777);
  assert(strcmp(s_season.drivers[0].first_name,"MAX")==0);
+ // Upgrade of a calendar cache containing the full old default standings.
+ payload=&current;payload_size=sizeof(current);
+ current.season.year=2026;current.season.driver_count=pdkpass_legacy_driver_count;
+ memcpy(current.season.drivers,pdkpass_legacy_drivers,
+        pdkpass_legacy_driver_count*sizeof(pdkpass_driver_t));
+ strcpy(current.season.standings_as_of,"31 AUG");
+ load_cache();assert(s_has_cached_data&&s_season.race_count==23);
+ assert(s_season.driver_count==0&&strcmp(s_season.standings_as_of,"PENDING")==0);
+ pdkpass_driver_t empty[PDKPASS_MAX_DRIVERS]={0};
+ assert(memcmp(s_season.drivers,empty,sizeof(empty))==0);
+ // A changed score or date must survive, even with otherwise identical drivers.
+ current.season.drivers[0].points_tenths=2920;load_cache();
+ assert(s_season.driver_count==pdkpass_legacy_driver_count);
+ assert(s_season.drivers[0].points_tenths==2920);
+ current.season.drivers[0].points_tenths=2420;
+ strcpy(current.season.standings_as_of,"01 SEP");load_cache();
+ assert(s_season.driver_count==pdkpass_legacy_driver_count);
+ assert(strcmp(s_season.standings_as_of,"01 SEP")==0);
+ // The v1 layout also drops only the recognizable bundled snapshot.
+ legacy.season.driver_count=pdkpass_legacy_driver_count;
+ strcpy(legacy.season.standings_as_of,"31 AUG");
+ for(size_t i=0;i<pdkpass_legacy_driver_count;i++) {
+  const pdkpass_driver_t *d=&pdkpass_legacy_drivers[i];
+  legacy.season.drivers[i].position=d->position;
+  legacy.season.drivers[i].driver_number=d->driver_number;
+  legacy.season.drivers[i].points_tenths=d->points_tenths;
+  memcpy(legacy.season.drivers[i].code,d->code,sizeof(d->code));
+ }
+ payload=&legacy;payload_size=sizeof(legacy);load_cache();
+ assert(s_has_cached_data&&s_season.race_count==23&&s_season.driver_count==0);
+ assert(strcmp(s_season.standings_as_of,"PENDING")==0);
  legacy.magic=0;load_cache();assert(s_season.race_count==23);
- assert(!s_has_cached_data);
+ assert(!s_has_cached_data&&s_season.driver_count==0);
+ assert(strcmp(s_season.standings_as_of,"PENDING")==0);
  puts("season fallback and legacy cache load: PASS");
 }
 '''

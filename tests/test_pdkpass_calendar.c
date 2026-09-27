@@ -9,7 +9,10 @@ int main(void)
 {
     pdkpass_season_snapshot_t season;
     assert(pdkpass_calendar_load(2026, &season));
-    assert(season.race_count == 23 && season.driver_count > 0);
+    assert(season.race_count == 23 && season.driver_count == 0);
+    assert(strcmp(season.standings_as_of, "PENDING") == 0);
+    pdkpass_driver_t empty[PDKPASS_MAX_DRIVERS] = {0};
+    assert(memcmp(season.drivers, empty, sizeof(empty)) == 0);
     for (size_t i = 0; i < season.race_count; i++) {
         const pdkpass_track_info_t *track =
             pdkpass_track_find(season.races[i].circuit);

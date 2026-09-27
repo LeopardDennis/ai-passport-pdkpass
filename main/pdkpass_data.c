@@ -56,7 +56,9 @@ size_t pdkpass_restore_legacy_calendar(unsigned year, pdkpass_race_t *races,
     return pdkpass_race_count;
 }
 
-const pdkpass_driver_t pdkpass_drivers[] = {
+// Retained only to recognize old default caches and restore legacy given names.
+// These points must never be used as first-use standings.
+const pdkpass_driver_t pdkpass_legacy_drivers[] = {
     { 0x00A19C, 2420,  1, 12, "ANT", "ANTONELLI",  "MERCEDES",     "KIMI" },
     { 0x00A19C, 1830,  2, 63, "RUS", "RUSSELL",    "MERCEDES",     "GEORGE" },
     { 0xE32636, 1830,  3, 44, "HAM", "HAMILTON",   "FERRARI",      "LEWIS" },
@@ -82,4 +84,4 @@ const pdkpass_driver_t pdkpass_drivers[] = {
     { 0x1B2D57,    0, 23, 11, "PER", "PEREZ",      "CADILLAC",     "SERGIO" },
 };
 
-const size_t pdkpass_driver_count = sizeof(pdkpass_drivers) / sizeof(pdkpass_drivers[0]);
+const size_t pdkpass_legacy_driver_count = sizeof(pdkpass_legacy_drivers) / sizeof(pdkpass_legacy_drivers[0]);

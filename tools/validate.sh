@@ -5,7 +5,7 @@ mode="${1:---all}"
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
-    echo "Usage: $0 [--all|--static|--firmware]" >&2
+    echo "Usage: $0 [--all|--static|--firmware|--battery-diagnostics]" >&2
 }
 
 run_static_checks() {
@@ -86,6 +86,9 @@ run_static_checks() {
 
 run_firmware_checks() (
     local validation_build_dir
+    local variant="${1:-normal}"
+    local defaults_file="${repo_root}/sdkconfig.defaults"
+    local artifact="FoloToy-AI-Passport-full.bin"
 
     if ! command -v idf.py >/dev/null 2>&1; then
         echo "ERROR: idf.py is not available; activate ESP-IDF 5.5.3 first." >&2
@@ -95,16 +98,26 @@ run_firmware_checks() (
     validation_build_dir="$(mktemp -d /tmp/ai-passport-firmware.XXXXXX)"
     trap 'case "${validation_build_dir}" in /tmp/ai-passport-firmware.*) rm -rf -- "${validation_build_dir}" ;; esac' EXIT
 
-    SDKCONFIG_DEFAULTS="${repo_root}/sdkconfig.defaults" \
+    if [[ "${variant}" == "battery-diagnostics" ]]; then
+        defaults_file="${validation_build_dir}/sdkconfig.defaults"
+        cp "${repo_root}/sdkconfig.defaults" "${defaults_file}"
+        printf '\nCONFIG_PDKPASS_BATTERY_DIAGNOSTICS=y\n' >> "${defaults_file}"
+        artifact="FoloToy-AI-Passport-battery-diagnostics-full.bin"
+    fi
+    SDKCONFIG_DEFAULTS="${defaults_file}" \
         idf.py -B "${validation_build_dir}" \
         -D "SDKCONFIG=${validation_build_dir}/sdkconfig" build
+    if [[ "${variant}" == "battery-diagnostics" ]]; then
+        grep -qx 'CONFIG_PDKPASS_BATTERY_DIAGNOSTICS=y' "${validation_build_dir}/sdkconfig"
+        echo "Battery diagnostics: enabled (60-second read-only sampling)"
+    fi
     idf.py -B "${validation_build_dir}" merge-bin \
         -o "${validation_build_dir}/FoloToy-AI-Passport-full.bin"
     python3 tools/verify_firmware.py "${validation_build_dir}"
     mkdir -p "${repo_root}/build"
     install -m 0644 \
         "${validation_build_dir}/FoloToy-AI-Passport-full.bin" \
-        "${repo_root}/build/FoloToy-AI-Passport-full.bin"
+        "${repo_root}/build/${artifact}"
     echo "Firmware build: PASS"
 )
 
@@ -113,6 +126,10 @@ case "${mode}" in
     --all)
         run_static_checks
         run_firmware_checks
+        ;;
+    --battery-diagnostics)
+        run_static_checks
+        run_firmware_checks battery-diagnostics
         ;;
     --static)
         run_static_checks

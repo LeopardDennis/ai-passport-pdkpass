@@ -122,8 +122,8 @@ static void fill_known_first_name(pdkpass_driver_t *driver)
     if (!driver) return;
     // Retain the roster's familiar display name (for example KIMI) when the
     // API supplies a longer legal given name. Unknown drivers keep API data.
-    for (size_t i = 0; i < pdkpass_driver_count; i++) {
-        const pdkpass_driver_t *known = &pdkpass_drivers[i];
+    for (size_t i = 0; i < pdkpass_legacy_driver_count; i++) {
+        const pdkpass_driver_t *known = &pdkpass_legacy_drivers[i];
         if (strncmp(driver->code, known->code, sizeof(driver->code)) == 0 &&
             strncmp(driver->name, known->name, sizeof(driver->name)) == 0) {
             copy_text(driver->first_name, sizeof(driver->first_name),
@@ -220,6 +220,29 @@ static bool restore_legacy_cache(const legacy_season_cache_t *stored)
     return snapshot_valid(&s_season);
 }
 
+// Older calendar-only syncs could persist the bundled points as if downloaded.
+// Match the entire known snapshot, not just a date or one driver's score, so
+// other previously synchronized standings remain available offline.
+static void discard_bundled_standings(void)
+{
+    if (s_season.year != 2026U ||
+        s_season.driver_count != pdkpass_legacy_driver_count ||
+        strncmp(s_season.standings_as_of, "31 AUG", sizeof(s_season.standings_as_of)) != 0)
+        return;
+    for (size_t i = 0; i < pdkpass_legacy_driver_count; i++) {
+        const pdkpass_driver_t *cached = &s_season.drivers[i];
+        const pdkpass_driver_t *legacy = &pdkpass_legacy_drivers[i];
+        if (cached->position != legacy->position ||
+            cached->driver_number != legacy->driver_number ||
+            cached->points_tenths != legacy->points_tenths ||
+            memcmp(cached->code, legacy->code, sizeof(cached->code)) != 0)
+            return;
+    }
+    s_season.driver_count = 0;
+    memset(s_season.drivers, 0, sizeof(s_season.drivers));
+    copy_text(s_season.standings_as_of, sizeof(s_season.standings_as_of), "PENDING");
+}
+
 static void load_cache(void)
 {
     initialize_fallback();
@@ -249,6 +272,7 @@ static void load_cache(void)
         }
     }
     if (loaded) {
+        discard_bundled_standings();
         s_has_cached_data = true;
         s_season.race_count = (uint8_t)pdkpass_restore_legacy_calendar(
             s_season.year, s_season.races, s_season.race_count,

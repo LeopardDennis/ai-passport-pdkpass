@@ -227,6 +227,8 @@ CW2017 在共享 I2C 地址 0x63。初始化读取 VERSION 和 CONFIG。休眠/�
 - 读取 SOC 不再打印原始采样日志，也不附带读取电压。PDKPASS 仅亮屏及唤醒时采样，
   需要电压时显式调用电压接口。
 - 电压：读 0x02–0x03 的 14 bit 值，换算为 `raw × 312.5 µV`，API 返回 mV。
+- `bsp_battery_read_diagnostics()` 只读 SOC、VCELL、CONFIG、VERSION，不写参数。
+  失败项为 -1，其余成功项保留；显式诊断构建每 60 秒调用一次，熄屏也继续。
 - 事务超时当前为 100 ms，设备时钟为 100 kHz。
 - 芯片不应答时初始化返回 `ESP_ERR_NOT_FOUND`，菜单标记失败，但整机继续运行。
 

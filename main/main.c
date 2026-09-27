@@ -1,5 +1,6 @@
 // PDKPASS application entry point for FoloToy AI Passport.
 #include "bsp_battery.h"
+#include "pdkpass_battery_diagnostics.h"
 #include "bsp_button.h"
 #include "bsp_display.h"
 #include "bsp_pins.h"
@@ -98,6 +99,7 @@ static void ui_worker(void *arg)
     bool alert_pending = false;
     pdkpass_reminder_entry_t alert;
     for (;;) {
+        pdkpass_battery_diagnostics_poll();
         if (!monotonic_ready && bsp_lvgl_lock(500)) {
             monotonic_ready = bsp_lvgl_use_monotonic_clock() == ESP_OK;
             bsp_lvgl_unlock();
@@ -129,6 +131,9 @@ static void ui_worker(void *arg)
         now = xTaskGetTickCount();
         TickType_t wait = battery_paused_for_dark ? portMAX_DELAY :
             ((int32_t)(next_battery - now) > 0 ? next_battery - now : 1);
+        uint32_t diagnostic_ms = pdkpass_battery_diagnostics_wait_ms();
+        if (diagnostic_ms != UINT32_MAX && pdMS_TO_TICKS(diagnostic_ms) < wait)
+            wait = pdMS_TO_TICKS(diagnostic_ms);
         uint32_t reminder_ms = pdkpass_reminder_wait_ms((int64_t)time(NULL));
         if (reminder_ms != UINT32_MAX && pdMS_TO_TICKS(reminder_ms) < wait)
             wait = pdMS_TO_TICKS(reminder_ms);

@@ -839,7 +839,9 @@ static void render_standings(void)
 
     if (s_season.driver_count == 0U) {
         make_zoom_label(s_content, "POINTS", 0, 34, INNER_W, UI_YELLOW);
-        make_center_label(s_content, "AFTER THE FIRST RACE", 0, 91,
+        make_center_label(s_content, "CONNECT TO UPDATE", 0, 91,
+                          INNER_W, &lv_font_unscii_8, UI_PAPER);
+        make_center_label(s_content, "DRIVER DATA PENDING", 0, 115,
                           INNER_W, &lv_font_unscii_8, UI_PAPER);
         set_hint("HOLD OK HOME");
         return;

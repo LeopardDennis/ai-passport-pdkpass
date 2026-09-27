@@ -9,7 +9,9 @@ state machine, circuit outlines, themes, calendar, standings, and result layout.
 It scales the device's exact 240 × 320 RGB565 framebuffer with nearest-neighbour
 rendering instead of recreating the interface as a web mockup.
 
-The simulator defaults to the offline 2026 calendar and standings snapshot.
+The simulator defaults to the offline 2026 calendar with pending driver standings.
+Use `--driver-preview` only for the legacy 31 August layout fixture; it does not
+represent live points and is never loaded as device defaults.
 Pass `--year 2027 --race 1` for the 24-round built-in 2027 calendar, with pending
 session times and no assumed standings. Result caches are separated by year.
 This option is for preview/testing; firmware selects by its valid clock.

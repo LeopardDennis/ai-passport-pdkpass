@@ -48,5 +48,6 @@ extern const size_t pdkpass_race_count;
 // Returns the resulting count; other seasons/calendar shapes remain untouched.
 size_t pdkpass_restore_legacy_calendar(unsigned year, pdkpass_race_t *races,
                                        size_t count, size_t capacity);
-extern const pdkpass_driver_t pdkpass_drivers[];
-extern const size_t pdkpass_driver_count;
+// Legacy snapshot identity and name migration only; never seed live standings.
+extern const pdkpass_driver_t pdkpass_legacy_drivers[];
+extern const size_t pdkpass_legacy_driver_count;

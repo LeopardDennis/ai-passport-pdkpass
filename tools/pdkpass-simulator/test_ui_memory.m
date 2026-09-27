@@ -67,6 +67,27 @@ int main(void)
         assert(lv_obj_get_style_transform_scale_x(australia, 0) > 256);
         assert(lv_obj_get_style_transform_scale_x(australia, 0) < 512);
         check_memory(); // Includes the home hint's full text width.
+        // First use shows no seeded points; a later cache update refreshes in place.
+        assert(snapshot.driver_count == 0);
+        simulator_send_button(BSP_BTN_UP, BSP_BTN_LONG);
+        assert(find_label(lv_screen_active(), "STANDINGS 26"));
+        assert(find_label(lv_screen_active(), "DRIVER DATA PENDING"));
+        assert(find_label(lv_screen_active(), "CONNECT TO UPDATE"));
+        assert(!find_label(lv_screen_active(), "ANTONELLI"));
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+        assert(find_label(lv_screen_active(), "DRIVER DATA PENDING"));
+        check_memory();
+        s_driver_preview = true;
+        pdkpass_ui_season_update();
+        assert(find_label(lv_screen_active(), "ANTONELLI"));
+        assert(!find_label(lv_screen_active(), "DRIVER DATA PENDING"));
+        s_preview_year = 2027;
+        pdkpass_ui_season_update();
+        assert(find_label(lv_screen_active(), "DRIVER DATA PENDING"));
+        assert(!find_label(lv_screen_active(), "ANTONELLI"));
+        s_preview_year = 2026;
+        pdkpass_ui_season_update();
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
         simulator_send_button(BSP_BTN_DOWN, BSP_BTN_LONG);
         assert(find_label(lv_screen_active(), "CONNECT TO UPDATE"));
         simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);

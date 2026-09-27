@@ -32,6 +32,7 @@ static size_t s_flush_pixels;
 static unsigned s_flush_calls;
 static size_t s_home_race_index = 12U;
 static unsigned s_preview_year = 2026;
+static bool s_driver_preview;
 static NSLock *s_results_lock;
 static pdkpass_result_snapshot_t
     s_results[PDKPASS_MAX_RACES][PDKPASS_SESSION_COUNT];
@@ -155,6 +156,12 @@ void bsp_lvgl_set_drawing(bool enabled)
 bool pdkpass_season_snapshot(pdkpass_season_snapshot_t *snapshot)
 {
     if (!pdkpass_calendar_load(s_preview_year, snapshot)) return false;
+    if (s_driver_preview && s_preview_year == 2026) {
+        snapshot->driver_count = (uint8_t)pdkpass_legacy_driver_count;
+        memcpy(snapshot->drivers, pdkpass_legacy_drivers,
+               pdkpass_legacy_driver_count * sizeof(snapshot->drivers[0]));
+        snprintf(snapshot->standings_as_of, sizeof(snapshot->standings_as_of), "31 AUG");
+    }
     time_t now = time(NULL);
     for (size_t i = 0; i < snapshot->race_count; i++) {
         snapshot->races[i].switch_at_utc = i < s_home_race_index
@@ -817,7 +824,7 @@ static void simulator_initialize(void)
 
 static void print_usage(const char *program)
 {
-    printf("Usage: %s [--year 2026|2027] [--race 1-24] [--page home|teams|standings|track|results] [--sync-results] [--team-preview] [--network-view menu|retry|setup|confirm] "
+    printf("Usage: %s [--year 2026|2027] [--race 1-24] [--page home|teams|standings|track|results] [--sync-results] [--team-preview] [--driver-preview] [--network-view menu|retry|setup|confirm] "
            "[--battery -1..100] [--screenshot FILE.png]\n", program);
     printf("\nKeyboard: Up/Down browse, hold Up/Down for home driver/team standings,\n");
     printf("          Return/Space select, hold Return or Esc back,\n");
@@ -878,6 +885,7 @@ int main(int argc, const char *argv[])
                 screenshotPath = [NSString stringWithUTF8String:argv[++i]];
                 continue;
             }
+            if (strcmp(argv[i], "--driver-preview") == 0) { s_driver_preview = true; continue; }
             if (strcmp(argv[i], "--team-preview") == 0) { s_team_preview = true; continue; }
             if (strcmp(argv[i], "--sync-results") == 0) {
                 syncResults = YES;

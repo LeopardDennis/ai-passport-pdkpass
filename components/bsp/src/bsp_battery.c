@@ -92,3 +92,27 @@ int bsp_battery_mv(void) {
     uint32_t raw = ((uint32_t)b[0] << 8 | b[1]) & 0x3FFF;   // 14bit
     return (int)((raw * 3125) / 10000);                     // raw * 312.5uV → mV
 }
+
+esp_err_t bsp_battery_read_diagnostics(bsp_battery_diagnostics_t *sample)
+{
+    if (!sample) return ESP_ERR_INVALID_ARG;
+    *sample = (bsp_battery_diagnostics_t){
+        .raw_soc = -1, .raw_vcell = -1, .cell_mv = -1,
+        .config = -1, .version = -1,
+    };
+    if (!s_dev) return ESP_ERR_INVALID_STATE;
+    uint8_t bytes[2];
+    esp_err_t status = ESP_OK;
+    if (cw_read(CW_REG_SOC_H, bytes, 2) == 0)
+        sample->raw_soc = ((unsigned)bytes[0] << 8) | bytes[1];
+    else status = ESP_FAIL;
+    if (cw_read(CW_REG_VCELL_H, bytes, 2) == 0) {
+        sample->raw_vcell = ((unsigned)bytes[0] << 8) | bytes[1];
+        sample->cell_mv = ((sample->raw_vcell & 0x3FFF) * 3125) / 10000;
+    } else status = ESP_FAIL;
+    if (cw_read(CW_REG_CONFIG, bytes, 1) == 0) sample->config = bytes[0];
+    else status = ESP_FAIL;
+    if (cw_read(CW_REG_VERSION, bytes, 1) == 0) sample->version = bytes[0];
+    else status = ESP_FAIL;
+    return status;
+}

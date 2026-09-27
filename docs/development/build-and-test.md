@@ -57,6 +57,17 @@ Hardware-affecting changes must also run the applicable on-device checklist in t
 
 ## macOS device log capture
 
+For read-only charging diagnosis, `./tools/validate.sh --battery-diagnostics`
+runs static and firmware validation with `CONFIG_PDKPASS_BATTERY_DIAGNOSTICS=y`
+in temporary defaults. It verifies that the flag was enabled and writes
+`build/FoloToy-AI-Passport-battery-diagnostics-full.bin`, leaving normal defaults
+and the normal merged image untouched. Samples run every 60 seconds even while
+the display sleeps; this image is unsuitable for baseline standby measurements.
+After flashing, close the flasher and capture at least 180 seconds. The collector
+counts `battery_sample` and `battery_read_issue`; correlate raw sample timestamps
+with manually observed charging-LED changes. These are diagnostics, not proof
+of charger termination or cell calibration.
+
 On the test Mac, check out the same commit as the firmware being flashed. The
 log collector uses only Python 3's standard library; ESP-IDF and extra Python
 packages are not needed for capture. After flashing and Wi-Fi setup, close the

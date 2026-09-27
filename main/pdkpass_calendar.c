@@ -47,15 +47,12 @@ bool pdkpass_calendar_load(unsigned year, pdkpass_season_snapshot_t *out)
     if (!out || !pdkpass_calendar_supported(year)) return false;
     memset(out, 0, sizeof(*out));
     out->year = (uint16_t)year;
+    snprintf(out->standings_as_of, sizeof(out->standings_as_of), "PENDING");
     if (year == 2026) {
         out->race_count = (uint8_t)pdkpass_race_count;
-        out->driver_count = (uint8_t)pdkpass_driver_count;
         memcpy(out->races, pdkpass_races, pdkpass_race_count * sizeof(out->races[0]));
-        memcpy(out->drivers, pdkpass_drivers, pdkpass_driver_count * sizeof(out->drivers[0]));
-        snprintf(out->standings_as_of, sizeof(out->standings_as_of), "31 AUG");
     } else {
         out->race_count = sizeof(s_2027) / sizeof(s_2027[0]);
-        snprintf(out->standings_as_of, sizeof(out->standings_as_of), "PENDING");
         for (size_t i = 0; i < out->race_count; i++) {
             const calendar_entry_t *entry = &s_2027[i];
             const pdkpass_track_info_t *track = pdkpass_track_find(entry->track_id);

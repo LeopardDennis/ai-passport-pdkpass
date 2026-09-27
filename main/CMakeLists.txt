@@ -1,5 +1,6 @@
 idf_component_register(
     SRCS "main.c"
+         "pdkpass_battery_diagnostics.c"
          "ui_pixel.c"
          "ui_pixel_math.c"
          "pdkpass_data.c"

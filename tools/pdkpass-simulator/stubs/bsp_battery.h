@@ -1,4 +1,3 @@
 #pragma once
 
-int bsp_battery_soc(void);
-
+#include "../../../components/bsp/include/bsp_battery.h"

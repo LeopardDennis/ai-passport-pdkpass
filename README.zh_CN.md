@@ -150,10 +150,11 @@ PDKPASS 会先验证连接，成功后才保存凭据。密码错误时配网页
 
 ## 赛季数据与离线行为
 
-首次使用时的内置回退数据，是 2026 年 8 月 31 日获取的离线快照，来源为
-[F1 官方 2026 赛历](https://www.formula1.com/en/racing/2026)与
-[F1 官方车手积分榜](https://www.formula1.com/en/results/2026/drivers)。页面中的比赛
-时间已转换为中国标准时间（UTC+8）。
+首次使用的内置赛历，是 2026 年 8 月 31 日获取的离线快照，来源为
+[F1 官方 2026 赛历](https://www.formula1.com/en/racing/2026)。页面中的比赛
+时间已转换为中国标准时间（UTC+8）。车手积分不再加载内置默认分数：没有接口缓存时
+显示 `CONNECT TO UPDATE` 和 `DRIVER DATA PENDING`，同步成功后保存供离线查看。
+升级时识别并移除旧缓存中的整份 `31 AUG` 默认积分，保留其中的赛历及其他已下载积分。
 
 第一次成功联网后，PDKPASS 会下载并保存当前北京时间年份的 Grand Prix 赛历，以及
 Jolpica 最新发布的车手积分。本次开机成功校时后，到北京时间新年会选择较新的内置赛季，
@@ -261,6 +262,16 @@ PDKPASS 是独立车迷项目，与 Formula 1、FIA 或 FoloToy 没有隶属或�
 Formula 1 及相关标识归各自权利人所有。
 
 ## 可靠性与调试构建
+
+排查充电时，运行 `./tools/validate.sh --battery-diagnostics` 完成全套验证，并生成独立的
+`build/FoloToy-AI-Passport-battery-diagnostics-full.bin`。仅在隔离构建中开启
+`CONFIG_PDKPASS_BATTERY_DIAGNOSTICS`，普通构建默认关闭。现有 I/O 任务在启动后及
+每隔 60 秒输出一条 `battery_diag`，熄屏也继续，不点亮屏幕。额外采样会影响待机功耗，
+测续航请使用普通固件。`soc_raw` 单位为 1/256%，`soc_x100=9650` 表示 96.50%，
+`cell_mv` 为毫伏；同时记录 CONFIG/工作模式、VERSION 和 `read_error`。
+字段为 -1 表示读取失败；`soc_valid=0` 表示百分比不可读或超范围。这些是依次读取的
+寄存器，不是硬件原子快照。诊断不写电量计或电芯参数，不映射百分比，不推断充满状态。
+采集串口时需手动记录充电灯变化。
 
 正常日志保留启动、赛季与成绩缓存更新、提醒以及错误信息。音频打开、后台同步过程和
 Wi-Fi 省电停驻消息改为 DEBUG 级别。电量轮询不再打印原始 SOC 或额外读取电压，

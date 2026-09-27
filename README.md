@@ -189,10 +189,14 @@ token.
 
 ## Season data and offline behaviour
 
-The first-use fallback is an offline snapshot captured on 31 August 2026 from the
-[official 2026 Formula 1 calendar](https://www.formula1.com/en/racing/2026) and
-[official driver standings](https://www.formula1.com/en/results/2026/drivers).
+The first-use calendar is an offline snapshot captured on 31 August 2026 from the
+[official 2026 Formula 1 calendar](https://www.formula1.com/en/racing/2026).
 Displayed session times are converted to China Standard Time (UTC+8).
+Driver standings have no bundled default points: without a downloaded cache,
+the page shows `CONNECT TO UPDATE` and `DRIVER DATA PENDING`. Successful syncs
+are saved for offline use. Upgrades discard the recognizable old `31 AUG`
+default standings from legacy caches while preserving their calendar and other
+downloaded standings.
 
 After the first successful connection, PDKPASS downloads and stores the Grand
 Prix calendar for the current Beijing-time year and the latest published
@@ -319,6 +323,19 @@ Formula 1, the FIA, or FoloToy. Formula 1 and related marks belong to their
 respective owners.
 
 ## Reliability and debug builds
+
+For charging diagnosis, `./tools/validate.sh --battery-diagnostics` runs the full
+validation gate and builds a separate `build/FoloToy-AI-Passport-battery-diagnostics-full.bin`.
+It enables `CONFIG_PDKPASS_BATTERY_DIAGNOSTICS` only in isolated build defaults;
+normal builds keep it off. The existing I/O worker logs a `battery_diag` sample
+at startup and every 60 seconds, even with the display asleep. Extra sampling
+changes idle power, so use normal firmware for battery-life measurements.
+`soc_raw` is in 1/256 percent, `soc_x100=9650` means 96.50%, `cell_mv` is millivolts,
+and CONFIG/mode, VERSION and `read_error` expose gauge state and read failures.
+A missing field is -1; `soc_valid=0` rejects unreadable/out-of-range SOC. These
+are separate register reads, not an atomic hardware snapshot. No gauge/profile
+writes, percentage remapping or charging/full-status inference is performed.
+Record the charging LED transition manually while capturing serial logs.
 
 Normal logs retain startup, accepted season/result caches, reminders and errors.
 Codec-open, background progress and Wi-Fi parking messages use DEBUG level.
