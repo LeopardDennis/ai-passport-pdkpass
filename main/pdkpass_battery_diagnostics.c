@@ -9,6 +9,7 @@
 
 #define DIAGNOSTIC_INTERVAL_US 60000000LL
 static int64_t s_next_sample_us;
+static int s_previous_cell_mv = -1;
 
 void pdkpass_battery_diagnostics_poll(void)
 {
@@ -20,6 +21,12 @@ void pdkpass_battery_diagnostics_poll(void)
     s_next_sample_us = esp_timer_get_time() + DIAGNOSTIC_INTERVAL_US;
     int soc_x100 = sample.raw_soc < 0 ? -1 : sample.raw_soc * 100 / 256;
     bool soc_valid = sample.raw_soc >= 0 && (sample.raw_soc >> 8) <= 100;
+    int display_soc = soc_valid ? sample.raw_soc >> 8 : -1;
+    int soc_fraction_256 = soc_valid ? sample.raw_soc & 0xFF : -1;
+    int cell_delta_mv = sample.cell_mv >= 0 && s_previous_cell_mv >= 0
+        ? sample.cell_mv - s_previous_cell_mv : 0;
+    bool cell_delta_valid = sample.cell_mv >= 0 && s_previous_cell_mv >= 0;
+    s_previous_cell_mv = sample.cell_mv;
     const char *mode = "UNKNOWN";
     if (sample.config >= 0) {
         switch (sample.config & 0xF0) {
@@ -31,9 +38,12 @@ void pdkpass_battery_diagnostics_poll(void)
     }
     ESP_LOGI("battery_diag",
              "sample uptime_ms=%lld soc_raw=%d soc_x100=%d soc_valid=%d "
-             "cell_raw=%d cell_mv=%d config=%d mode=%s version=%d read_error=%d",
+             "display_soc=%d soc_fraction_256=%d cell_raw=%d cell_mv=%d "
+             "cell_delta_mv=%d cell_delta_valid=%d config=%d mode=%s "
+             "version=%d read_error=%d",
              (long long)(now / 1000), sample.raw_soc, soc_x100, soc_valid,
-             sample.raw_vcell, sample.cell_mv, sample.config, mode, sample.version,
+             display_soc, soc_fraction_256, sample.raw_vcell, sample.cell_mv,
+             cell_delta_mv, cell_delta_valid, sample.config, mode, sample.version,
              (int)err);
 }
 

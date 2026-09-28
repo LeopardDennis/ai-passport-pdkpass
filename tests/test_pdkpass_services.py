@@ -1345,12 +1345,13 @@ int main(void) {
 static int64_t now;
 static unsigned reads, logs;
 static int fail;
+static int raw_soc=24704, cell_mv=3700;
 static char last_log[512];
 static int64_t esp_timer_get_time(void) { return now; }
 esp_err_t bsp_battery_read_diagnostics(bsp_battery_diagnostics_t *out) {
  reads++;now+=2000;
- *out=(bsp_battery_diagnostics_t){.raw_soc=24704,.raw_vcell=11840,
-  .cell_mv=3700,.config=0,.version=160};
+ *out=(bsp_battery_diagnostics_t){.raw_soc=raw_soc,.raw_vcell=11840,
+  .cell_mv=cell_mv,.config=0,.version=160};
  if(fail) {out->raw_soc=-1;out->cell_mv=-1;out->config=-1;return -1;}
  return 0;
 }
@@ -1366,7 +1367,10 @@ int main(void) {
  pdkpass_battery_diagnostics_poll();
  assert(reads==1&&logs==1);
  assert(strstr(last_log,"soc_x100=9650 soc_valid=1"));
- assert(strstr(last_log,"cell_mv=3700 config=0 mode=ACTIVE version=160 read_error=0"));
+ assert(strstr(last_log,"display_soc=96 soc_fraction_256=128"));
+ assert(strstr(last_log,"cell_delta_mv=0 cell_delta_valid=0"));
+ assert(strstr(last_log,"cell_mv=3700"));
+ assert(strstr(last_log,"config=0 mode=ACTIVE version=160 read_error=0"));
  assert(pdkpass_battery_diagnostics_wait_ms()==60000);
  // Repeated key/reminder wakeups do not cause extra reads or output.
  for(unsigned i=0;i<100;i++)pdkpass_battery_diagnostics_poll();
@@ -1374,13 +1378,21 @@ int main(void) {
  now+=59999999;
  assert(pdkpass_battery_diagnostics_wait_ms()==1);
  pdkpass_battery_diagnostics_poll();assert(reads==1);
- now++;
+ now++;raw_soc=99*256+255;cell_mv=4180;
  pdkpass_battery_diagnostics_poll();assert(reads==2&&logs==2);
+ assert(strstr(last_log,"display_soc=99 soc_fraction_256=255"));
+ assert(strstr(last_log,"cell_delta_mv=480 cell_delta_valid=1"));
  fail=1;now+=60000000;
  pdkpass_battery_diagnostics_poll();assert(reads==3&&logs==3);
  assert(strstr(last_log,"soc_raw=-1 soc_x100=-1 soc_valid=0"));
+ assert(strstr(last_log,"display_soc=-1 soc_fraction_256=-1"));
+ assert(strstr(last_log,"cell_delta_valid=0"));
  assert(strstr(last_log,"mode=UNKNOWN")&&strstr(last_log,"read_error=-1"));
  assert(pdkpass_battery_diagnostics_wait_ms()==60000);
+ fail=0;raw_soc=100*256;cell_mv=4200;now+=60000000;
+ pdkpass_battery_diagnostics_poll();assert(reads==4&&logs==4);
+ assert(strstr(last_log,"display_soc=100 soc_fraction_256=0"));
+ assert(strstr(last_log,"cell_delta_valid=0"));
 #else
  for(unsigned i=0;i<100;i++) {
   now+=60000000;pdkpass_battery_diagnostics_poll();

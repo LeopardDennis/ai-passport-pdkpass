@@ -61,6 +61,10 @@ cc -std=c11 -Wall -Wextra -Werror -Imain \
 刷入后关闭刷机工具，至少采集 180 秒。采集脚本统计 `battery_sample` 和
 `battery_read_issue`，将原始日志时间与手动观察的充电灯变化对应；这些数据不等于
 已证明充电终止或电芯校准正确。
+每条 `battery_diag` 日志中的 `display_soc` 是界面使用的整数电量，
+`soc_fraction_256` 是小数部分；`cell_delta_mv` 是相邻有效采样的电压变化，
+`cell_delta_valid=0` 表示没有可比样本。接上 USB 后在电量看似停滞时连续采集几次，
+再拔掉 USB 对比读数。
 
 测试用 Mac 应检出与烧录固件相同的提交。采集工具只依赖 Python 3 标准库，采集时
 不需要 ESP-IDF 或额外 Python 包。刷机并完成 Wi-Fi 配置后，关闭刷机页面和其他

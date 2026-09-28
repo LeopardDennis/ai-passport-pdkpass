@@ -7,9 +7,10 @@
 ## Unreleased
 
 - Add an opt-in battery diagnostic image with read-only CW2017 samples every
-  60 seconds, including while dark. Report raw SOC, voltage, mode and per-field
-  failures without remapping percentages or changing charge settings. Normal
-  builds keep diagnostics off; charger termination remains unverified.
+  60 seconds, including while dark. Report raw SOC, the percentage shown on
+  screen, the fractional SOC byte, voltage and its change since the previous
+  valid sample, mode, and read failures without changing charge settings.
+  Normal builds keep diagnostics off; charger termination remains unverified.
 
 - Remove default driver points from all bundled calendars. Show pending data
   until a downloaded cache is available; retain successful offline caches and

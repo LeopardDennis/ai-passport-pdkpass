@@ -67,6 +67,11 @@ After flashing, close the flasher and capture at least 180 seconds. The collecto
 counts `battery_sample` and `battery_read_issue`; correlate raw sample timestamps
 with manually observed charging-LED changes. These are diagnostics, not proof
 of charger termination or cell calibration.
+In each `battery_diag` line, `display_soc` is the integer percentage the UI
+would show, `soc_fraction_256` is the fractional part, and `cell_delta_mv` is
+the voltage change since the preceding valid sample (`cell_delta_valid=0`
+means no comparable sample). Keep the board powered by USB for several samples
+near the apparent plateau, then compare with the same readings after unplugging.
 
 On the test Mac, check out the same commit as the firmware being flashed. The
 log collector uses only Python 3's standard library; ESP-IDF and extra Python
