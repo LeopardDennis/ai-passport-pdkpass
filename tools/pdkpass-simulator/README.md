@@ -81,8 +81,10 @@ Pillow) to check pixel centering, battery states and invalid preview arguments.
 
 For a headless render suitable for a smoke test:
 
-Use `--page home|teams|standings|track|results` with `--screenshot` to render
+Use `--page home|teams|standings|track|results|reminder` with `--screenshot` to render
 a specific production page. Network views and result syncing take precedence.
+The reminder preview uses the selected round's circuit colors, a race session,
+and a simulated start ten minutes ahead.
 
 Add `--network-view menu|retry|setup|confirm` to capture the production network
 screens. Radio operations are simulated; validate real scan/timeout behavior on

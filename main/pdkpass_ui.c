@@ -46,6 +46,7 @@
 #define BEIJING_OFFSET_SECONDS 28800LL
 
 static lv_obj_t *s_screen;
+static lv_obj_t *s_reminder_layer;
 static lv_obj_t *s_status;
 static lv_obj_t *s_content;
 static lv_obj_t *s_hint_box;
@@ -226,6 +227,87 @@ static uint32_t contrast_color(uint32_t color)
     unsigned g = (color >> 8) & 0xff;
     unsigned b = color & 0xff;
     return r * 299 + g * 587 + b * 114 > 150000 ? UI_INK : 0xFFFFFF;
+}
+
+// sRGB channel luminance scaled to 0..65535. Several bright circuit accents
+// need dark lettering, despite their average RGB value looking mid-range.
+static const uint16_t s_srgb_linear[256] = {
+        0,    20,    40,    60,    80,    99,   119,   139,   159,   179,   199,   219,   241,   264,   288,   313,
+      340,   367,   396,   427,   458,   491,   526,   562,   599,   637,   677,   718,   761,   805,   851,   898,
+      947,   997,  1048,  1101,  1156,  1212,  1270,  1330,  1391,  1453,  1517,  1583,  1651,  1720,  1790,  1863,
+     1937,  2013,  2090,  2170,  2250,  2333,  2418,  2504,  2592,  2681,  2773,  2866,  2961,  3058,  3157,  3258,
+     3360,  3464,  3570,  3678,  3788,  3900,  4014,  4129,  4247,  4366,  4488,  4611,  4736,  4864,  4993,  5124,
+     5257,  5392,  5530,  5669,  5810,  5953,  6099,  6246,  6395,  6547,  6700,  6856,  7014,  7174,  7335,  7500,
+     7666,  7834,  8004,  8177,  8352,  8528,  8708,  8889,  9072,  9258,  9445,  9635,  9828, 10022, 10219, 10417,
+    10619, 10822, 11028, 11235, 11446, 11658, 11873, 12090, 12309, 12530, 12754, 12980, 13209, 13440, 13673, 13909,
+    14146, 14387, 14629, 14874, 15122, 15371, 15623, 15878, 16135, 16394, 16656, 16920, 17187, 17456, 17727, 18001,
+    18277, 18556, 18837, 19121, 19407, 19696, 19987, 20281, 20577, 20876, 21177, 21481, 21787, 22096, 22407, 22721,
+    23038, 23357, 23678, 24002, 24329, 24658, 24990, 25325, 25662, 26001, 26344, 26688, 27036, 27386, 27739, 28094,
+    28452, 28813, 29176, 29542, 29911, 30282, 30656, 31033, 31412, 31794, 32179, 32567, 32957, 33350, 33745, 34143,
+    34544, 34948, 35355, 35764, 36176, 36591, 37008, 37429, 37852, 38278, 38706, 39138, 39572, 40009, 40449, 40891,
+    41337, 41785, 42236, 42690, 43147, 43606, 44069, 44534, 45002, 45473, 45947, 46423, 46903, 47385, 47871, 48359,
+    48850, 49344, 49841, 50341, 50844, 51349, 51858, 52369, 52884, 53401, 53921, 54445, 54971, 55500, 56032, 56567,
+    57105, 57646, 58190, 58737, 59287, 59840, 60396, 60955, 61517, 62082, 62650, 63221, 63795, 64372, 64952, 65535,
+};
+
+static uint32_t reminder_luminance(uint32_t color)
+{
+    uint32_t r = s_srgb_linear[(color >> 16) & 0xffU];
+    uint32_t g = s_srgb_linear[(color >> 8) & 0xffU];
+    uint32_t b = s_srgb_linear[color & 0xffU];
+    return (r * 2126U + g * 7152U + b * 722U + 5000U) / 10000U;
+}
+
+static bool reminder_has_contrast(uint32_t background, uint32_t foreground)
+{
+    uint32_t a = reminder_luminance(background);
+    uint32_t b = reminder_luminance(foreground);
+    uint32_t lighter = a > b ? a : b;
+    uint32_t darker = a > b ? b : a;
+    // (lighter + 0.05) / (darker + 0.05) >= 4.5
+    return 2U * (lighter + 3277U) >= 9U * (darker + 3277U);
+}
+
+static uint32_t reminder_text_color(uint32_t background)
+{
+    if (reminder_has_contrast(background, UI_PAPER)) return UI_PAPER;
+    if (reminder_has_contrast(background, UI_INK)) return UI_INK;
+    return reminder_luminance(background) < 11750U ? 0xFFFFFF : 0x000000;
+}
+
+static uint32_t color_mix(uint32_t color, uint32_t other, unsigned other_weight)
+{
+    unsigned keep = 100U - other_weight;
+    unsigned r = (((color >> 16) & 0xffU) * keep +
+                  ((other >> 16) & 0xffU) * other_weight + 50U) / 100U;
+    unsigned g = (((color >> 8) & 0xffU) * keep +
+                  ((other >> 8) & 0xffU) * other_weight + 50U) / 100U;
+    unsigned b = ((color & 0xffU) * keep +
+                  (other & 0xffU) * other_weight + 50U) / 100U;
+    return (r << 16) | (g << 8) | b;
+}
+
+// Scale from the glyph center so all reminder text stays aligned on the
+// 240-pixel display. Long circuit and session names fit without clipping.
+static lv_obj_t *reminder_label(lv_obj_t *parent, const char *text,
+                                 int center_y, int max_width,
+                                 const lv_font_t *font, int scale,
+                                 uint32_t color)
+{
+    lv_point_t size;
+    lv_text_get_size(&size, text, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    int width = size.x > 0 ? size.x + 2 : 2;
+    int height = size.y > 0 ? size.y : 16;
+    int scale_x = width * scale > max_width * 256 ?
+                  max_width * 256 / width : scale;
+    lv_obj_t *label = make_label(parent, text, (240 - width) / 2,
+                                  center_y - height / 2, width, font, color);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_transform_pivot_x(label, width / 2, 0);
+    lv_obj_set_style_transform_pivot_y(label, height / 2, 0);
+    lv_obj_set_style_transform_scale_x(label, scale_x, 0);
+    lv_obj_set_style_transform_scale_y(label, scale, 0);
+    return label;
 }
 
 static uint32_t result_driver_accent(const pdkpass_podium_driver_t *result,
@@ -1131,25 +1213,68 @@ static void render_reminder(void)
         }
     }
     pdkpass_theme_t theme = theme_for_race(race);
-    ui_pixel_screen_set_theme(s_screen, theme.top, theme.bottom);
-    set_title("SESSION SOON");
+    const pdkpass_track_info_t *track = race ? pdkpass_track_find(race->circuit) : NULL;
+    uint32_t background = track ? track->background : theme.top;
+    uint32_t accent = track ? track->accent :
+                      (race ? race->accent : UI_YELLOW);
+    bool same_color = accent == background;
+    uint32_t card_color = same_color ? color_mix(accent, UI_PAPER, 55) : accent;
+    uint32_t panel_color = same_color ? color_mix(background, UI_INK, 38) :
+                           theme.bottom;
+
+    // The normal page is rebuilt when the alert closes. Free its content
+    // before creating the full-screen reminder so the LVGL pool stays small.
+    content_reset(theme.top, theme.bottom);
+    if (s_reminder_layer) lv_obj_delete(s_reminder_layer);
+    s_reminder_layer = make_block(s_screen, 0, 0, 240, 320, background);
+    set_gradient(s_reminder_layer, background, theme.bottom);
+
+    make_block(s_reminder_layer, 4, 4, 232, 48, UI_INK);
+    make_block(s_reminder_layer, 6, 7, 228, 44, background);
+    make_block(s_reminder_layer, 10, 11, 220, 36, UI_RED);
+    reminder_label(s_reminder_layer, "RACE ALERT", 29, 204,
+                   &lv_font_unscii_16, 384, UI_PAPER);
+
+    const char *circuit = race ? circuit_display_name(race->circuit) : "GRAND PRIX";
+    reminder_label(s_reminder_layer, circuit, 75, 206,
+                   &lv_font_unscii_16, 448, reminder_text_color(background));
+    char line[40];
+    snprintf(line, sizeof(line), "ROUND %u", s_reminder_alert.round);
+    reminder_label(s_reminder_layer, line, 101, 204,
+                   &pdkpass_body_font, 256, reminder_text_color(background));
+
+    make_block(s_reminder_layer, 6, 115, 228, 114, UI_INK);
+    make_block(s_reminder_layer, 10, 119, 216, 106, card_color);
+    uint32_t card_ink = reminder_text_color(card_color);
+    reminder_label(s_reminder_layer, "STARTS IN", 134, 188,
+                   &lv_font_unscii_16, 256, card_ink);
+    make_block(s_reminder_layer, 31, 145, 174, 2, card_ink);
     int64_t remaining = s_reminder_alert.start_utc - (int64_t)time(NULL);
     if (remaining < 0) remaining = 0;
-    char line[32];
-    snprintf(line, sizeof(line), "STARTS IN %ld MIN", (long)((remaining + 59) / 60));
-    set_status(line, UI_YELLOW);
-    content_reset(theme.top, theme.bottom);
-    snprintf(line, sizeof(line), "ROUND %u", s_reminder_alert.round);
-    make_center_label(s_content, line, 0, 12, INNER_W, &lv_font_unscii_16, UI_PAPER);
+    snprintf(line, sizeof(line), "%ld", (long)((remaining + 59) / 60));
+    reminder_label(s_reminder_layer, line, 177, 190,
+                   &lv_font_unscii_16, 896, card_ink);
+    reminder_label(s_reminder_layer, "MINUTES", 211, 188,
+                   &lv_font_unscii_16, 256, card_ink);
+
+    make_block(s_reminder_layer, 6, 232, 228, 52, UI_INK);
+    make_block(s_reminder_layer, 10, 236, 220, 44, panel_color);
+    uint32_t panel_ink = reminder_text_color(panel_color);
     const char *names[] = {"PRACTICE 1", "PRACTICE 2", "PRACTICE 3",
         "SPRINT QUALIFYING", "SPRINT", "QUALIFYING", "RACE"};
     if (s_reminder_alert.kind < PDKPASS_SESSION_COUNT)
-        make_fit_body_label(s_content, names[s_reminder_alert.kind], 0, 54, INNER_W, UI_YELLOW);
-    if (race)
-        make_fit_body_label(s_content, race->circuit, 0, 84, INNER_W, UI_PAPER);
+        reminder_label(s_reminder_layer, names[s_reminder_alert.kind], 250, 204,
+                       &lv_font_unscii_16, 352, panel_ink);
     pdkpass_format_beijing_session("START", s_reminder_alert.start_utc, line, sizeof(line));
-    make_center_label(s_content, line, 0, 126, INNER_W, &lv_font_unscii_8, UI_PAPER);
-    set_hint("ANY KEY:DISMISS");
+    char date_line[40];
+    snprintf(date_line, sizeof(date_line), "%s CST", line + 6);
+    reminder_label(s_reminder_layer, date_line, 270, 204,
+                   &pdkpass_body_font, 256, panel_ink);
+
+    make_block(s_reminder_layer, 4, 287, 232, 28, UI_INK);
+    make_block(s_reminder_layer, 10, 291, 220, 20, UI_PAPER);
+    reminder_label(s_reminder_layer, "ANY KEY TO DISMISS", 301, 206,
+                   &pdkpass_body_font, 256, UI_INK);
 }
 
 static void render(void)
@@ -1157,6 +1282,10 @@ static void render(void)
     if (s_idle_stage == 2) { s_needs_render = true; return; }
     s_needs_render = false;
     if (s_reminder_visible) { render_reminder(); return; }
+    if (s_reminder_layer) {
+        lv_obj_delete(s_reminder_layer);
+        s_reminder_layer = NULL;
+    }
     // The home, calendar and detail pages choose their own circuit theme.
     // Resetting them to sky first invalidates the whole screen twice.
     bool circuit_theme = s_state.page == PDKPASS_PAGE_CALENDAR ||
@@ -1328,6 +1457,10 @@ void pdkpass_ui_reminder_dismiss(void)
 {
     if (!s_reminder_visible) return;
     s_reminder_visible = false;
+    if (s_reminder_layer) {
+        lv_obj_delete(s_reminder_layer);
+        s_reminder_layer = NULL;
+    }
     pdkpass_sound_reminder_stop();
     lv_timer_pause(s_reminder_timer);
     s_last_activity = s_reminder_previous_activity;

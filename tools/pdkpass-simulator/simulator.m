@@ -824,7 +824,7 @@ static void simulator_initialize(void)
 
 static void print_usage(const char *program)
 {
-    printf("Usage: %s [--year 2026|2027] [--race 1-24] [--page home|teams|standings|track|results] [--sync-results] [--team-preview] [--driver-preview] [--network-view menu|retry|setup|confirm] "
+    printf("Usage: %s [--year 2026|2027] [--race 1-24] [--page home|teams|standings|track|results|reminder] [--sync-results] [--team-preview] [--driver-preview] [--network-view menu|retry|setup|confirm] "
            "[--battery -1..100] [--screenshot FILE.png]\n", program);
     printf("\nKeyboard: Up/Down browse, hold Up/Down for home driver/team standings,\n");
     printf("          Return/Space select, hold Return or Esc back,\n");
@@ -849,7 +849,8 @@ int main(int argc, const char *argv[])
                 pageView = argv[++i];
                 if (strcmp(pageView, "home") && strcmp(pageView, "teams") &&
                     strcmp(pageView, "standings") && strcmp(pageView, "track") &&
-                    strcmp(pageView, "results")) return 2;
+                    strcmp(pageView, "results") &&
+                    strcmp(pageView, "reminder")) return 2;
                 continue;
             }
             if (strcmp(argv[i], "--network-view") == 0 && i + 1 < argc) {
@@ -908,6 +909,16 @@ int main(int argc, const char *argv[])
                     simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
                     if (strcmp(pageView, "results") == 0)
                         simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+                } else if (strcmp(pageView, "reminder") == 0) {
+                    pdkpass_season_snapshot_t season;
+                    if (!pdkpass_season_snapshot(&season) ||
+                        s_home_race_index >= season.race_count) return 2;
+                    pdkpass_reminder_entry_t alert = {
+                        .round = season.races[s_home_race_index].round,
+                        .kind = PDKPASS_SESSION_RACE,
+                        .start_utc = (int64_t)time(NULL) + 600,
+                    };
+                    pdkpass_ui_reminder_show(&alert);
                 }
             }
             if (networkView) {

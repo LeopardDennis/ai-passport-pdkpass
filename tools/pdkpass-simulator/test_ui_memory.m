@@ -356,7 +356,7 @@ int main(void)
         pdkpass_ui_reminder_show(&alert);
         assert(!pdkpass_ui_display_dark()&&!s_panel_sleeping&&s_reminder_sound_playing);
         assert(find_label(lv_screen_active(),"SPRINT QUALIFYING"));
-        assert(find_label(lv_screen_active(),"ANY KEY:DISMISS"));
+        assert(find_label(lv_screen_active(),"ANY KEY TO DISMISS"));
         check_memory();
         pdkpass_ui_reminder_dismiss();
         assert(pdkpass_ui_display_dark()&&s_panel_sleeping&&!s_reminder_sound_playing);
@@ -372,7 +372,7 @@ int main(void)
         assert(!pdkpass_ui_display_dark());
         pdkpass_ui_reminder_show(&alert);
         simulator_send_button(BSP_BTN_OK,BSP_BTN_LONG);
-        assert(!s_reminder_sound_playing&&!find_label(lv_screen_active(),"ANY KEY:DISMISS"));
+        assert(!s_reminder_sound_playing&&!find_label(lv_screen_active(),"ANY KEY TO DISMISS"));
         check_memory();
         // Persistent toggle in the four-row network menu remains readable.
         simulator_send_button(BSP_BTN_OK,BSP_BTN_LONG);

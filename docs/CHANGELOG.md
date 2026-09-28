@@ -26,9 +26,11 @@
   season-isolated cache. Keep driver standings on long UP and race browsing on
   short UP/DOWN. Add pending-data, pagination and simulator coverage.
 
-- Use the reminded round’s circuit theme for the entire reminder screen,
-  keeping yellow countdown/session highlights and resetting the outer frame
-  independently of the previously displayed page.
+- Redesign the session reminder with a fixed red alert header, a prominent
+  circuit name and countdown, and a session/time panel. Use each circuit's
+  background and accent; lighten the countdown card and darken the session
+  panel when both catalog colors match (Mexico City and Lusail). Keep the
+  15-second notice and any-key dismissal.
 
 - Give the four network/settings actions single-line cards with centered text
   and wider row gaps, removing cramped secondary labels.
