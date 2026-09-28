@@ -6,6 +6,12 @@
 
 ## Unreleased
 
+- Show a QR code for the device's current WPA2 setup hotspot as the first Wi-Fi
+  setup screen. Short OK switches between scanning and the existing manual
+  SSID/password/browser instructions; long OK returns to NETWORK. Keep the
+  countdown and existing pixel typography on both screens, and fall back to
+  manual instructions if QR generation fails.
+
 - Add an opt-in battery diagnostic image with read-only CW2017 samples every
   60 seconds, including while dark. Report raw SOC, the percentage shown on
   screen, the fractional SOC byte, voltage and its change since the previous

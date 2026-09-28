@@ -273,8 +273,20 @@ int main(void)
         check_memory();
         simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
         simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // manual setup
+        assert(find_label(lv_screen_active(), "SCAN TO CONNECT"));
+        assert(find_label(lv_screen_active(), "OK:INFO  HOLD:BACK"));
+        assert(!find_label(lv_screen_active(), "CONNECT PHONE TO"));
+        check_memory();
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // QR -> manual info
+        assert(find_label(lv_screen_active(), "CONNECT PHONE TO"));
+        assert(find_label(lv_screen_active(), "OK:SCAN  HOLD:BACK"));
+        check_memory();
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // manual info -> QR
+        assert(find_label(lv_screen_active(), "SCAN TO CONNECT"));
         check_memory();
         simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // stop hotspot
+        assert(!find_label(lv_screen_active(), "SCAN TO CONNECT"));
+        assert(find_label(lv_screen_active(), "WI-FI SETUP"));
         check_memory();
         simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK);
         simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // retry saved only

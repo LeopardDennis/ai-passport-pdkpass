@@ -32,6 +32,7 @@ set(PDKPASS_UI_SOURCES
     "${PDKPASS_REPO}/main/ui_pixel.c"
     "${PDKPASS_REPO}/main/ui_pixel_math.c"
     "${PDKPASS_REPO}/main/pdkpass_ui.c"
+    "${PDKPASS_REPO}/main/pdkpass_wifi_qr.c"
     "${PDKPASS_REPO}/main/pdkpass_model.c"
     "${PDKPASS_REPO}/main/pdkpass_results_core.c"
     "${PDKPASS_REPO}/main/pdkpass_schedule.c"
@@ -47,6 +48,8 @@ find_library(UTTYPE_FRAMEWORK UniformTypeIdentifiers REQUIRED)
 
 add_executable(pdkpass-simulator simulator.m ${PDKPASS_UI_SOURCES})
 add_executable(pdkpass-ui-memory-test test_ui_memory.m ${PDKPASS_UI_SOURCES})
+# The memory/navigation test uses assert for executable checks in every build type.
+target_compile_options(pdkpass-ui-memory-test PRIVATE -UNDEBUG)
 foreach(target pdkpass-simulator pdkpass-ui-memory-test)
     target_include_directories(${target} PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/stubs" "${PDKPASS_REPO}/main")

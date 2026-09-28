@@ -86,9 +86,10 @@ a specific production page. Network views and result syncing take precedence.
 The reminder preview uses the selected round's circuit colors, a race session,
 and a simulated start ten minutes ahead.
 
-Add `--network-view menu|retry|setup|confirm` to capture the production network
+Add `--network-view menu|retry|setup|setup-info|confirm` to capture the production network
 screens. Radio operations are simulated; validate real scan/timeout behavior on
-hardware. Setup screenshots use example credentials, not device secrets.
+hardware. `setup` shows the QR screen; `setup-info` shows the manual details
+screen. Setup screenshots use example credentials, not device secrets.
 
 ```bash
 ./build/pdkpass-simulator/pdkpass-simulator \

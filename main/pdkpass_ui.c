@@ -15,6 +15,7 @@
 #include "pdkpass_sync_policy.h"
 #include "pdkpass_theme.h"
 #include "pdkpass_tracks.h"
+#include "pdkpass_wifi_qr.h"
 #include "ui_pixel.h"
 #include "ui_pixel_math.h"
 #include "lvgl.h"
@@ -88,6 +89,8 @@ static char s_setup_password[16];
 static char s_setup_error[32];
 static unsigned s_setup_seconds_left;
 static bool s_hotspot_active;
+static bool s_setup_show_info;
+static bool s_setup_qr_failed;
 static lv_obj_t *s_setup_countdown;
 static lv_point_precise_t s_track_points[49];
 
@@ -521,7 +524,7 @@ static void title_for_season(char *output, size_t capacity,
              (unsigned)(s_season.year % 100U));
 }
 
-static void render_wifi_setup(void)
+static void render_wifi_setup_info(void)
 {
     set_title("PDKPASS WIFI");
     set_status(s_network_state == PDKPASS_NETWORK_CONNECTING ? "CONNECTING" : "SETUP MODE", UI_RED);
@@ -542,9 +545,47 @@ static void render_wifi_setup(void)
     char remaining[28];
     snprintf(remaining, sizeof(remaining), "AUTO OFF %02u:%02u",
              s_setup_seconds_left / 60U, s_setup_seconds_left % 60U);
-    s_setup_countdown = make_center_label(s_content, remaining, 0, 161, INNER_W,
+    s_setup_countdown = make_center_label(s_content, remaining, 0, 164, INNER_W,
                       &lv_font_unscii_8, UI_RED);
-    set_hint("HOLD OK: CLOSE WI-FI");
+    set_hint(s_setup_qr_failed ? "HOLD:BACK" : "OK:SCAN  HOLD:BACK");
+}
+
+static bool render_wifi_setup_scan(void)
+{
+    char payload[128];
+    if (!pdkpass_wifi_qr_payload(payload, sizeof(payload),
+                                  s_setup_ssid, s_setup_password)) return false;
+
+    set_title("PDKPASS WIFI");
+    set_status(s_network_state == PDKPASS_NETWORK_CONNECTING ? "CONNECTING" : "SETUP MODE", UI_RED);
+    content_reset(UI_PAPER, 0xE6E7DA);
+    make_center_label(s_content, "SCAN TO CONNECT", 0, 4, INNER_W,
+                      &lv_font_unscii_8, UI_SKY_DARK);
+
+    lv_obj_t *frame = make_card(s_content, 37, 20, 136, 136, 0xFFFFFF, 2);
+    lv_obj_t *qr = lv_qrcode_create(frame);
+    if (!qr) return false;
+    lv_qrcode_set_size(qr, 132);
+    lv_qrcode_set_dark_color(qr, lv_color_hex(UI_INK));
+    lv_qrcode_set_light_color(qr, lv_color_white());
+    lv_qrcode_set_quiet_zone(qr, true);
+    lv_obj_set_pos(qr, 2, 2);
+    if (lv_qrcode_update(qr, payload, strlen(payload)) != LV_RESULT_OK) return false;
+
+    char remaining[28];
+    snprintf(remaining, sizeof(remaining), "AUTO OFF %02u:%02u",
+             s_setup_seconds_left / 60U, s_setup_seconds_left % 60U);
+    s_setup_countdown = make_center_label(s_content, remaining, 0, 164, INNER_W,
+                      &lv_font_unscii_8, UI_RED);
+    set_hint("OK:INFO  HOLD:BACK");
+    return true;
+}
+
+static void render_wifi_setup(void)
+{
+    if (!s_setup_show_info && !s_setup_qr_failed && render_wifi_setup_scan()) return;
+    s_setup_qr_failed = !s_setup_show_info;
+    render_wifi_setup_info();
 }
 
 static void format_sync_line(pdkpass_sync_service_t service, unsigned season_year,
@@ -1581,12 +1622,22 @@ void pdkpass_ui_network_update(const pdkpass_network_update_t *update)
     s_time_valid = update->time_valid;
     s_time_estimated = update->time_estimated;
     bool error_changed = strcmp(s_setup_error, update->setup_error ? update->setup_error : "") != 0;
+    bool credentials_changed =
+        strcmp(s_setup_ssid, update->setup_ssid ? update->setup_ssid : "") != 0 ||
+        strcmp(s_setup_password, update->setup_password ? update->setup_password : "") != 0;
     snprintf(s_setup_error, sizeof(s_setup_error), "%s",
              update->setup_error ? update->setup_error : "");
     snprintf(s_setup_ssid, sizeof(s_setup_ssid), "%s",
              update->setup_ssid ? update->setup_ssid : "");
     snprintf(s_setup_password, sizeof(s_setup_password), "%s",
              update->setup_password ? update->setup_password : "");
+    if (!s_hotspot_active || (s_hotspot_active && !was_hotspot)) {
+        s_setup_show_info = false;
+        s_setup_qr_failed = false;
+    } else if (credentials_changed) {
+        s_setup_qr_failed = false;
+    }
+    if (s_hotspot_active && s_setup_error[0]) s_setup_show_info = true;
     if (s_state.page == PDKPASS_PAGE_NETWORK_PROGRESS &&
         (update->state == PDKPASS_NETWORK_ONLINE || update->state == PDKPASS_NETWORK_SYNCING ||
          (was_hotspot && !s_hotspot_active))) s_state.page = PDKPASS_PAGE_HOME;
@@ -1595,7 +1646,8 @@ void pdkpass_ui_network_update(const pdkpass_network_update_t *update)
                              s_setup_seconds_left / 60U, s_setup_seconds_left % 60U);
     update_network_label();
     clock_tick(NULL);
-    if (previous_state != s_network_state || error_changed || was_hotspot != s_hotspot_active) render();
+    if (previous_state != s_network_state || error_changed ||
+        was_hotspot != s_hotspot_active || credentials_changed) render();
 }
 
 void pdkpass_ui_results_update(size_t race_index)
@@ -1687,6 +1739,20 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     }
 
     pdkpass_state_t previous = s_state;
+    if (s_hotspot_active &&
+        (s_state.page == PDKPASS_PAGE_HOME ||
+         s_state.page == PDKPASS_PAGE_NETWORK_PROGRESS)) {
+        if (input == PDKPASS_INPUT_OK && !s_setup_qr_failed) {
+            s_setup_show_info = !s_setup_show_info;
+            render();
+        } else if (input == PDKPASS_INPUT_BACK) {
+            pdkpass_network_request(PDKPASS_NETWORK_CANCEL);
+            s_setup_show_info = false;
+            s_state.page = PDKPASS_PAGE_NETWORK;
+            render();
+        }
+        return;
+    }
     if (s_state.page == PDKPASS_PAGE_NETWORK_PROGRESS) {
         if (input == PDKPASS_INPUT_BACK ||
             (input == PDKPASS_INPUT_OK && !s_hotspot_active &&
@@ -1718,6 +1784,8 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         s_state.page = PDKPASS_PAGE_NETWORK_PROGRESS;
         s_network_state = PDKPASS_NETWORK_CONNECTING;
         s_setup_error[0] = '\0';
+        s_setup_show_info = false;
+        s_setup_qr_failed = false;
         render();
         pdkpass_network_request(setup ? PDKPASS_NETWORK_OPEN_SETUP : PDKPASS_NETWORK_RETRY);
         return;

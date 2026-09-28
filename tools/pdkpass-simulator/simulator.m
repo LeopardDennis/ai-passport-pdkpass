@@ -824,7 +824,7 @@ static void simulator_initialize(void)
 
 static void print_usage(const char *program)
 {
-    printf("Usage: %s [--year 2026|2027] [--race 1-24] [--page home|teams|standings|track|results|reminder] [--sync-results] [--team-preview] [--driver-preview] [--network-view menu|retry|setup|confirm] "
+    printf("Usage: %s [--year 2026|2027] [--race 1-24] [--page home|teams|standings|track|results|reminder] [--sync-results] [--team-preview] [--driver-preview] [--network-view menu|retry|setup|setup-info|confirm] "
            "[--battery -1..100] [--screenshot FILE.png]\n", program);
     printf("\nKeyboard: Up/Down browse, hold Up/Down for home driver/team standings,\n");
     printf("          Return/Space select, hold Return or Esc back,\n");
@@ -856,7 +856,8 @@ int main(int argc, const char *argv[])
             if (strcmp(argv[i], "--network-view") == 0 && i + 1 < argc) {
                 networkView = argv[++i];
                 if (strcmp(networkView, "menu") && strcmp(networkView, "retry") &&
-                    strcmp(networkView, "setup") && strcmp(networkView, "confirm")) return 2;
+                    strcmp(networkView, "setup") && strcmp(networkView, "setup-info") &&
+                    strcmp(networkView, "confirm")) return 2;
                 continue;
             }
             if (strcmp(argv[i], "--battery") == 0 && i + 1 < argc) {
@@ -929,6 +930,8 @@ int main(int argc, const char *argv[])
                     if (strcmp(networkView, "retry") != 0)
                         simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
                     simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+                    if (strcmp(networkView, "setup-info") == 0)
+                        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
                 }
             }
             if (syncResults) {

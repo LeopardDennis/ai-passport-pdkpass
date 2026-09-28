@@ -78,8 +78,9 @@ cmake --build build/pdkpass-simulator -j
 实际页面；网络预览和成绩同步参数优先。提醒预览使用选定分站的赛道配色、正赛场次，
 并模拟距离开始还有十分钟。
 
-加入 `--network-view menu|retry|setup|confirm` 可截取实际网络界面。无线操作为
-模拟行为，扫描与超时关闭仍需真机验证；配网截图使用示例凭据，不含设备密码。
+加入 `--network-view menu|retry|setup|setup-info|confirm` 可截取实际网络界面。
+`setup` 为二维码页，`setup-info` 为手动信息页。无线操作为模拟行为，扫码与超时关闭
+仍需真机验证；配网截图使用示例凭据，不含设备密码。
 
 ```bash
 ./build/pdkpass-simulator/pdkpass-simulator \

@@ -26,6 +26,7 @@ idf_component_register(
          "pdkpass_tracks.c"
          "pdkpass_ui.c"
          "pdkpass_wifi_form.c"
+         "pdkpass_wifi_qr.c"
          "pdkpass_wifi_profiles.c"
     INCLUDE_DIRS "."
     REQUIRES bsp esp_event esp_http_client esp_http_server esp_hw_support

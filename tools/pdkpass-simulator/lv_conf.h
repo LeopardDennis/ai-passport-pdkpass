@@ -13,8 +13,8 @@
 #define LV_FONT_UNSCII_8 1
 #define LV_FONT_UNSCII_16 1
 #define LV_FONT_DEFAULT &lv_font_unscii_16
+#define LV_USE_QRCODE 1
 #define LV_BUILD_EXAMPLES 0
 #define LV_BUILD_DEMOS 0
 
 #endif
-
