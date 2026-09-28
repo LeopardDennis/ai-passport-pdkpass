@@ -69,6 +69,13 @@ int main(void)
     assert(pdkpass_track_find("Bahrain International Circuit")->length_m == 5412);
     assert(pdkpass_track_find("Jeddah Corniche Circuit")->length_m == 6175);
 
+    // The two formerly single-color palettes need visible accent panels on
+    // the 5/6/5 display, including home, results, and the reminder.
+    const pdkpass_track_info_t *mexico = pdkpass_track_find("MEXICO CITY");
+    const pdkpass_track_info_t *lusail = pdkpass_track_find("LUSAIL");
+    assert(background_distance_squared(mexico->accent, mexico->background) >= 10000U);
+    assert(background_distance_squared(lusail->accent, lusail->background) >= 10000U);
+
     pdkpass_track_geometry_t unknown = { 0 };
     assert(!pdkpass_track_get("UNKNOWN", &unknown));
     assert(!pdkpass_track_get(NULL, &unknown));

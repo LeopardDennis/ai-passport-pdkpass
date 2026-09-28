@@ -1072,7 +1072,7 @@ static void render_detail(void)
                                     race->round);
     char status[32];
     snprintf(status, sizeof(status), "%s GP", race->country);
-    set_status(status, theme.top);
+    set_status(status, race->accent);
     show_status_flags();
     ui_pixel_screen_set_theme(s_screen, theme.top, theme.bottom);
     content_reset(theme.top, theme.bottom);

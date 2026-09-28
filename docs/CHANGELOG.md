@@ -28,9 +28,9 @@
 
 - Redesign the session reminder with a fixed red alert header, a prominent
   circuit name and countdown, and a session/time panel. Use each circuit's
-  background and accent; lighten the countdown card and darken the session
-  panel when both catalog colors match (Mexico City and Lusail). Keep the
-  15-second notice and any-key dismissal.
+  background and accent. Give Mexico City and Lusail lighter accents against
+  their dark backgrounds so home, detail, results, and reminder accents remain distinct.
+  Keep the 15-second notice and any-key dismissal.
 
 - Give the four network/settings actions single-line cards with centered text
   and wider row gaps, removing cramped secondary labels.
