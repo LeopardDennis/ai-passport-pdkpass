@@ -2078,7 +2078,7 @@ static int s_battery_soc;
 static uint32_t s_status_background;
 static uint32_t s_battery_background=UINT32_MAX;
 static uint32_t lv_color_hex(uint32_t x) {return x;}
-static uint32_t contrast_color(uint32_t x) {(void)x;return 0xFFFFFF;}
+static uint32_t readable_text_color(uint32_t x) {(void)x;return 0xFFFFFF;}
 static void lv_obj_set_style_bg_color(lv_obj_t *o,uint32_t x,int sel) {(void)sel;o->bg=x;}
 static void lv_obj_set_style_border_color(lv_obj_t *o,uint32_t x,int sel) {(void)sel;o->border=x;}
 static void lv_obj_set_style_bg_opa(lv_obj_t *o,int x,int sel) {(void)sel;o->opa=x;}

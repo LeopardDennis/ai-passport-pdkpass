@@ -250,7 +250,7 @@ static const uint16_t s_srgb_linear[256] = {
     57105, 57646, 58190, 58737, 59287, 59840, 60396, 60955, 61517, 62082, 62650, 63221, 63795, 64372, 64952, 65535,
 };
 
-static uint32_t reminder_luminance(uint32_t color)
+static uint32_t color_luminance(uint32_t color)
 {
     uint32_t r = s_srgb_linear[(color >> 16) & 0xffU];
     uint32_t g = s_srgb_linear[(color >> 8) & 0xffU];
@@ -258,21 +258,21 @@ static uint32_t reminder_luminance(uint32_t color)
     return (r * 2126U + g * 7152U + b * 722U + 5000U) / 10000U;
 }
 
-static bool reminder_has_contrast(uint32_t background, uint32_t foreground)
+static bool has_text_contrast(uint32_t background, uint32_t foreground)
 {
-    uint32_t a = reminder_luminance(background);
-    uint32_t b = reminder_luminance(foreground);
+    uint32_t a = color_luminance(background);
+    uint32_t b = color_luminance(foreground);
     uint32_t lighter = a > b ? a : b;
     uint32_t darker = a > b ? b : a;
     // (lighter + 0.05) / (darker + 0.05) >= 4.5
     return 2U * (lighter + 3277U) >= 9U * (darker + 3277U);
 }
 
-static uint32_t reminder_text_color(uint32_t background)
+static uint32_t readable_text_color(uint32_t background)
 {
-    if (reminder_has_contrast(background, UI_PAPER)) return UI_PAPER;
-    if (reminder_has_contrast(background, UI_INK)) return UI_INK;
-    return reminder_luminance(background) < 11750U ? 0xFFFFFF : 0x000000;
+    if (has_text_contrast(background, UI_PAPER)) return UI_PAPER;
+    if (has_text_contrast(background, UI_INK)) return UI_INK;
+    return color_luminance(background) < 11750U ? 0xFFFFFF : 0x000000;
 }
 
 static uint32_t color_mix(uint32_t color, uint32_t other, unsigned other_weight)
@@ -496,7 +496,7 @@ static void set_status(const char *text, uint32_t background)
                  background == UI_SKY ? UI_SKY_DARK : background);
     lv_label_set_text(s_network, text);
     lv_obj_set_style_text_color(s_network,
-        lv_color_hex(contrast_color(background)), 0);
+        lv_color_hex(readable_text_color(background)), 0);
     pdkpass_ui_battery_update(s_battery_soc);
     lv_obj_add_flag(s_status_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_status_right, LV_OBJ_FLAG_HIDDEN);
@@ -1237,15 +1237,15 @@ static void render_reminder(void)
 
     const char *circuit = race ? circuit_display_name(race->circuit) : "GRAND PRIX";
     reminder_label(s_reminder_layer, circuit, 75, 206,
-                   &lv_font_unscii_16, 448, reminder_text_color(background));
+                   &lv_font_unscii_16, 448, readable_text_color(background));
     char line[40];
     snprintf(line, sizeof(line), "ROUND %u", s_reminder_alert.round);
     reminder_label(s_reminder_layer, line, 101, 204,
-                   &pdkpass_body_font, 256, reminder_text_color(background));
+                   &pdkpass_body_font, 256, readable_text_color(background));
 
     make_block(s_reminder_layer, 6, 115, 228, 114, UI_INK);
     make_block(s_reminder_layer, 10, 119, 216, 106, card_color);
-    uint32_t card_ink = reminder_text_color(card_color);
+    uint32_t card_ink = readable_text_color(card_color);
     reminder_label(s_reminder_layer, "STARTS IN", 134, 188,
                    &lv_font_unscii_16, 256, card_ink);
     make_block(s_reminder_layer, 31, 145, 174, 2, card_ink);
@@ -1259,7 +1259,7 @@ static void render_reminder(void)
 
     make_block(s_reminder_layer, 6, 232, 228, 52, UI_INK);
     make_block(s_reminder_layer, 10, 236, 220, 44, panel_color);
-    uint32_t panel_ink = reminder_text_color(panel_color);
+    uint32_t panel_ink = readable_text_color(panel_color);
     const char *names[] = {"PRACTICE 1", "PRACTICE 2", "PRACTICE 3",
         "SPRINT QUALIFYING", "SPRINT", "QUALIFYING", "RACE"};
     if (s_reminder_alert.kind < PDKPASS_SESSION_COUNT)
@@ -1341,7 +1341,7 @@ static void battery_draw_digits(lv_event_t *event)
     lv_obj_get_coords(s_battery, &body);
     lv_obj_get_coords(s_battery_fill, &level);
     int left = body.x1 + (23 - (length * 4 - 1)) / 2;
-    uint32_t ink = soc <= 20 ? UI_RED : contrast_color(s_status_background);
+    uint32_t ink = soc <= 20 ? UI_RED : readable_text_color(s_status_background);
     uint32_t fill = ink;
     lv_draw_rect_dsc_t rect;
     lv_draw_rect_dsc_init(&rect);
@@ -1370,7 +1370,7 @@ void pdkpass_ui_battery_update(int soc)
         s_battery_background == s_status_background) return;
     s_battery_soc = normalized;
     s_battery_background = s_status_background;
-    uint32_t ink = contrast_color(s_status_background);
+    uint32_t ink = readable_text_color(s_status_background);
     uint32_t fill = s_battery_soc >= 0 && s_battery_soc <= 20 ? UI_RED : ink;
     // A light interior separates the red warning from red page themes.
     // Keep the silhouette contrasted with the status bar, including at 0%.

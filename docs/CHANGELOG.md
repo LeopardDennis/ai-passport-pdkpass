@@ -30,7 +30,8 @@
   circuit name and countdown, and a session/time panel. Use each circuit's
   background and accent. Give Mexico City and Lusail lighter accents against
   their dark backgrounds so home, detail, results, and reminder accents remain distinct.
-  Keep the 15-second notice and any-key dismissal.
+  Choose readable text and battery ink on bright status bars. Keep the
+  15-second notice and any-key dismissal.
 
 - Give the four network/settings actions single-line cards with centered text
   and wider row gaps, removing cramped secondary labels.
