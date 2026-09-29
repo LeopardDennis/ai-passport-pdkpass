@@ -2,26 +2,24 @@
   <a href="device-test-handoff.zh_CN.md">简体中文</a> · <strong>English</strong>
 </p>
 
-# PDKPASS device testing on another Mac
+# PDKPASS charging diagnosis and device testing on another Mac
 
-Use this guide to test a candidate firmware from `main` on a different macOS computer. Building and testing do not publish a community project or GitHub Release.
+Use this guide to diagnose charging first, then test a candidate firmware from `main` on another Mac. Prepare the community project and GitHub Release only after charging is resolved and device acceptance passes.
 
-## 1. Get the code and two firmware images from GitHub
+## 1. Get the code and charging diagnostic image from GitHub
 
 Clone `https://github.com/LeopardDennis/ai-passport-pdkpass` on the new Mac, or update an existing checkout. Record the full `git rev-parse HEAD` commit ID and compare it with the commit shown on the GitHub Actions run.
 
-In the repository, open **Actions → Build firmware → Run workflow**, select `main`, and check **Also build charging logs and USB screenshot capture for device testing**. One run produces two separate downloads:
+In the repository, open **Actions → Build firmware → Run workflow**, select `main`, and check only **Also build read-only battery logs for charging diagnosis**. One run produces two separate downloads:
 
-- `passport-main` contains `FoloToy-AI-Passport-full.bin` for functional acceptance and eventual release.
-- `passport-main-hardware-diagnostics` contains `FoloToy-AI-Passport-hardware-diagnostics-full.bin`. It records raw battery data every 60 seconds and supports USB screen capture. Use it only for diagnosis and publishing evidence.
+- `passport-main` contains `FoloToy-AI-Passport-full.bin` for functional acceptance after charging is resolved.
+- `passport-main-battery-diagnostics` contains `FoloToy-AI-Passport-battery-diagnostics-full.bin`. It records raw battery data every 60 seconds for charging diagnosis.
 
 Wait for both builds and artifact uploads to succeed, then download and unzip them. Running the workflow on a branch does not create a GitHub Release. Record each file's size and `shasum -a 256 filename` output. Do not mix up the two images. The `build/` directory is not in Git, so cloning alone will not provide a `.bin` file.
 
-## 2. Flash and test the normal image
+## 2. Diagnose charging first
 
-Test the normal image first. [`CI-build-and-release.md`](CI-build-and-release.md) links the browser flasher: select the complete merged image and write it at `0x0`. Do not run `erase-flash`; preserve the device's `cardid` identity and permanent Recovery. Stop and inspect the device if the flasher reports a Flash size other than 8 MB.
-
-Use the [device acceptance checklist](device-release-checklist.md) for boot, buttons, display, setup, networking, data, alerts, audio, power, and stability. Send observed results back in the chat from the new computer.
+Flash the battery diagnostic image first. [`CI-build-and-release.md`](CI-build-and-release.md) links the browser flasher: select the complete merged image and write it at `0x0`. Do not run `erase-flash`; preserve the device's `cardid` identity and permanent Recovery. Stop and inspect the device if the flasher reports a Flash size other than 8 MB.
 
 After cloning the repository, capture USB serial logs with the standard-library script:
 
@@ -30,10 +28,12 @@ python3 tools/device-test/serial_capture.py --list-ports
 python3 tools/device-test/serial_capture.py --seconds 300 --output "$HOME/Desktop/pdkpass-$(date +%Y%m%d-%H%M%S).log"
 ```
 
-Before sharing the log, inspect and redact personal details, network names, or passwords. Include the actions and screen state leading to an issue, its time, and surrounding log lines.
+Keep the device connected to the computer and charging. Capture several `battery_diag` lines before and after the charge LED turns off. Record when charging starts, when the LED turns off, and when USB is unplugged, with the screen percentage and `cell_mv` at each point. Increase `--seconds` if 300 seconds cannot cover the change. Capture several more readings after unplugging to observe the resting voltage and percentage. The diagnostic image samples more often and is not suitable for battery-life acceptance.
 
-## 3. Diagnose charging and capture a real screen
+Before sharing the log, inspect and redact personal details, network names, or passwords. Include LED state and matching times. One `4196 mV / 96% / LED off` sample alone cannot establish whether the cell is undercharged or whether the gauge, charger, or LED behavior is responsible.
 
-After normal functional acceptance, flash the hardware diagnostic image if investigating charging behavior. Record when the charge LED turns off and collect `battery_diag` lines before and after that event. Its extra sampling means it cannot substitute for normal battery-life testing. The normal image does not include the USB screenshot protocol; capture a fresh device screen and its receipt for community publication while the diagnostic image is running. Never put the hotspot password or other device secrets on a public cover.
+## 3. Accept all functions and prepare publication after the fix
 
-After diagnosis and screen capture, flash the accepted normal image again, verify its SHA-256, and perform a final boot, setup, network, and button smoke test. A real ten-minute pre-race alert and a full charge/discharge curve need longer observation and must not be reported as passed after a short session.
+Once charging is understood and fixed, flash the normal image and use the [device acceptance checklist](device-release-checklist.md) for boot, buttons, display, setup, networking, data, alerts, audio, power, and stability. For a live screen needed by the community listing, manually run the workflow again with **Also build charging logs and USB screenshot capture for device testing** and download `passport-main-hardware-diagnostics`. It supports `FAP_SCREENSHOT_V1`; retain the capture receipt. Never put the hotspot password or other device secrets on a public cover.
+
+After screen capture, flash the accepted normal image again, verify its SHA-256, and perform a final boot, setup, network, and button smoke test. A real ten-minute pre-race alert and a full charge/discharge curve need longer observation and must not be reported as passed after a short session.

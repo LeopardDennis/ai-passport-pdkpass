@@ -23,13 +23,14 @@
 4. **上传 artifact**：每次成功构建都上传 `FoloToy-AI-Passport-full.bin`。普通分支只有从该分支手动运行 `workflow_dispatch` 才会构建；普通 push 不触发。
 5. **发布 tag**：tag 构建完成后，独立 release job 下载上述 artifact，并创建 GitHub Release。
 
-在另一台电脑验收时，可手动选择 `main` 并勾选 **Also build charging logs and USB screenshot capture for device testing**。工作流会额外上传独立的 `FoloToy-AI-Passport-hardware-diagnostics-full.bin`，启用只读电池日志和 `FAP_SCREENSHOT_V1`。它只用于真机排障与采集，不会附加到 tag Release。操作见[跨电脑真机验收](device-test-handoff.zh_CN.md)。
+在另一台电脑先排查充电时，手动选择 `main` 并勾选 **Also build read-only battery logs for charging diagnosis**。工作流会额外上传 `FoloToy-AI-Passport-battery-diagnostics-full.bin`，每 60 秒记录一次只读电池数据。充电问题解决后，再按需要勾选 **Also build charging logs and USB screenshot capture for device testing**，生成带电池日志与 `FAP_SCREENSHOT_V1` 的 `FoloToy-AI-Passport-hardware-diagnostics-full.bin`。两种诊断固件都不会附加到 tag Release。操作见[跨电脑充电排查与真机验收](device-test-handoff.zh_CN.md)。
 
 构建 job 只有 `contents: read` 权限；仅 release job 在 tag 发布时获得 `contents: write`。所有 Action 均固定到完整 commit SHA，行尾注释保留对应发布版本，升级时需同时核对 SHA 与版本。
 
 ## 产物
 
 - `FoloToy-AI-Passport-full.bin`：合并后的完整固件，是 tag Release 的唯一固件产物。
+- `FoloToy-AI-Passport-battery-diagnostics-full.bin`：仅勾选手动充电诊断选项时提供的临时排障产物。
 - `FoloToy-AI-Passport-hardware-diagnostics-full.bin`：仅勾选手动诊断选项时提供的临时排障产物。
 
 ## 在线烧录

@@ -8,7 +8,7 @@
 
 The build job restores ccache, runs `./tools/validate.sh --firmware` with ESP-IDF 5.5.3 for ESP32-C3, verifies the bootloader at `0x0`, partition table at `0x8000`, application at `0x10000`, 8 MB Flash arguments, and the complete mini-program BLE compatibility contract, then uploads `FoloToy-AI-Passport-full.bin`. A separate least-privilege release job publishes that artifact only for a tag.
 
-For testing on another computer, manually run the workflow on `main` with **Also build charging logs and USB screenshot capture for device testing** selected. The run also uploads `FoloToy-AI-Passport-hardware-diagnostics-full.bin` as a separate artifact. It enables read-only battery logs and `FAP_SCREENSHOT_V1`; it is not a release image and is never attached to a tag release. See [device-test-handoff.md](device-test-handoff.md).
+For charging diagnosis on another computer, manually run the workflow on `main` with **Also build read-only battery logs for charging diagnosis** selected. It uploads `FoloToy-AI-Passport-battery-diagnostics-full.bin` separately, with read-only battery logs every 60 seconds. After charging is resolved, **Also build charging logs and USB screenshot capture for device testing** can produce `FoloToy-AI-Passport-hardware-diagnostics-full.bin` with battery logs and `FAP_SCREENSHOT_V1`. Neither diagnostic image is a release image or attached to a tag release. See [device-test-handoff.md](device-test-handoff.md).
 
 All Actions are pinned to full commit SHAs. The build job has `contents: read`; only the tag release job receives `contents: write`.
 
