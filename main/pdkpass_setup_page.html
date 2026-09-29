@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDKPASS Wi-Fi Setup</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, sans-serif; color: #17202a; background: #f4f4ea; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header { background: #0872c9; color: white; padding: 24px max(24px, calc((100vw - 432px) / 2)); }
+    .brand { font-size: 29px; line-height: 1.15; letter-spacing: .01em; }
+    .brand-sub { font: 15px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; margin-top: 8px; color: #d6ecfa; }
+    main { max-width: 480px; margin: auto; padding: 20px 24px 28px; }
+    .status { display: flex; align-items: center; min-height: 50px; gap: 12px; padding: 10px 16px; border-radius: 13px; background: #e7f0dd; font-size: 16px; }
+    .status-mark { display: block; width: 16px; height: 16px; flex: none; border-radius: 5px; background: #55931b; }
+    h1 { margin: 42px 0 11px; font-size: clamp(24px, 6vw, 27px); line-height: 1.2; }
+    .eyebrow { margin: 0 0 16px; color: #697b84; font: 700 13px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .04em; }
+    .nearby { max-height: 148px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+    .network { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 65px; margin: 0 0 11px; padding: 12px 16px; border: 2px solid #d1dadc; border-radius: 12px; background: white; color: #46545c; font: 21px system-ui, -apple-system, sans-serif; text-align: left; overflow-wrap: anywhere; }
+    .network.selected { border-color: #17202a; background: #ffd928; color: #17202a; }
+    .network:focus-visible, input:focus-visible, .connect:focus-visible { outline: 3px solid #0872c9; outline-offset: 2px; }
+    .radio { width: 20px; height: 20px; flex: none; margin-left: 10px; border: 2px solid currentColor; border-radius: 50%; }
+    .selected .radio::after { content: ""; display: block; width: 10px; height: 10px; margin: 3px; border-radius: 50%; background: currentColor; }
+    .scan-note { margin: 0 0 12px; color: #697b84; font-size: 14px; }
+    .scan-note[hidden], .manual-field[hidden] { display: none; }
+    .manual-field { display: block; margin: 2px 0 20px; }
+    .field-label { display: block; margin: 20px 0 10px; font-size: 18px; }
+    input { display: block; width: 100%; min-height: 59px; padding: 12px 16px; border: 2px solid #d1dadc; border-radius: 11px; background: white; color: #17202a; font: 20px system-ui, -apple-system, sans-serif; }
+    .error { min-height: 20px; margin: 12px 0 0; color: #b5261f; font-size: 14px; }
+    .connect { width: 100%; min-height: 67px; margin-top: 5px; border: 3px solid #17202a; border-radius: 10px; background: #ffd928; color: #17202a; font: 700 22px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .connect:active { transform: translateY(1px); }
+    @media (max-width: 360px) { main { padding-left: 16px; padding-right: 16px; } .network { font-size: 19px; } }
+  </style>
+</head>
+<body>
+  <header><div class="brand">PDKPASS</div><div class="brand-sub">WI-FI SETUP</div></header>
+  <main>
+    <div class="status"><span class="status-mark" aria-hidden="true"></span>Connected to device hotspot</div>
+    <h1>Select a 2.4 GHz Network</h1>
+    <p class="eyebrow">NEARBY NETWORKS</p>
+    <form id="setup-form" method="post" action="/save">
+      <div id="nearby" class="nearby" role="group" aria-label="Nearby networks"></div>
+      <p id="scan-note" class="scan-note" role="status">Scanning nearby networks...</p>
+      <button id="manual" class="network selected" type="button" aria-pressed="true"><span>Enter Network Manually</span><span class="radio" aria-hidden="true"></span></button>
+      <label id="manual-field" class="manual-field"><span class="field-label">Network Name</span><input id="ssid" name="ssid" maxlength="32" autocomplete="off" spellcheck="false" required></label>
+      <label><span class="field-label">Wi-Fi Password</span><input id="password" name="password" type="password" maxlength="63" autocomplete="new-password"></label>
+      <p id="error" class="error" role="alert"></p>
+      <button class="connect" type="submit">Connect</button>
+    </form>
+  </main>
+  <script>
+    const nearby = document.getElementById('nearby');
+    const note = document.getElementById('scan-note');
+    const manual = document.getElementById('manual');
+    const manualField = document.getElementById('manual-field');
+    const ssid = document.getElementById('ssid');
+    const password = document.getElementById('password');
+    const error = document.getElementById('error');
+    const form = document.getElementById('setup-form');
+    let manualTouched = false;
+
+    function select(button, name) {
+      for (const row of document.querySelectorAll('.network')) {
+        const active = row === button;
+        row.classList.toggle('selected', active);
+        row.setAttribute('aria-pressed', String(active));
+      }
+      const isManual = button === manual;
+      manualField.hidden = !isManual;
+      ssid.value = isManual ? '' : name;
+      error.textContent = '';
+      if (isManual) ssid.focus();
+    }
+    manual.addEventListener('click', () => { manualTouched = true; select(manual, ''); });
+    ssid.addEventListener('input', () => { manualTouched = true; });
+
+    fetch('/networks', { cache: 'no-store' })
+      .then(response => { if (!response.ok) throw new Error('scan'); return response.json(); })
+      .then(result => {
+        const names = Array.isArray(result.networks) ? result.networks.filter(name => typeof name === 'string' && name) : [];
+        note.hidden = names.length > 0;
+        if (!names.length) note.textContent = result.scanFailed ? 'Nearby network scan unavailable.' : 'No nearby networks found.';
+        names.forEach((name, index) => {
+          const row = document.createElement('button');
+          row.type = 'button';
+          row.className = 'network';
+          row.setAttribute('aria-pressed', 'false');
+          const title = document.createElement('span');
+          title.textContent = name;
+          const radio = document.createElement('span');
+          radio.className = 'radio';
+          radio.setAttribute('aria-hidden', 'true');
+          row.append(title, radio);
+          row.addEventListener('click', () => select(row, name));
+          nearby.append(row);
+          if (index === 0 && !manualTouched) select(row, name);
+        });
+      })
+      .catch(() => { note.textContent = 'Nearby network scan unavailable.'; });
+
+    form.addEventListener('submit', event => {
+      const length = value => new TextEncoder().encode(value).length;
+      const nameLength = length(ssid.value);
+      const passwordLength = length(password.value);
+      if (nameLength < 1 || nameLength > 32 ||
+          (passwordLength !== 0 && (passwordLength < 8 || passwordLength > 63))) {
+        event.preventDefault();
+        error.textContent = 'Check the Network Name and Wi-Fi Password.';
+      }
+    });
+  </script>
+</body>
+</html>

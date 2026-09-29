@@ -6,6 +6,12 @@
 
 ## Unreleased
 
+- Redesign the local Wi-Fi setup page with the PDKPASS colors and an English
+  mobile form. Scan nearby 2.4 GHz networks before starting the setup hotspot,
+  list up to five real SSIDs by signal strength, and retain manual entry when
+  scanning fails or the desired network is not listed. Match the connection
+  progress page to the new design.
+
 - Show a QR code for the device's current WPA2 setup hotspot as the first Wi-Fi
   setup screen. Short OK switches between scanning and the existing manual
   SSID/password/browser instructions; long OK returns to NETWORK. Keep the

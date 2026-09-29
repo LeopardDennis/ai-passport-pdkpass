@@ -4,6 +4,7 @@
 #include "pdkpass_power.h"
 
 #include "pdkpass_wifi_form.h"
+#include "pdkpass_wifi_nearby.h"
 #include "pdkpass_wifi_profiles.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
@@ -29,6 +30,7 @@
 #define NETWORK_TASK_PRIORITY 4
 #define SAVED_CONNECT_TIMEOUT_US 15000000LL
 #define FORM_BODY_LIMIT 320
+#define SETUP_SCAN_RECORD_LIMIT 32
 #define VALID_TIME_MIN 1767225600LL
 #define VALID_TIME_MAX 4102444800LL
 #define SNTP_SYNC_INTERVAL_MS (6U * 60U * 60U * 1000U)
@@ -53,17 +55,8 @@
 
 static const char *TAG = "pdkpass_net";
 static const char *NVS_NAMESPACE = "pdkpass_net";
-static const char *SETUP_PAGE =
-    "<!doctype html><html><head><meta name=viewport content='width=device-width'>"
-    "<title>PDKPASS Wi-Fi</title><style>body{font:18px system-ui;max-width:28rem;"
-    "margin:3rem auto;padding:0 1rem}input,button{box-sizing:border-box;width:100%;"
-    "font:inherit;padding:.8rem;margin:.35rem 0}button{font-weight:700}</style></head>"
-    "<body><h1>PDKPASS Wi-Fi</h1><p>Connect this pass to a 2.4 GHz network for "
-    "automatic Beijing time. Remembers up to 5 networks; a sixth replaces "
-    "the least recently connected network.</p><form method=post action=/save>"
-    "<label>Wi-Fi name<input name=ssid maxlength=32 required></label>"
-    "<label>Password<input name=password type=password maxlength=63></label>"
-    "<button type=submit>Connect</button></form></body></html>";
+extern const char _binary_pdkpass_setup_page_html_start[];
+extern const char _binary_pdkpass_setup_status_html_start[];
 
 static EventGroupHandle_t s_events;
 static SemaphoreHandle_t s_candidate_lock;
@@ -83,6 +76,8 @@ static char s_candidate_ssid[33];
 static char s_candidate_password[65];
 static char s_setup_ssid[33];
 static char s_setup_password[16];
+static pdkpass_wifi_nearby_t s_setup_nearby;
+static bool s_setup_scan_failed;
 static bool s_have_working_credentials;
 static bool s_testing_candidate;
 static bool s_in_setup;
@@ -290,7 +285,22 @@ static void start_sntp_once(void)
 static esp_err_t root_get(httpd_req_t *request)
 {
     httpd_resp_set_type(request, "text/html; charset=utf-8");
-    return httpd_resp_sendstr(request, SETUP_PAGE);
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(request, _binary_pdkpass_setup_page_html_start);
+}
+
+static esp_err_t nearby_get(httpd_req_t *request)
+{
+    char json[512];
+    if (!pdkpass_wifi_nearby_json(&s_setup_nearby, s_setup_scan_failed,
+                                   json, sizeof(json))) {
+        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Nearby network list unavailable");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(request, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(request, json);
 }
 
 static esp_err_t save_post(httpd_req_t *request)
@@ -341,10 +351,8 @@ static esp_err_t save_post(httpd_req_t *request)
 
     httpd_resp_set_status(request, "202 Accepted");
     httpd_resp_set_type(request, "text/html; charset=utf-8");
-    return httpd_resp_sendstr(request,
-        "<!doctype html><meta name=viewport content='width=device-width'>"
-        "<h1>Testing Wi-Fi...</h1><p>Check PDKPASS for the result. If setup "
-        "remains visible, reconnect and check the password.</p>");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(request, _binary_pdkpass_setup_status_html_start);
 }
 
 static esp_err_t start_http_server(void)
@@ -360,10 +368,14 @@ static esp_err_t start_http_server(void)
     const httpd_uri_t root = {
         .uri = "/", .method = HTTP_GET, .handler = root_get,
     };
+    const httpd_uri_t nearby = {
+        .uri = "/networks", .method = HTTP_GET, .handler = nearby_get,
+    };
     const httpd_uri_t save = {
         .uri = "/save", .method = HTTP_POST, .handler = save_post,
     };
     err = httpd_register_uri_handler(s_http, &root);
+    if (err == ESP_OK) err = httpd_register_uri_handler(s_http, &nearby);
     if (err == ESP_OK) err = httpd_register_uri_handler(s_http, &save);
     if (err != ESP_OK) {
         httpd_stop(s_http);
@@ -401,6 +413,37 @@ static void generate_setup_password(void)
     s_setup_password[sizeof(random_bytes)] = '\0';
 }
 
+static void scan_setup_nearby(void)
+{
+    pdkpass_wifi_nearby_reset(&s_setup_nearby);
+    s_setup_scan_failed = false;
+    wifi_scan_config_t config = {.show_hidden = false};
+    config.scan_time.active.min = 30;
+    config.scan_time.active.max = 120;
+    esp_err_t err = esp_wifi_scan_start(&config, true);
+    if (err != ESP_OK) {
+        s_setup_scan_failed = true;
+        ESP_LOGW(TAG, "Setup scan start failed: %s", esp_err_to_name(err));
+        return;
+    }
+    uint16_t total = 0;
+    err = esp_wifi_scan_get_ap_num(&total);
+    for (uint16_t i = 0; err == ESP_OK && i < total && i < SETUP_SCAN_RECORD_LIMIT; i++) {
+        wifi_ap_record_t ap;
+        err = esp_wifi_scan_get_ap_record(&ap);
+        if (err != ESP_OK) break;
+        size_t length = strnlen((const char *)ap.ssid, 32);
+        pdkpass_wifi_nearby_add(&s_setup_nearby, ap.ssid, length, ap.rssi);
+    }
+    esp_wifi_clear_ap_list();
+    if (err != ESP_OK) {
+        s_setup_scan_failed = true;
+        ESP_LOGW(TAG, "Setup scan result failed: %s", esp_err_to_name(err));
+    }
+    ESP_LOGI(TAG, "Setup scan found %u APs, showing %u",
+             (unsigned)total, (unsigned)s_setup_nearby.count);
+}
+
 static esp_err_t start_setup(void)
 {
     s_saved_deadline = 0;
@@ -415,6 +458,10 @@ static esp_err_t start_setup(void)
         if (start_err != ESP_OK) return start_err;
         s_radio_started = true;
     }
+    // Finish the bounded STA scan before exposing the AP, so the phone stays
+    // on the setup channel while selecting a network. Manual entry remains
+    // available if the scan fails or no usable SSIDs are found.
+    scan_setup_nearby();
     uint8_t mac[6];
     esp_err_t err = esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
     if (err != ESP_OK) return err;

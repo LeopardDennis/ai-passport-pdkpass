@@ -569,7 +569,7 @@ static bool render_wifi_setup_scan(void)
     lv_qrcode_set_dark_color(qr, lv_color_hex(UI_INK));
     lv_qrcode_set_light_color(qr, lv_color_white());
     lv_qrcode_set_quiet_zone(qr, true);
-    lv_obj_set_pos(qr, 2, 2);
+    lv_obj_set_pos(qr, 0, 0);
     if (lv_qrcode_update(qr, payload, strlen(payload)) != LV_RESULT_OK) return false;
 
     char remaining[28];

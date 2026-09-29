@@ -2206,8 +2206,10 @@ static char s_candidate_ssid[33],s_candidate_password[65],s_attempt_ssid[33],s_a
 static char s_working_ssid[33],s_working_password[65],saved_ssid[33],saved_password[65];
 static char connected_ssid[33];
 static int response_status;
+static const char _binary_pdkpass_setup_status_html_start[] = "";
 static void httpd_resp_set_status(httpd_req_t *r,const char *status) {(void)r;response_status=atoi(status);}
 static void httpd_resp_set_type(httpd_req_t *r,const char *type) {(void)r;(void)type;}
+static void httpd_resp_set_hdr(httpd_req_t *r,const char *name,const char *value) {(void)r;(void)name;(void)value;}
 static int httpd_resp_sendstr(httpd_req_t *r,const char *body) {(void)r;(void)body;return 0;}
 static void httpd_resp_send_err(httpd_req_t *r,int status,const char *body) {(void)r;(void)body;response_status=status;}
 static int httpd_req_recv(httpd_req_t *r,char *out,unsigned length) {memcpy(out,r->body,length);return (int)length;}

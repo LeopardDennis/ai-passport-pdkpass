@@ -67,6 +67,10 @@ run_static_checks() {
         -o "${test_dir}/test_pdkpass_wifi_form"
     "${test_dir}/test_pdkpass_wifi_form"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_pdkpass_wifi_nearby.c main/pdkpass_wifi_nearby.c \
+        -o "${test_dir}/test_pdkpass_wifi_nearby"
+    "${test_dir}/test_pdkpass_wifi_nearby"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_pdkpass_wifi_qr.c main/pdkpass_wifi_qr.c \
         -o "${test_dir}/test_pdkpass_wifi_qr"
     "${test_dir}/test_pdkpass_wifi_qr"
