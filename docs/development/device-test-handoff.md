@@ -28,7 +28,7 @@ python3 tools/device-test/serial_capture.py --list-ports
 python3 tools/device-test/serial_capture.py --seconds 300 --output "$HOME/Desktop/pdkpass-$(date +%Y%m%d-%H%M%S).log"
 ```
 
-Keep the device connected to the computer and charging. Capture several `battery_diag` lines before and after the charge LED turns off. Record when charging starts, when the LED turns off, and when USB is unplugged, with the screen percentage and `cell_mv` at each point. Increase `--seconds` if 300 seconds cannot cover the change. Capture several more readings after unplugging to observe the resting voltage and percentage. The diagnostic image samples more often and is not suitable for battery-life acceptance.
+Keep the device connected to the computer and charging while collecting `battery_diag` lines. If you happen to observe when the charge LED turns off, tell Codex so that event can be matched to the log; voltage and raw charge trends can be analyzed without it. Increase `--seconds` if 300 seconds cannot cover the change. Unplugging that same USB cable ends serial capture; resting voltage requires a separate measurement. The diagnostic image samples more often and is not suitable for battery-life acceptance.
 
 Before sharing the log, inspect and redact personal details, network names, or passwords. Include LED state and matching times. One `4196 mV / 96% / LED off` sample alone cannot establish whether the cell is undercharged or whether the gauge, charger, or LED behavior is responsible.
 
