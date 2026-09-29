@@ -5,6 +5,11 @@ on:
     tags:
       - "**"
   workflow_dispatch:
+    inputs:
+      include_hardware_diagnostics:
+        description: "Also build charging logs and USB screenshot capture for device testing"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -49,6 +54,25 @@ jobs:
         with:
           name: ${{ steps.artifact_name.outputs.name }}
           path: build/FoloToy-AI-Passport-full.bin
+          if-no-files-found: error
+
+      - name: Build hardware diagnostics for device testing
+        if: github.event_name == 'workflow_dispatch' && inputs.include_hardware_diagnostics == true
+        uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
+        with:
+          esp_idf_version: v5.5.3
+          target: esp32c3
+          extra_docker_args: >-
+            -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
+            -e IDF_CCACHE_ENABLE=1
+          command: ./tools/validate.sh --hardware-diagnostics
+
+      - name: Upload hardware diagnostics artifact
+        if: github.event_name == 'workflow_dispatch' && inputs.include_hardware_diagnostics == true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.artifact_name.outputs.name }}-hardware-diagnostics
+          path: build/FoloToy-AI-Passport-hardware-diagnostics-full.bin
           if-no-files-found: error
 
   release:

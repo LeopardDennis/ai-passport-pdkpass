@@ -53,7 +53,8 @@ supported weekend session.
 | --- | --- | --- | --- | --- |
 | Home | Previous / next race | Driver / team points | Displayed race details | Network menu |
 | Network menu | Select action | — | Confirm | Home |
-| Retry / setup | — | — | Back after retry failure | Cancel / close hotspot |
+| Retry | — | — | Back after failure | Cancel |
+| Setup QR / details | — | — | Show details / return to QR | Close hotspot |
 | Driver / team standings | Scroll rankings | — | — | Home |
 | Race details | Previous / next race | — | Session results | Back |
 | Session results | Previous / next session | — | — | Race details |
@@ -61,15 +62,18 @@ supported weekend session.
 ## No app required
 
 No phone app is required. Hold OK on the home screen to open `NETWORK`, select
-`WI-FI SETUP`, and confirm if already connected. Only this action opens the
-temporary hotspot and displays its name, password and `192.168.9.1`:
+`WI-FI SETUP`, and confirm if already connected. The device scans nearby
+networks, then opens a temporary hotspot and displays its QR code. Press OK
+to show the backup screen with the hotspot name, password and `192.168.9.1`.
 
 Each opening generates a new eight-character WPA2 password using uppercase
 letters and digits, without `I`, `O`, `0` or `1`.
 
-1. Connect a phone to the displayed `PDKPASS-XXXX` Wi-Fi network.
+1. Scan the QR code with a phone and join the device hotspot, or use the backup
+   details to connect manually.
 2. Open `http://192.168.9.1` in the phone browser.
-3. Enter a 2.4 GHz Wi-Fi name and password, then press **Connect**.
+3. Choose a real nearby 2.4 GHz network or enter its name manually, enter the
+   password, then press **Connect**.
 
 PDKPASS tests the connection before saving it. A wrong password leaves the setup
 page available for another attempt without replacing saved credentials. Up to five
@@ -85,7 +89,7 @@ connection suspends the idle check but not the ten-minute cap. Obtaining an IP
 and saving credentials closes setup immediately; time sync runs separately.
 Hold OK to cancel retry/setup. Screen dimming and sleep continue normally.
 
-To add a network, use the manual setup menu. Saving the same Wi-Fi name updates its password; a sixth
+To add a network, reopen Wi-Fi setup. Saving the same Wi-Fi name updates its password; a sixth
 name replaces the least recently connected network. The single network saved by
 older firmware is imported automatically. No phone app is required.
 
