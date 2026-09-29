@@ -15,6 +15,7 @@ typedef enum {
     PDKPASS_SOUND_DOWN,
     PDKPASS_SOUND_OK,
     PDKPASS_SOUND_BACK,
+    PDKPASS_SOUND_RESULT_READY,
     PDKPASS_SOUND_REMINDER,
 } pdkpass_sound_kind_t;
 

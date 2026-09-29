@@ -147,3 +147,11 @@ void pdkpass_sound_key(bsp_btn_t button, bsp_btn_ev_t event)
     else kind = PDKPASS_SOUND_OK;
     xQueueOverwrite(s_queue, &kind);
 }
+
+void pdkpass_sound_result_ready(void)
+{
+    if (atomic_load(&s_reminder_active) || !s_queue) return;
+    pdkpass_sound_kind_t kind = PDKPASS_SOUND_RESULT_READY;
+    // Do not replace a reminder (or a key cue) that is already queued.
+    xQueueSend(s_queue, &kind, 0);
+}

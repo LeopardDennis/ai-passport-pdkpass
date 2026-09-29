@@ -58,6 +58,13 @@ int main(void)
         PDKPASS_SOUND_NOTE_SAMPLES + PDKPASS_SOUND_GAP_SAMPLES,
         PDKPASS_SOUND_NOTE_SAMPLES);
     assert(first > second);
+    assert(pdkpass_sound_render(PDKPASS_SOUND_RESULT_READY, pcm,
+                                PDKPASS_SOUND_SAMPLES) == PDKPASS_SOUND_SAMPLES);
+    first = crossings(pcm, 0, PDKPASS_SOUND_NOTE_SAMPLES);
+    second = crossings(pcm,
+        PDKPASS_SOUND_NOTE_SAMPLES + PDKPASS_SOUND_GAP_SAMPLES,
+        PDKPASS_SOUND_NOTE_SAMPLES);
+    assert(second > first);
     puts("Button sound cues: PASS");
     return 0;
 }

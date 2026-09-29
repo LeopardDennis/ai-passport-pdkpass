@@ -11,6 +11,9 @@ esp_err_t pdkpass_sound_start(void);
 // a back cue. CLICK/DOUBLE are ignored. Only the latest pending cue is kept.
 void pdkpass_sound_key(bsp_btn_t button, bsp_btn_ev_t event);
 
+// Non-blocking cue for a newly persisted result. Reminders take priority.
+void pdkpass_sound_result_ready(void);
+
 // Non-blocking: the existing audio worker streams the approved melody at 80%.
 void pdkpass_sound_reminder_play(void);
 void pdkpass_sound_reminder_stop(void);

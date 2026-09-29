@@ -30,7 +30,9 @@ typedef struct {
     pdkpass_podium_driver_t podium[PDKPASS_PODIUM_SIZE];
 } pdkpass_result_snapshot_t;
 
-typedef void (*pdkpass_results_callback_t)(size_t race_index);
+// new_result is true only when this worker fetched and persisted a previously
+// uncached session podium; discovery-only changes never trigger a sound.
+typedef void (*pdkpass_results_callback_t)(size_t race_index, bool new_result);
 
 // Load cached results and start the background OpenF1 historical-results
 // worker. The worker never stores API credentials and only requests sessions

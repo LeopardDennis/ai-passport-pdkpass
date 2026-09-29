@@ -292,7 +292,11 @@ static int xQueueOverwrite(QueueHandle_t queue,const void *value) {
  assert(queue==s_queue);last_kind=*(const pdkpass_sound_kind_t *)value;sounds++;return pdTRUE;
 }
 static int xQueueSend(QueueHandle_t queue,const void *value,unsigned wait) {
- assert(queue==s_keys && wait==0);
+ assert(wait==0);
+ if(queue==s_queue) {
+  last_kind=*(const pdkpass_sound_kind_t *)value;sounds++;return pdTRUE;
+ }
+ assert(queue==s_keys);
  const key_event_t *key=value;
  assert(key->event==BSP_BTN_CLICK || key->event==BSP_BTN_LONG);
  ui_keys++;return pdTRUE;
@@ -338,6 +342,7 @@ static int xQueueReceive(QueueHandle_t queue,void *value,unsigned wait) {
         code += function(source, 'static bool open_sound(')
         code += function(source, 'static void sound_worker(')
         code += function(source, 'void pdkpass_sound_key(')
+        code += function(source, 'void pdkpass_sound_result_ready(')
         code += function(main_source, 'static void on_key(')
         code += r"""
 int main(void) {
@@ -353,6 +358,12 @@ int main(void) {
  assert(sounds==3 && last_kind==PDKPASS_SOUND_OK);
  on_key(BSP_BTN_OK,BSP_BTN_LONG,NULL);
  assert(sounds==4 && last_kind==PDKPASS_SOUND_BACK && ui_keys==2);
+ pdkpass_sound_result_ready();
+ assert(sounds==5 && last_kind==PDKPASS_SOUND_RESULT_READY && ui_keys==2);
+ atomic_store(&s_reminder_active,true);
+ pdkpass_sound_result_ready();
+ assert(sounds==5); // A result cue cannot replace an active reminder.
+ atomic_store(&s_reminder_active,false);
  if(setjmp(done)==0) sound_worker(NULL);
  assert(probes==3 && volume==50);
  step=init_calls=opens=stops=writes=delays=0;coalesced=false;write_fail=true;
@@ -1795,20 +1806,25 @@ void pdkpass_sync_plan(pdkpass_sync_service_t service,uint32_t delay) {
 }
 static bool s_cache_dirty;
 static pdkpass_results_callback_t s_callback;
-static bool discover_ok, fetch_ok;
-static int discover_calls, fetch_calls, marks;
+static bool discover_ok, fetch_ok, save_fail;
+static int discover_calls, fetch_calls, marks, result_cues;
+static void on_result(size_t race_index, bool new_result) {
+ assert(race_index<race_count);
+ if(new_result)result_cues++;
+}
 static bool discover_sessions(size_t i, race_cache_t *cache, int64_t now) {
  (void)i; (void)cache; (void)now; discover_calls++; return discover_ok;
 }
 static bool fetch_result(session_cache_t *session) {
  fetch_calls++; if (fetch_ok) session->ready=1; return fetch_ok;
 }
-static esp_err_t save_cache(void) {return ESP_OK;}
+static esp_err_t save_cache(void) {return save_fail ? ESP_FAIL : ESP_OK;}
 void pdkpass_sync_mark_success(pdkpass_sync_service_t service,int64_t utc) {
  (void)utc;assert(service==PDKPASS_SYNC_RESULTS);marks++;
 }
 '''
-        code = code.replace('static pdkpass_results_callback_t s_callback;', 'static void (*s_callback)(size_t);')
+        code = code.replace('static pdkpass_results_callback_t s_callback;',
+                            'static void (*s_callback)(size_t,bool);')
         for signature in ['static int64_t retry_interval_seconds(', 'static bool cache_has_due_result(',
                           'static bool discovery_due(', 'static bool cache_complete(',
                           'static bool race_is_eligible(', 'static bool race_needs_work(',
@@ -1821,6 +1837,7 @@ void pdkpass_sync_mark_success(pdkpass_sync_service_t service,int64_t utc) {
 int main(void) {
  int64_t now = 1788688800LL;
  s_lock=1;
+ s_callback=on_result;
  fake_now=now;
  races[0].switch_at_utc=now-10*86400; races[0].meeting_key=10;
  races[1].switch_at_utc=now+3600; races[1].meeting_key=20;
@@ -1836,11 +1853,19 @@ int main(void) {
  assert(select_race(now+10)==1);
  process_race(1,now+10);
  assert(fetch_calls==1);
- assert(marks==0); // Discovery and failed result fetch do not claim fresh results.
+ assert(marks==0 && result_cues==0); // Discovery and failed fetch stay silent.
  assert(!race_needs_work(1,now+11));
  assert(race_needs_work(1,now+611));
  fetch_ok=true; process_race(1,now+611);
- assert(marks==1);
+ assert(marks==1 && result_cues==1);
+ s_cache[1].discovered=1;
+ s_cache[1].next_discovery_utc=now+21600;
+ s_cache[1].sessions[1]=(session_cache_t){.present=1,.session_key=201,
+  .end_utc=now-4000};
+ save_fail=true;process_race(1,now+612);
+ assert(s_cache[1].sessions[1].ready);
+ assert(marks==1 && result_cues==1); // A failed save must not play a cue.
+ save_fail=false;
  assert(s_cache[0].next_discovery_utc==now+86400);
  fake_now=now+RESULTS_MANUAL_RETRY_SECONDS+1;
  pdkpass_results_request_race(0);

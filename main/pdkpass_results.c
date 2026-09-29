@@ -725,9 +725,10 @@ static process_outcome_t process_race(size_t race_index, int64_t now_utc)
         }
         if (err == ESP_OK) s_cache_dirty = false;
     }
-    if (fetched && !s_cache_dirty)
+    bool new_result = fetched && !s_cache_dirty;
+    if (new_result)
         pdkpass_sync_mark_success(PDKPASS_SYNC_RESULTS, (int64_t)time(NULL));
-    if (changed && s_callback) s_callback(race_index);
+    if (changed && s_callback) s_callback(race_index, new_result);
     return outcome;
 }
 

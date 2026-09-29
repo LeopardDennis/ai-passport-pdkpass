@@ -14,6 +14,7 @@ size_t pdkpass_sound_render(pdkpass_sound_kind_t kind, int16_t *pcm,
         [PDKPASS_SOUND_DOWN] = { 1175, 880 },
         [PDKPASS_SOUND_OK] = { 988, 1480 },
         [PDKPASS_SOUND_BACK] = { 740, 523 },
+        [PDKPASS_SOUND_RESULT_READY] = { 659, 1047 },
     };
     if (!pcm || capacity < PDKPASS_SOUND_SAMPLES ||
         (unsigned)kind >= sizeof(notes) / sizeof(notes[0])) return 0;

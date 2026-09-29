@@ -6,6 +6,10 @@
 
 ## Unreleased
 
+- Play a distinct short cue when each session's podium is downloaded from
+  OpenF1 and saved for the first time. Restored cache, session discovery, and
+  failed downloads stay silent; reminder audio takes priority.
+
 - Redesign the local Wi-Fi setup page with the PDKPASS colors and an English
   mobile form. Scan nearby 2.4 GHz networks before starting the setup hotspot,
   list up to five real SSIDs by signal strength, and retain manual entry when

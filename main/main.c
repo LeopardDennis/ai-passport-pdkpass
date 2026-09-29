@@ -44,8 +44,9 @@ static void on_season(void)
     bsp_lvgl_unlock();
 }
 
-static void on_results(size_t race_index)
+static void on_results(size_t race_index, bool new_result)
 {
+    if (new_result) pdkpass_sound_result_ready();
     if (!bsp_lvgl_lock(500)) return;
     pdkpass_ui_results_update(race_index);
     bsp_lvgl_unlock();
