@@ -62,6 +62,7 @@ static lv_obj_t *s_status_right;
 
 static lv_timer_t *s_idle_timer;
 static lv_timer_t *s_clock_timer;
+static lv_timer_t *s_sync_timer;
 static pdkpass_state_t s_state;
 static pdkpass_season_snapshot_t s_season;
 static pdkpass_team_snapshot_t s_team_standings;
@@ -93,6 +94,12 @@ static bool s_setup_show_info;
 static bool s_setup_qr_failed;
 static lv_obj_t *s_setup_countdown;
 static lv_point_precise_t s_track_points[49];
+static uint32_t s_results_sync_generation, s_points_sync_generation;
+static uint32_t s_results_notice_until, s_points_notice_until;
+static uint32_t s_sync_reject_until;
+static pdkpass_page_t s_sync_reject_page;
+static char s_sync_reject_hint[28];
+static void render(void);
 
 static lv_obj_t *make_block(lv_obj_t *parent, int x, int y, int w, int h,
                             uint32_t color)
@@ -514,7 +521,85 @@ static void show_status_flags(void)
 
 static void set_hint(const char *text)
 {
-    lv_label_set_text(s_hint, text);
+    if (strcmp(lv_label_get_text(s_hint), text) != 0) lv_label_set_text(s_hint, text);
+}
+
+static bool sync_notice_active(uint32_t until)
+{
+    return until && (int32_t)(until - lv_tick_get()) > 0;
+}
+
+static void update_manual_hint(void)
+{
+    bool results = s_state.page == PDKPASS_PAGE_RESULTS;
+    bool points = s_state.page == PDKPASS_PAGE_STANDINGS ||
+                  s_state.page == PDKPASS_PAGE_TEAM_STANDINGS;
+    if (!results && !points) return;
+    if (s_sync_reject_page == s_state.page &&
+        sync_notice_active(s_sync_reject_until)) {
+        set_hint(s_sync_reject_hint);
+        return;
+    }
+    pdkpass_manual_status_t status;
+    char hint[32];
+    if (results) {
+        size_t race_index;
+        if (pdkpass_results_manual_status(&race_index, &status) &&
+            race_index == s_state.selected_race &&
+            (status.state == PDKPASS_MANUAL_RUNNING ||
+             sync_notice_active(s_results_notice_until))) {
+            unsigned round = race_index < s_season.race_count
+                ? s_season.races[race_index].round : 0U;
+            const char *word = status.state == PDKPASS_MANUAL_RUNNING ? "SYNCING..." :
+                status.state == PDKPASS_MANUAL_UPDATED ? "UPDATED" :
+                status.state == PDKPASS_MANUAL_UNCHANGED ? "NO NEW DATA" :
+                status.state == PDKPASS_MANUAL_PARTIAL ? "PARTIAL UPDATE" :
+                status.state == PDKPASS_MANUAL_NOT_READY ? "RESULT PENDING" :
+                status.state == PDKPASS_MANUAL_OFFLINE ? "WIFI OFFLINE" : "SYNC FAILED";
+            snprintf(hint, sizeof(hint), "R%u %s", round, word);
+            set_hint(hint);
+            return;
+        }
+        set_hint("UP/DN OK:SYNC HOLD:BACK");
+        return;
+    }
+    if (pdkpass_season_manual_status(&status) &&
+        (status.state == PDKPASS_MANUAL_RUNNING ||
+         sync_notice_active(s_points_notice_until))) {
+        const char *word = status.state == PDKPASS_MANUAL_RUNNING ? "SYNCING..." :
+            status.state == PDKPASS_MANUAL_UPDATED ? "UPDATED" :
+            status.state == PDKPASS_MANUAL_UNCHANGED ? "NO NEW DATA" :
+            status.state == PDKPASS_MANUAL_PARTIAL ? "PARTIAL UPDATE" :
+            status.state == PDKPASS_MANUAL_OFFLINE ? "WIFI OFFLINE" : "SYNC FAILED";
+        snprintf(hint, sizeof(hint), "POINTS %s", word);
+        set_hint(hint);
+        return;
+    }
+    set_hint("UP/DN OK:SYNC HOLD:HOME");
+}
+
+static void manual_sync_tick(lv_timer_t *timer)
+{
+    (void)timer;
+    pdkpass_manual_status_t status;
+    size_t race_index;
+    bool redraw_results = false;
+    if (pdkpass_results_manual_status(&race_index, &status) &&
+        status.generation != s_results_sync_generation) {
+        s_results_sync_generation = status.generation;
+        s_results_notice_until = status.state == PDKPASS_MANUAL_RUNNING
+            ? 0U : lv_tick_get() + 3000U;
+        redraw_results = s_state.page == PDKPASS_PAGE_RESULTS &&
+                         race_index == s_state.selected_race;
+    }
+    if (pdkpass_season_manual_status(&status) &&
+        status.generation != s_points_sync_generation) {
+        s_points_sync_generation = status.generation;
+        s_points_notice_until = status.state == PDKPASS_MANUAL_RUNNING
+            ? 0U : lv_tick_get() + 3000U;
+    }
+    if (redraw_results) render();
+    update_manual_hint();
 }
 
 static void title_for_season(char *output, size_t capacity,
@@ -966,7 +1051,7 @@ static void render_standings(void)
                           INNER_W, &lv_font_unscii_8, UI_PAPER);
         make_center_label(s_content, "DRIVER DATA PENDING", 0, 115,
                           INNER_W, &lv_font_unscii_8, UI_PAPER);
-        set_hint("HOLD OK HOME");
+        set_hint("UP/DN OK:SYNC HOLD:HOME");
         return;
     }
 
@@ -1005,7 +1090,7 @@ static void render_standings(void)
     s_list_page = PDKPASS_PAGE_STANDINGS;
     s_list_start = start;
     s_list_selected = s_state.selected_driver;
-    set_hint("UP/DN  HOLD:HOME");
+    set_hint("UP/DN OK:SYNC HOLD:HOME");
 }
 
 static void render_team_standings(void)
@@ -1029,7 +1114,7 @@ static void render_team_standings(void)
                           INNER_W, &lv_font_unscii_8, UI_PAPER);
         make_center_label(s_content, "TEAM DATA PENDING", 0, 115,
                           INNER_W, &lv_font_unscii_8, UI_PAPER);
-        set_hint("HOLD OK HOME");
+        set_hint("UP/DN OK:SYNC HOLD:HOME");
         return;
     }
 
@@ -1068,7 +1153,7 @@ static void render_team_standings(void)
     s_list_page = PDKPASS_PAGE_TEAM_STANDINGS;
     s_list_start = start;
     s_list_selected = s_state.selected_team;
-    set_hint("UP/DN  HOLD:HOME");
+    set_hint("UP/DN OK:SYNC HOLD:HOME");
 }
 
 static size_t build_track_points(const char *circuit)
@@ -1175,7 +1260,7 @@ static void render_results(void)
         set_status("SESSIONS", race->accent);
         make_medium_label(s_content, "NO SESSIONS", 0, 42, INNER_W, UI_YELLOW);
         make_medium_label(s_content, "CHECK SCHEDULE", 0, 95, INNER_W, UI_PAPER);
-        set_hint("HOLD:BACK");
+        set_hint("UP/DN OK:SYNC HOLD:BACK");
         return;
     }
     set_status(pdkpass_session_label(s_state.selected_session), race->accent);
@@ -1241,7 +1326,7 @@ static void render_results(void)
                        &lv_font_unscii_8, team_ink);
         }
     }
-    set_hint("UP/DN:PAGE HOLD:BACK");
+    set_hint("UP/DN OK:SYNC HOLD:BACK");
 }
 
 static void render_reminder(void)
@@ -1359,6 +1444,7 @@ static void render(void)
         render_results();
         break;
     }
+    update_manual_hint();
 }
 
 // Tiny 3x5 digits keep the compact battery silhouette, without loading a font.
@@ -1608,7 +1694,26 @@ void pdkpass_ui_enter(bool battery_available)
     s_reminder_timer = lv_timer_create(reminder_timeout, 15000U, NULL);
     lv_timer_pause(s_reminder_timer);
     s_clock_timer = lv_timer_create(clock_tick, CLOCK_FALLBACK_PERIOD_MS, NULL);
+    s_sync_timer = lv_timer_create(manual_sync_tick, 250U, NULL);
     lv_screen_load(s_screen);
+}
+
+static void show_manual_sync_rejection(pdkpass_manual_state_t state)
+{
+    const char *text = state == PDKPASS_MANUAL_OFFLINE ? "WIFI OFFLINE" :
+        state == PDKPASS_MANUAL_BUSY ? "SYNC IN PROGRESS" :
+        state == PDKPASS_MANUAL_COOLDOWN ? "WAIT 60S TO SYNC" :
+        state == PDKPASS_MANUAL_NOT_READY ? "RESULT PENDING" : "SYNC FAILED";
+    if (s_state.page == PDKPASS_PAGE_RESULTS &&
+        s_state.selected_race < s_season.race_count) {
+        snprintf(s_sync_reject_hint, sizeof(s_sync_reject_hint), "R%u %s",
+                 s_season.races[s_state.selected_race].round, text);
+    } else {
+        snprintf(s_sync_reject_hint, sizeof(s_sync_reject_hint), "POINTS %s", text);
+    }
+    s_sync_reject_page = s_state.page;
+    s_sync_reject_until = lv_tick_get() + 3000U;
+    update_manual_hint();
 }
 
 void pdkpass_ui_network_update(const pdkpass_network_update_t *update)
@@ -1767,6 +1872,19 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         s_state.network_selection == 2U) {
         pdkpass_reminder_set_enabled(!pdkpass_reminder_enabled());
         render();
+        return;
+    }
+    if (input == PDKPASS_INPUT_OK &&
+        (s_state.page == PDKPASS_PAGE_RESULTS ||
+         s_state.page == PDKPASS_PAGE_STANDINGS ||
+         s_state.page == PDKPASS_PAGE_TEAM_STANDINGS)) {
+        pdkpass_manual_state_t state = s_state.page == PDKPASS_PAGE_RESULTS
+            ? pdkpass_results_force_race(s_state.selected_race)
+            : pdkpass_season_force_points();
+        if (state == PDKPASS_MANUAL_RUNNING) {
+            s_sync_reject_until = 0U;
+            update_manual_hint();
+        } else show_manual_sync_rejection(state);
         return;
     }
     if ((s_state.page == PDKPASS_PAGE_NETWORK && input == PDKPASS_INPUT_OK &&

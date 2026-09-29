@@ -55,9 +55,9 @@ supported weekend session.
 | Network menu | Select action | — | Confirm | Home |
 | Retry | — | — | Back after failure | Cancel |
 | Setup QR / details | — | — | Show details / return to QR | Close hotspot |
-| Driver / team standings | Scroll rankings | — | — | Home |
+| Driver / team standings | Scroll rankings | — | Refresh both points tables | Home |
 | Race details | Previous / next race | — | Session results | Back |
-| Session results | Previous / next session | — | — | Race details |
+| Session results | Previous / next session | — | Refresh this round | Race details |
 
 ## No app required
 
@@ -113,6 +113,8 @@ Reminders default to on. In `NETWORK`, select `ALERTS: ON/OFF` and press OK to
 change the saved setting. Every scheduled FP1, FP2, FP3, sprint qualifying,
 sprint, qualifying and race session rings once, ten minutes before its start.
 Missing or cancelled sessions do not ring. Schedule updates change the deadline.
+The same switch controls the cue when a session result is first saved; button
+cues remain available when `ALERTS` is off.
 
 The approved three-second melody plays at 80%; button cues remain at 50%.
 A notice wakes the display for up to 15 seconds, showing the round, session and
@@ -178,6 +180,10 @@ normal weekends skip sprint qualifying/sprint, and sprint weekends skip FP2/FP3.
 Before session metadata arrives, the bundled calendar supplies the weekend
 format; downloaded metadata takes precedence. Scheduled sessions remain
 visible while results are pending, and cancelled sessions retain their notice.
+Press OK on results to recheck every completed session in the selected round,
+including cached results that may have been corrected. The footer reports the
+outcome; existing results remain visible if a request fails. Repeated manual
+requests have a 60-second cooldown.
 Opening a result or waking its page prioritizes that round across successive
 session downloads. Failed requests for that round retry after five minutes,
 even when background backfill has a longer delay. Selecting another round
@@ -237,7 +243,10 @@ in the season show `MULTIPLE TEAMS`, since their order does not identify the
 current team.
 
 Hold DOWN on home to open `TEAM POINTS`; hold UP for driver standings.
-UP/DOWN scroll through rankings; hold OK to return home. Short OK does not exit.
+UP/DOWN scroll through rankings; hold OK to return home. Short OK refreshes both
+driver and team standings without reloading the calendar. Existing tables stay
+visible during the request; the footer reports the outcome. Repeated manual
+requests have a 60-second cooldown.
 The home DOWN hold no longer opens the calendar list; short UP/DOWN still browse races.
 Team points come directly from Jolpica constructor standings, including provider
 adjustments, rather than a sum of driver scores. They refresh automatically with

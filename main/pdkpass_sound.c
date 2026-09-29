@@ -1,6 +1,7 @@
 #include "pdkpass_sound.h"
 
 #include "bsp_audio.h"
+#include "pdkpass_reminder.h"
 #include "pdkpass_sound_core.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -107,6 +108,9 @@ static void sound_worker(void *unused)
             opened = false;
             continue;
         }
+        // The ALERTS setting may have been turned off after this cue queued.
+        if (kind == PDKPASS_SOUND_RESULT_READY && !pdkpass_reminder_enabled())
+            continue;
         size_t count = pdkpass_sound_render(kind, s_pcm, PDKPASS_SOUND_SAMPLES);
         if (count > 0U) {
             if (bsp_audio_write(s_pcm, count * sizeof(s_pcm[0])) == ESP_OK) {
@@ -150,7 +154,8 @@ void pdkpass_sound_key(bsp_btn_t button, bsp_btn_ev_t event)
 
 void pdkpass_sound_result_ready(void)
 {
-    if (atomic_load(&s_reminder_active) || !s_queue) return;
+    if (atomic_load(&s_reminder_active) || !s_queue ||
+        !pdkpass_reminder_enabled()) return;
     pdkpass_sound_kind_t kind = PDKPASS_SOUND_RESULT_READY;
     // Do not replace a reminder (or a key cue) that is already queued.
     xQueueSend(s_queue, &kind, 0);

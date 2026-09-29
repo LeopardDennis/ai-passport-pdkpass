@@ -6,9 +6,15 @@
 
 ## Unreleased
 
+- Short OK on results refreshes only the selected round, including corrections
+  to cached podiums. Short OK on either points page refreshes driver and team
+  standings without reloading the calendar. Keep cached data visible, show
+  progress and outcome in the footer, and limit repeat requests to once a minute.
+
 - Play a distinct short cue when each session's podium is downloaded from
   OpenF1 and saved for the first time. Restored cache, session discovery, and
-  failed downloads stay silent; reminder audio takes priority.
+  failed downloads stay silent; reminder audio takes priority. The saved
+  `ALERTS` switch also controls this cue without muting button sounds.
 
 - Redesign the local Wi-Fi setup page with the PDKPASS colors and an English
   mobile form. Scan nearby 2.4 GHz networks before starting the setup hotspot,

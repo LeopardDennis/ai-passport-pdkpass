@@ -2,6 +2,7 @@
 
 #include "esp_err.h"
 #include "pdkpass_data.h"
+#include "pdkpass_manual_sync.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -44,6 +45,10 @@ esp_err_t pdkpass_season_start(pdkpass_season_callback_t callback);
 // Network state includes time validity so an unset RTC cannot select a bogus
 // year. A transition to usable connectivity wakes the synchronizer.
 void pdkpass_season_set_network(bool online, bool time_valid);
+
+// Refresh both driver and constructor standings without fetching the calendar.
+pdkpass_manual_state_t pdkpass_season_force_points(void);
+bool pdkpass_season_manual_status(pdkpass_manual_status_t *status);
 
 bool pdkpass_season_snapshot(pdkpass_season_snapshot_t *snapshot);
 // True only when the active season has a persisted snapshot, not a bundled calendar.

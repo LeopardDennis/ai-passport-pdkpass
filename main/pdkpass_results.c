@@ -29,6 +29,7 @@
 #define RESULTS_PRIORITY_SECONDS (15LL * 60LL)
 #define RESULTS_WINDOW_SECONDS (5LL * 24LL * 60LL * 60LL)
 #define RESULTS_GRACE_SECONDS (24LL * 60LL * 60LL)
+#define RESULTS_FORCE_COOLDOWN_MS 60000U
 #define RESULTS_CACHE_MAGIC 0x50444B52U
 #define RESULTS_CACHE_VERSION 3U
 
@@ -120,6 +121,11 @@ static unsigned s_cache_year;
 static size_t s_cache_count;
 static bool s_cache_dirty;
 static bool s_has_cached_data;
+static bool s_force_pending;
+static size_t s_force_race = SIZE_MAX;
+static pdkpass_manual_status_t s_force_status;
+static TickType_t s_force_last_tick;
+static bool s_force_has_last_tick;
 
 static void reset_race_cache(size_t race_index, race_cache_t *cache)
 {
@@ -732,6 +738,123 @@ static process_outcome_t process_race(size_t race_index, int64_t now_utc)
     return outcome;
 }
 
+static void finish_manual_race(size_t race_index, pdkpass_manual_state_t state)
+{
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return;
+    if (s_force_race == race_index && s_force_status.state == PDKPASS_MANUAL_RUNNING) {
+        s_force_status.state = state;
+        s_force_status.generation++;
+    }
+    xSemaphoreGive(s_lock);
+}
+
+static bool take_manual_race(size_t *race_index)
+{
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    bool pending = s_force_pending;
+    if (pending) {
+        *race_index = s_force_race;
+        s_force_pending = false;
+    }
+    xSemaphoreGive(s_lock);
+    return pending;
+}
+
+static bool manual_race_pending(void)
+{
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    bool pending = s_force_pending;
+    xSemaphoreGive(s_lock);
+    return pending;
+}
+
+static bool persisted_race_changed(const race_cache_t *before,
+                                   const race_cache_t *after)
+{
+    if (before->meeting_key != after->meeting_key ||
+        before->discovered != after->discovered) return true;
+    for (size_t i = 0; i < PDKPASS_SESSION_COUNT; i++) {
+        const session_cache_t *a = &before->sessions[i];
+        const session_cache_t *b = &after->sessions[i];
+        if (a->session_key != b->session_key || a->present != b->present ||
+            a->cancelled != b->cancelled || a->ready != b->ready ||
+            memcmp(a->podium_codes, b->podium_codes,
+                   sizeof(a->podium_codes)) != 0) return true;
+    }
+    return false;
+}
+
+static void process_manual_race(size_t race_index, int64_t now_utc)
+{
+    pdkpass_race_t race;
+    unsigned year = pdkpass_season_year();
+    if (!pdkpass_season_race_get(race_index, &race) ||
+        xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        finish_manual_race(race_index, PDKPASS_MANUAL_FAILED);
+        return;
+    }
+    race_cache_t before = s_cache[race_index];
+    xSemaphoreGive(s_lock);
+    race_cache_t candidate = before;
+    bool failed = !discover_sessions(race_index, &candidate, now_utc);
+    bool due = false, updated = false;
+    unsigned first_results = 0;
+    for (size_t i = 0; i < PDKPASS_SESSION_COUNT; i++) {
+        session_cache_t *session = &candidate.sessions[i];
+        if (!session->present || session->cancelled || session->session_key <= 0 ||
+            session->end_utc <= 0 || now_utc < session->end_utc) continue;
+        due = true;
+        session_cache_t checked = *session;
+        checked.last_attempt_utc = now_utc;
+        if (!fetch_result(&checked)) {
+            failed = true;
+            continue;
+        }
+        if (!session->ready) first_results++;
+        updated |= !session->ready ||
+                   memcmp(session->podium_codes, checked.podium_codes,
+                          sizeof(session->podium_codes)) != 0;
+        *session = checked;
+    }
+
+    pdkpass_race_t current;
+    if (pdkpass_season_year() != year ||
+        !pdkpass_season_race_get(race_index, &current) ||
+        current.meeting_key != race.meeting_key) {
+        finish_manual_race(race_index, PDKPASS_MANUAL_FAILED);
+        return;
+    }
+    bool changed = memcmp(&before, &candidate, sizeof(candidate)) != 0;
+    bool needs_save = persisted_race_changed(&before, &candidate);
+    if (changed) {
+        if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            finish_manual_race(race_index, PDKPASS_MANUAL_FAILED);
+            return;
+        }
+        s_cache[race_index] = candidate;
+        xSemaphoreGive(s_lock);
+        if (needs_save) {
+            s_cache_dirty = true;
+            if (save_cache() != ESP_OK) failed = true;
+            else s_cache_dirty = false;
+        }
+        if (s_callback) {
+            if (first_results && !s_cache_dirty) {
+                // Each newly cached session keeps its own completion cue.
+                for (unsigned i = 0; i < first_results; i++) {
+                    s_callback(race_index, true);
+                    if (i + 1U < first_results) vTaskDelay(pdMS_TO_TICKS(120));
+                }
+            } else s_callback(race_index, false);
+        }
+    }
+    pdkpass_manual_state_t state = !due ?
+        (failed ? PDKPASS_MANUAL_FAILED : PDKPASS_MANUAL_NOT_READY) :
+        failed ? (updated && !s_cache_dirty ? PDKPASS_MANUAL_PARTIAL : PDKPASS_MANUAL_FAILED) :
+        updated ? PDKPASS_MANUAL_UPDATED : PDKPASS_MANUAL_UNCHANGED;
+    finish_manual_race(race_index, state);
+}
+
 static TickType_t next_scheduled_wait(int64_t now_utc)
 {
     int64_t best_seconds = RESULTS_IDLE_DELAY_MS / 1000U;
@@ -807,9 +930,12 @@ static void results_task(void *arg)
         xEventGroupWaitBits(s_events, EVENT_WAKE, pdTRUE, pdFALSE, delay);
         // A UI request may arrive inside HTTP work, before that work writes
         // its next deadline. The queued request must override that stale wait.
-        uint32_t wait_ms = request_pending() ? 0 :
+        uint32_t wait_ms = (manual_race_pending() || request_pending()) ? 0 :
                            pdkpass_sync_wait_ms(PDKPASS_SYNC_RESULTS);
         if (!online_snapshot()) {
+            size_t manual_race;
+            if (take_manual_race(&manual_race))
+                finish_manual_race(manual_race, PDKPASS_MANUAL_OFFLINE);
             if (!wait_ms) pdkpass_network_request(PDKPASS_NETWORK_SYNC);
             delay = wait_ms ? pdMS_TO_TICKS(wait_ms) : portMAX_DELAY;
             continue;
@@ -820,6 +946,14 @@ static void results_task(void *arg)
         if (!online_snapshot()) { pdkpass_http_end(); delay = 1; continue; }
         int64_t now_utc = (int64_t)time(NULL);
         if (s_cache_dirty && save_cache() == ESP_OK) s_cache_dirty = false;
+        size_t manual_race;
+        if (take_manual_race(&manual_race)) {
+            process_manual_race(manual_race, now_utc);
+            delay = next_scheduled_wait((int64_t)time(NULL));
+            pdkpass_sync_plan(PDKPASS_SYNC_RESULTS, delay * portTICK_PERIOD_MS);
+            pdkpass_http_end();
+            continue;
+        }
         size_t race_index = select_race(now_utc);
         size_t race_count = pdkpass_season_race_count();
         if (race_index >= race_count) {
@@ -901,6 +1035,47 @@ void pdkpass_results_request_race(size_t race_index)
         if (needs_sync) pdkpass_sync_plan(PDKPASS_SYNC_RESULTS, 0);
     }
     xEventGroupSetBits(s_events, EVENT_WAKE);
+}
+
+pdkpass_manual_state_t pdkpass_results_force_race(size_t race_index)
+{
+    if (!s_lock || !s_events || race_index >= pdkpass_season_race_count() ||
+        !race_is_eligible(race_index, (int64_t)time(NULL)))
+        return PDKPASS_MANUAL_NOT_READY;
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE)
+        return PDKPASS_MANUAL_BUSY;
+    TickType_t now = xTaskGetTickCount();
+    pdkpass_manual_state_t result = PDKPASS_MANUAL_RUNNING;
+    if (!s_online) result = PDKPASS_MANUAL_OFFLINE;
+    else if (s_force_status.state == PDKPASS_MANUAL_RUNNING)
+        result = PDKPASS_MANUAL_BUSY;
+    else if (s_force_has_last_tick &&
+             now - s_force_last_tick < pdMS_TO_TICKS(RESULTS_FORCE_COOLDOWN_MS))
+        result = PDKPASS_MANUAL_COOLDOWN;
+    else {
+        s_force_has_last_tick = true;
+        s_force_last_tick = now;
+        s_force_race = race_index;
+        s_force_pending = true;
+        s_force_status.state = PDKPASS_MANUAL_RUNNING;
+        s_force_status.generation++;
+    }
+    xSemaphoreGive(s_lock);
+    if (result == PDKPASS_MANUAL_RUNNING) {
+        xEventGroupSetBits(s_events, EVENT_WAKE);
+    }
+    return result;
+}
+
+bool pdkpass_results_manual_status(size_t *race_index,
+                                   pdkpass_manual_status_t *status)
+{
+    if (!race_index || !status || !s_lock ||
+        xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    *race_index = s_force_race;
+    *status = s_force_status;
+    xSemaphoreGive(s_lock);
+    return true;
 }
 
 bool pdkpass_results_get(size_t race_index, pdkpass_session_kind_t session,

@@ -268,7 +268,9 @@ typedef struct { bsp_btn_t button; bsp_btn_ev_t event; } key_event_t;
 static jmp_buf done;
 static unsigned step, init_calls, opens, stops, writes, sounds, ui_keys, probes;
 static unsigned volume, delays;
-static bool init_fail, write_fail, coalesced;
+static bool init_fail, write_fail, coalesced, alerts_enabled=true;
+static bool queued_disabled_result;
+bool pdkpass_reminder_enabled(void) {return alerts_enabled;}
 static atomic_bool s_reminder_active, s_reminder_cancelled;
 static void play_reminder(void) {assert(false);}
 static bool pdkpass_sound_consume_key(bsp_btn_t btn,bsp_btn_ev_t ev) {(void)btn;(void)ev;return false;}
@@ -303,6 +305,14 @@ static int xQueueSend(QueueHandle_t queue,const void *value,unsigned wait) {
 }
 static int xQueueReceive(QueueHandle_t queue,void *value,unsigned wait) {
  assert(queue==s_queue);
+ if(queued_disabled_result) {
+  if(wait==0) return 0;
+  if(step++==0) {
+   *(pdkpass_sound_kind_t *)value=PDKPASS_SOUND_RESULT_READY;
+   return pdTRUE;
+  }
+  assert(wait==250);longjmp(done,1);
+ }
  if(wait==0) {
   probes++;
   if(!coalesced) {coalesced=true;*(pdkpass_sound_kind_t *)value=PDKPASS_SOUND_DOWN;return pdTRUE;}
@@ -364,12 +374,22 @@ int main(void) {
  pdkpass_sound_result_ready();
  assert(sounds==5); // A result cue cannot replace an active reminder.
  atomic_store(&s_reminder_active,false);
+ alerts_enabled=false;
+ pdkpass_sound_result_ready();
+ assert(sounds==5); // ALERTS OFF suppresses new result cues.
+ on_key(BSP_BTN_UP,BSP_BTN_PRESS,NULL);
+ assert(sounds==6 && last_kind==PDKPASS_SOUND_UP); // Buttons still sound.
+ alerts_enabled=true;
  if(setjmp(done)==0) sound_worker(NULL);
  assert(probes==3 && volume==50);
  step=init_calls=opens=stops=writes=delays=0;coalesced=false;write_fail=true;
  if(setjmp(done)==0) sound_worker(NULL);
  step=init_calls=opens=stops=writes=delays=0;write_fail=false;init_fail=true;
  if(setjmp(done)==0) sound_worker(NULL);
+ step=init_calls=opens=stops=writes=delays=0;init_fail=false;
+ queued_disabled_result=true;alerts_enabled=false;
+ if(setjmp(done)==0) sound_worker(NULL);
+ assert(writes==0); // A queued result cue is dropped if ALERTS turns off.
  puts("Press dispatch, warm audio reuse, idle stop and audio failure cleanup: PASS");
 }
 """
@@ -1174,6 +1194,12 @@ static void xEventGroupWaitBits(int e,int b,int c,int a,unsigned wait) {
  now_ms=times[cursor];online=states[cursor++];
 }
 static bool network_ready(void) {return online;}
+static bool points_force_pending(void) {return false;}
+static bool take_points_force(void) {return false;}
+static void finish_points_force(pdkpass_manual_state_t state) {(void)state;}
+static pdkpass_manual_state_t synchronize_manual_points(int64_t now) {
+ (void)now;assert(false);return PDKPASS_MANUAL_FAILED;
+}
 static void refresh_builtin_year(int64_t now) {(void)now;}
 static TickType_t offline_wait(uint32_t wait,int64_t now) {(void)now;return wait?wait:portMAX_DELAY;}
 void pdkpass_network_request(pdkpass_network_command_t c) {assert(c==PDKPASS_NETWORK_SYNC);requests++;}
@@ -1755,6 +1781,14 @@ void pdkpass_sync_plan(pdkpass_sync_service_t service,uint32_t delay) {
  assert(service==PDKPASS_SYNC_RESULTS);wait_ms=delay;plans++;
 }
 static bool online_snapshot(void) {return true;}
+static bool manual_race_pending(void) {return false;}
+static bool take_manual_race(size_t *race) {(void)race;return false;}
+static void finish_manual_race(size_t race,pdkpass_manual_state_t state) {
+ (void)race;(void)state;assert(false);
+}
+static void process_manual_race(size_t race,int64_t utc) {
+ (void)race;(void)utc;assert(false);
+}
 static void pdkpass_network_request(int command) {(void)command;assert(false);}
 static void pdkpass_http_begin(void) {begins++;}
 static void pdkpass_http_end(void) {ends++;}
@@ -1784,6 +1818,115 @@ int main(void) {
  puts("Manual results request survives an in-flight HTTP deadline update: PASS");
 }
 """
+        compile_run(code)
+
+    def test_manual_results_refreshes_only_selected_round_and_preserves_cache(self):
+        source = (ROOT / 'main/pdkpass_results.c').read_text()
+        types = source[source.index('typedef struct {'):source.index('static const char *TAG')]
+        code = PRELUDE + types + r'''
+static race_cache_t s_cache[PDKPASS_MAX_RACES];
+static size_t s_force_race=1;
+static pdkpass_manual_status_t s_force_status={.state=PDKPASS_MANUAL_RUNNING};
+static bool s_cache_dirty, fail_one;
+static int discoveries, fetches, saves, callbacks, cues;
+static void vTaskDelay(unsigned ticks) {(void)ticks;}
+static void callback(size_t race,bool first) {
+ assert(race==1);callbacks++;if(first)cues++;
+}
+static void (*s_callback)(size_t,bool)=callback;
+static bool discover_sessions(size_t race,race_cache_t *cache,int64_t now) {
+ assert(race==1);discoveries++;cache->last_discovery_utc=now;return true;
+}
+static bool fetch_result(session_cache_t *session) {
+ fetches++;
+ if(fail_one && session->session_key==22) return false;
+ strcpy(session->podium_codes[0],session->session_key==11?"NEW":"FIX");
+ session->ready=1;return true;
+}
+static int save_cache(void) {saves++;return ESP_OK;}
+'''
+        code += function(source, 'static void finish_manual_race(')
+        code += function(source, 'static bool persisted_race_changed(')
+        code += function(source, 'static void process_manual_race(')
+        code += r'''
+int main(void) {
+ s_lock=1;races[1].meeting_key=123;s_cache[1].meeting_key=123;
+ for(int i=0;i<2;i++) {
+  session_cache_t *session=&s_cache[1].sessions[i];
+  session->present=1;session->ready=1;session->session_key=i?22:11;
+  session->end_utc=99;strcpy(session->podium_codes[0],"OLD");
+ }
+ s_cache[0].meeting_key=456;
+ process_manual_race(1,100);
+ assert(discoveries==1&&fetches==2&&saves==1&&callbacks==1&&cues==0);
+ assert(s_force_status.state==PDKPASS_MANUAL_UPDATED);
+ assert(strcmp(s_cache[1].sessions[0].podium_codes[0],"NEW")==0);
+ assert(strcmp(s_cache[1].sessions[1].podium_codes[0],"FIX")==0);
+ assert(s_cache[0].meeting_key==456&&s_cache[0].sessions[0].ready==0);
+ s_force_status.state=PDKPASS_MANUAL_RUNNING;
+ process_manual_race(1,101);
+ assert(fetches==4&&saves==1&&s_force_status.state==PDKPASS_MANUAL_UNCHANGED);
+ s_force_status.state=PDKPASS_MANUAL_RUNNING;fail_one=true;
+ process_manual_race(1,102);
+ assert(s_force_status.state==PDKPASS_MANUAL_FAILED&&saves==1);
+ assert(strcmp(s_cache[1].sessions[1].podium_codes[0],"FIX")==0);
+ fail_one=false;s_force_status.state=PDKPASS_MANUAL_RUNNING;
+ for(int i=0;i<2;i++) {
+  s_cache[1].sessions[i].ready=0;
+  memset(s_cache[1].sessions[i].podium_codes,0,
+         sizeof(s_cache[1].sessions[i].podium_codes));
+ }
+ process_manual_race(1,103);
+ assert(saves==2&&cues==2&&s_force_status.state==PDKPASS_MANUAL_UPDATED);
+ puts("Manual results: selected round, corrections, unchanged and failure cache: PASS");
+}
+'''
+        compile_run(code)
+
+    def test_manual_points_refreshes_both_tables_without_calendar(self):
+        source = (ROOT / 'main/pdkpass_season.c').read_text()
+        code = PRELUDE + r'''
+static pdkpass_season_snapshot_t s_season;
+static pdkpass_team_snapshot_t s_teams;
+static bool s_has_cached_data, team_fails;
+static int driver_fetches,team_fetches,driver_saves,team_saves,callbacks;
+static void callback(void) {callbacks++;}
+static void (*s_callback)(void)=callback;
+unsigned pdkpass_beijing_year(int64_t now) {(void)now;return 2026;}
+bool pdkpass_season_snapshot(pdkpass_season_snapshot_t *out) {*out=s_season;return true;}
+bool pdkpass_season_team_snapshot(pdkpass_team_snapshot_t *out) {*out=s_teams;return true;}
+static bool fetch_standings(int64_t now,pdkpass_season_snapshot_t *out) {
+ (void)now;driver_fetches++;out->drivers[0].points_tenths+=10;return true;
+}
+static bool fetch_team_standings(int64_t now,pdkpass_team_snapshot_t *out) {
+ (void)now;team_fetches++;
+ if(team_fails)return false;
+ out->teams[0].points_tenths+=10;return true;
+}
+static int save_cache(const pdkpass_season_snapshot_t *value) {
+ (void)value;driver_saves++;return ESP_OK;
+}
+static int save_team_cache(const pdkpass_team_snapshot_t *value) {
+ (void)value;team_saves++;return ESP_OK;
+}
+'''
+        code += function(source, 'static pdkpass_manual_state_t synchronize_manual_points(')
+        code += r'''
+int main(void) {
+ s_lock=1;s_season.year=2026;s_teams.year=2026;
+ s_season.driver_count=1;s_teams.count=1;
+ s_season.drivers[0].points_tenths=100;s_teams.teams[0].points_tenths=100;
+ assert(synchronize_manual_points(100)==PDKPASS_MANUAL_UPDATED);
+ assert(driver_fetches==1&&team_fetches==1&&driver_saves==1&&team_saves==1);
+ assert(s_season.drivers[0].points_tenths==110&&s_teams.teams[0].points_tenths==110);
+ assert(callbacks==2&&s_has_cached_data);
+ team_fails=true;
+ assert(synchronize_manual_points(101)==PDKPASS_MANUAL_PARTIAL);
+ assert(s_season.drivers[0].points_tenths==120&&s_teams.teams[0].points_tenths==110);
+ assert(driver_fetches==2&&team_fetches==2&&callbacks==3);
+ puts("Manual points: both tables, partial failure and retained cache: PASS");
+}
+'''
         compile_run(code)
 
     def test_results_scheduling(self):
