@@ -1165,14 +1165,23 @@ esp_err_t pdkpass_season_start(pdkpass_season_callback_t callback)
 {
     if (s_events) return ESP_ERR_INVALID_STATE;
     if (pdkpass_http_init() != ESP_OK) return ESP_ERR_NO_MEM;
-    s_lock = xSemaphoreCreateMutex();
+    if (!s_lock) s_lock = xSemaphoreCreateMutex();
     s_events = xEventGroupCreate();
-    if (!s_lock || !s_events) return ESP_ERR_NO_MEM;
+    if (!s_lock || !s_events) {
+        if (s_events) vEventGroupDelete(s_events);
+        s_events = NULL;
+        pdkpass_http_report_data_failure("season-startup", ESP_ERR_NO_MEM, 0);
+        return ESP_ERR_NO_MEM;
+    }
     s_callback = callback;
     load_cache();
     load_team_cache();
     if (xTaskCreate(season_task, "pdk_season", SEASON_TASK_STACK, NULL,
                     SEASON_TASK_PRIORITY, NULL) != pdPASS) {
+        // Preserve readable caches, but never accept work without a worker.
+        vEventGroupDelete(s_events);
+        s_events = NULL;
+        pdkpass_http_report_data_failure("season-task", ESP_ERR_NO_MEM, SEASON_TASK_STACK);
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;

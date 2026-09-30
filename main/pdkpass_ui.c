@@ -564,17 +564,17 @@ static void update_manual_hint(void)
         size_t race_index;
         if (pdkpass_results_manual_status(&race_index, &status) &&
             race_index == s_state.selected_race &&
+            status.session == (unsigned)s_state.selected_session &&
             (status.state == PDKPASS_MANUAL_RUNNING ||
              sync_notice_active(s_results_notice_until))) {
-            unsigned round = race_index < s_season.race_count
-                ? s_season.races[race_index].round : 0U;
             const char *word = status.state == PDKPASS_MANUAL_RUNNING ? "SYNCING..." :
                 status.state == PDKPASS_MANUAL_UPDATED ? "UPDATED" :
                 status.state == PDKPASS_MANUAL_UNCHANGED ? "NO NEW DATA" :
                 status.state == PDKPASS_MANUAL_PARTIAL ? "PARTIAL UPDATE" :
                 status.state == PDKPASS_MANUAL_NOT_READY ? "RESULT PENDING" :
                 status.state == PDKPASS_MANUAL_OFFLINE ? "WIFI OFFLINE" : "SYNC FAILED";
-            snprintf(hint, sizeof(hint), "R%u %s", round, word);
+            snprintf(hint, sizeof(hint), "%s %s",
+                     detail_session_short_label(status.session), word);
             set_hint(hint);
             return;
         }
@@ -608,7 +608,8 @@ static void manual_sync_tick(lv_timer_t *timer)
         s_results_notice_until = status.state == PDKPASS_MANUAL_RUNNING
             ? 0U : lv_tick_get() + 3000U;
         redraw_results = s_state.page == PDKPASS_PAGE_RESULTS &&
-                         race_index == s_state.selected_race;
+                         race_index == s_state.selected_race &&
+                         status.session == (unsigned)s_state.selected_session;
     }
     if (pdkpass_season_manual_status(&status) &&
         status.generation != s_points_sync_generation) {
@@ -1975,7 +1976,7 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
          s_state.page == PDKPASS_PAGE_STANDINGS ||
          s_state.page == PDKPASS_PAGE_TEAM_STANDINGS)) {
         pdkpass_manual_state_t state = s_state.page == PDKPASS_PAGE_RESULTS
-            ? pdkpass_results_force_race(s_state.selected_race)
+            ? pdkpass_results_force_session(s_state.selected_race, s_state.selected_session)
             : pdkpass_season_force_points();
         if (state == PDKPASS_MANUAL_RUNNING) {
             s_sync_reject_until = 0U;

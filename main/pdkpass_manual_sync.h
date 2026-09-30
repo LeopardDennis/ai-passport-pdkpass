@@ -18,4 +18,5 @@ typedef enum {
 typedef struct {
     pdkpass_manual_state_t state;
     uint32_t generation;
+    unsigned session; // Selected results session; unused for points refresh.
 } pdkpass_manual_status_t;

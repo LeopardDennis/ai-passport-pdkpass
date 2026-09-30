@@ -794,13 +794,22 @@ static void process_manual_race(size_t race_index, int64_t now_utc)
         return;
     }
     race_cache_t before = s_cache[race_index];
+    unsigned selected_session = s_force_status.session;
     xSemaphoreGive(s_lock);
+    if (selected_session >= PDKPASS_SESSION_COUNT) {
+        finish_manual_race(race_index, PDKPASS_MANUAL_NOT_READY);
+        return;
+    }
     race_cache_t candidate = before;
     bool failed = !discover_sessions(race_index, &candidate, now_utc);
+    // Discovery locates the selected session; other cached results stay intact.
+    for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++) {
+        if (i != selected_session) candidate.sessions[i] = before.sessions[i];
+    }
     bool due = false, updated = false;
     unsigned first_results = 0;
-    for (size_t i = 0; i < PDKPASS_SESSION_COUNT; i++) {
-        session_cache_t *session = &candidate.sessions[i];
+    do {
+        session_cache_t *session = &candidate.sessions[selected_session];
         if (!session->present || session->cancelled || session->session_key <= 0 ||
             session->end_utc <= 0 || now_utc < session->end_utc) continue;
         due = true;
@@ -815,7 +824,7 @@ static void process_manual_race(size_t race_index, int64_t now_utc)
                    memcmp(session->podium_codes, checked.podium_codes,
                           sizeof(session->podium_codes)) != 0;
         *session = checked;
-    }
+    } while (false);
 
     pdkpass_race_t current;
     if (pdkpass_season_year() != year ||
@@ -979,13 +988,22 @@ esp_err_t pdkpass_results_start(pdkpass_results_callback_t callback)
 {
     if (s_events) return ESP_ERR_INVALID_STATE;
     if (pdkpass_http_init() != ESP_OK) return ESP_ERR_NO_MEM;
-    s_lock = xSemaphoreCreateMutex();
+    if (!s_lock) s_lock = xSemaphoreCreateMutex();
     s_events = xEventGroupCreate();
-    if (!s_lock || !s_events) return ESP_ERR_NO_MEM;
+    if (!s_lock || !s_events) {
+        if (s_events) vEventGroupDelete(s_events);
+        s_events = NULL;
+        pdkpass_http_report_data_failure("results-startup", ESP_ERR_NO_MEM, 0);
+        return ESP_ERR_NO_MEM;
+    }
     s_callback = callback;
     load_cache();
     if (xTaskCreate(results_task, "pdk_results", RESULTS_TASK_STACK, NULL,
                     RESULTS_TASK_PRIORITY, NULL) != pdPASS) {
+        // Preserve readable caches, but never accept work without a worker.
+        vEventGroupDelete(s_events);
+        s_events = NULL;
+        pdkpass_http_report_data_failure("results-task", ESP_ERR_NO_MEM, RESULTS_TASK_STACK);
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
@@ -1037,9 +1055,10 @@ void pdkpass_results_request_race(size_t race_index)
     xEventGroupSetBits(s_events, EVENT_WAKE);
 }
 
-pdkpass_manual_state_t pdkpass_results_force_race(size_t race_index)
+pdkpass_manual_state_t pdkpass_results_force_session(size_t race_index, pdkpass_session_kind_t session)
 {
-    if (!s_lock || !s_events || race_index >= pdkpass_season_race_count() ||
+    if (!s_lock || !s_events || session >= PDKPASS_SESSION_COUNT ||
+        race_index >= pdkpass_season_race_count() ||
         !race_is_eligible(race_index, (int64_t)time(NULL)))
         return PDKPASS_MANUAL_NOT_READY;
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE)
@@ -1056,6 +1075,7 @@ pdkpass_manual_state_t pdkpass_results_force_race(size_t race_index)
         s_force_has_last_tick = true;
         s_force_last_tick = now;
         s_force_race = race_index;
+        s_force_status.session = session;
         s_force_pending = true;
         s_force_status.state = PDKPASS_MANUAL_RUNNING;
         s_force_status.generation++;

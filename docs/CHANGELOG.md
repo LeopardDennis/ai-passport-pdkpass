@@ -6,6 +6,14 @@
 
 ## Unreleased
 
+- Short OK on results refreshes only the displayed session (FP1, FP2, FP3,
+  sprint qualifying, sprint, qualifying or race), preserving other results.
+  Name that session in sync feedback.
+
+- Reject manual refresh when a results or season worker failed to start. Clear
+  the orphan event queue, preserve readable caches, allow startup retry, and
+  log heap diagnostics for allocation/task creation failures.
+
 - Balance home pagination spacing: move and shorten the session card, and lower the progress bar while retaining centered session text.
 
 - Center home session text vertically in its time card by moving it up 1 px.

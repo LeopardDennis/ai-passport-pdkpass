@@ -70,6 +70,90 @@ bool pdkpass_season_race_get(size_t i, pdkpass_race_t *race) {
 '''
 
 class Services(unittest.TestCase):
+    def test_worker_start_failure_never_accepts_manual_sync(self):
+        for service in ('results', 'season'):
+            source = (ROOT / f'main/pdkpass_{service}.c').read_text()
+            defines = '\n'.join(x for x in source.splitlines()
+                if x.startswith(('#define RESULTS_', '#define SEASON_', '#define POINTS_')))
+            code = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+#include "pdkpass_results.h"
+#include "pdkpass_season.h"
+#include <time.h>
+#define ESP_ERR_NO_MEM 0x101
+#define ESP_ERR_INVALID_STATE 0x103
+#define pdPASS 1
+#define pdTRUE 1
+#define EVENT_WAKE 1
+#define pdMS_TO_TICKS(x) (x)
+typedef uint32_t TickType_t;
+static int token;
+static void *s_lock, *s_events;
+static bool fail_mutex, fail_event, fail_task;
+static unsigned deleted, reports, created, loads, wakes;
+static void *xSemaphoreCreateMutex(void) {return fail_mutex ? NULL : &token;}
+static void *xEventGroupCreate(void) {return fail_event ? NULL : &token;}
+static void vEventGroupDelete(void *p) {assert(p);deleted++;}
+static int pdkpass_http_init(void) {return ESP_OK;}
+static void pdkpass_http_report_data_failure(const char *stage,int err,size_t bytes)
+{assert(stage && err==ESP_ERR_NO_MEM);(void)bytes;reports++;}
+static void load_cache(void) {loads++;}
+static void load_team_cache(void) {loads++;}
+static void results_task(void *p) {(void)p;}
+static void season_task(void *p) {(void)p;}
+static int xTaskCreate(void (*fn)(void *),const char *name,unsigned stack,
+ void *arg,unsigned priority,void *handle)
+{(void)fn;(void)name;(void)stack;(void)arg;(void)priority;(void)handle;
+ created++;return !fail_task;}
+static int xSemaphoreTake(void *p,unsigned wait) {(void)wait;assert(p);return 1;}
+static void xSemaphoreGive(void *p) {assert(p);}
+static TickType_t xTaskGetTickCount(void) {return 100;}
+static void xEventGroupSetBits(void *p,unsigned bits) {assert(p&&bits==1);wakes++;}
+static bool s_online=true,s_time_valid=true;
+static bool s_force_pending,s_force_has_last_tick,s_points_force_pending,s_points_force_has_last_tick;
+static TickType_t s_force_last_tick,s_points_force_last_tick;
+static size_t s_force_race;
+static pdkpass_manual_status_t s_force_status,s_points_force_status;
+size_t pdkpass_season_race_count(void) {return 1;}
+static bool race_is_eligible(size_t race,int64_t now) {(void)now;return race==0;}
+""" + defines + '\n'
+            if service == 'results':
+                code += 'static pdkpass_results_callback_t s_callback;\n'
+                force = 'pdkpass_results_force_session(0, PDKPASS_SESSION_FP1)'
+                code += function(source, 'pdkpass_manual_state_t pdkpass_results_force_session(')
+            else:
+                code += 'static pdkpass_season_callback_t s_callback;\n'
+                force = 'pdkpass_season_force_points()'
+                code += function(source, 'pdkpass_manual_state_t pdkpass_season_force_points(')
+            code += function(source, f'esp_err_t pdkpass_{service}_start(')
+            code += f"""
+int main(void) {{
+ fail_task=true;
+ assert(pdkpass_{service}_start(NULL)==ESP_ERR_NO_MEM);
+ assert(s_events==NULL && s_lock!=NULL && deleted==1 && reports==1 && loads>0);
+ assert({force}!=PDKPASS_MANUAL_RUNNING && wakes==0);
+ fail_task=false;
+ assert(pdkpass_{service}_start(NULL)==ESP_OK);
+ assert(created==2 && s_events!=NULL);
+ assert({force}==PDKPASS_MANUAL_RUNNING && wakes==1);
+ assert(pdkpass_{service}_start(NULL)==ESP_ERR_INVALID_STATE);
+ s_events=NULL;s_lock=NULL;fail_mutex=true;
+ assert(pdkpass_{service}_start(NULL)==ESP_ERR_NO_MEM);
+ assert(s_events==NULL && deleted==2);
+ assert({force}!=PDKPASS_MANUAL_RUNNING);
+ fail_mutex=false;fail_event=true;
+ assert(pdkpass_{service}_start(NULL)==ESP_ERR_NO_MEM);
+ assert(s_events==NULL && reports==3);
+ puts("Worker allocation failure, cache retention and retry: PASS");
+}}
+"""
+            compile_run(code)
+
 
     def test_reminder_persistence_failure_and_calendar(self):
         source = (ROOT / 'main/pdkpass_reminder.c').read_text()
@@ -1834,7 +1918,7 @@ int main(void) {
 """
         compile_run(code)
 
-    def test_manual_results_refreshes_only_selected_round_and_preserves_cache(self):
+    def test_manual_results_refreshes_only_selected_session_and_preserves_cache(self):
         source = (ROOT / 'main/pdkpass_results.c').read_text()
         types = source[source.index('typedef struct {'):source.index('static const char *TAG')]
         code = PRELUDE + types + r'''
@@ -1872,27 +1956,30 @@ int main(void) {
  }
  s_cache[0].meeting_key=456;
  process_manual_race(1,100);
- assert(discoveries==1&&fetches==2&&saves==1&&callbacks==1&&cues==0);
+ assert(discoveries==1&&fetches==1&&saves==1&&callbacks==1&&cues==0);
  assert(s_force_status.state==PDKPASS_MANUAL_UPDATED);
  assert(strcmp(s_cache[1].sessions[0].podium_codes[0],"NEW")==0);
- assert(strcmp(s_cache[1].sessions[1].podium_codes[0],"FIX")==0);
+ assert(strcmp(s_cache[1].sessions[1].podium_codes[0],"OLD")==0);
  assert(s_cache[0].meeting_key==456&&s_cache[0].sessions[0].ready==0);
  s_force_status.state=PDKPASS_MANUAL_RUNNING;
  process_manual_race(1,101);
- assert(fetches==4&&saves==1&&s_force_status.state==PDKPASS_MANUAL_UNCHANGED);
+ assert(fetches==2&&saves==1&&s_force_status.state==PDKPASS_MANUAL_UNCHANGED);
  s_force_status.state=PDKPASS_MANUAL_RUNNING;fail_one=true;
+ s_force_status.session=PDKPASS_SESSION_FP2;
  process_manual_race(1,102);
  assert(s_force_status.state==PDKPASS_MANUAL_FAILED&&saves==1);
- assert(strcmp(s_cache[1].sessions[1].podium_codes[0],"FIX")==0);
+ assert(strcmp(s_cache[1].sessions[1].podium_codes[0],"OLD")==0);
  fail_one=false;s_force_status.state=PDKPASS_MANUAL_RUNNING;
+ s_force_status.session=PDKPASS_SESSION_FP1;
  for(int i=0;i<2;i++) {
   s_cache[1].sessions[i].ready=0;
   memset(s_cache[1].sessions[i].podium_codes,0,
          sizeof(s_cache[1].sessions[i].podium_codes));
  }
  process_manual_race(1,103);
- assert(saves==2&&cues==2&&s_force_status.state==PDKPASS_MANUAL_UPDATED);
- puts("Manual results: selected round, corrections, unchanged and failure cache: PASS");
+ assert(saves==2&&cues==1&&s_force_status.state==PDKPASS_MANUAL_UPDATED);
+ assert(!s_cache[1].sessions[1].ready);
+ puts("Manual results: selected session, corrections, unchanged and failure cache: PASS");
 }
 '''
         compile_run(code)

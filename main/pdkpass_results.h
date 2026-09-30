@@ -50,10 +50,11 @@ void pdkpass_results_season_changed(void);
 // Prioritize a round because the user opened its results page.
 void pdkpass_results_request_race(size_t race_index);
 
-// Bypass the normal cache-complete and retry gates for this one round only.
-// The worker checks each ended session once and retains valid cached results
-// when an API request fails. A 60-second cooldown bounds repeat presses.
-pdkpass_manual_state_t pdkpass_results_force_race(size_t race_index);
+// Refresh only the selected session, including corrections to cached results.
+// Retain other sessions and valid cached data when requests fail. A 60-second
+// cooldown bounds repeat presses.
+pdkpass_manual_state_t pdkpass_results_force_session(size_t race_index,
+    pdkpass_session_kind_t session);
 bool pdkpass_results_manual_status(size_t *race_index,
                                    pdkpass_manual_status_t *status);
 
