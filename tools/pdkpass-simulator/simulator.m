@@ -525,6 +525,35 @@ bool pdkpass_results_get(size_t race_index, pdkpass_session_kind_t session,
     return true;
 }
 
+// Native previews do not run the firmware manual workers. Exercise their
+// transport/deadline behavior with production service tests instead.
+pdkpass_manual_state_t pdkpass_results_force_session(size_t race_index,
+                                                     pdkpass_session_kind_t session)
+{
+    (void)race_index; (void)session;
+    return s_simulator_online ? PDKPASS_MANUAL_NOT_READY : PDKPASS_MANUAL_OFFLINE;
+}
+static unsigned s_results_status_reads, s_points_status_reads;
+bool pdkpass_results_manual_status(size_t *race_index, pdkpass_manual_status_t *status)
+{
+    if (!race_index || !status) return false;
+    s_results_status_reads++;
+    *race_index = SIZE_MAX;
+    *status = (pdkpass_manual_status_t){.state = PDKPASS_MANUAL_IDLE};
+    return true;
+}
+pdkpass_manual_state_t pdkpass_season_force_points(void)
+{
+    return s_simulator_online ? PDKPASS_MANUAL_NOT_READY : PDKPASS_MANUAL_OFFLINE;
+}
+bool pdkpass_season_manual_status(pdkpass_manual_status_t *status)
+{
+    if (!status) return false;
+    s_points_status_reads++;
+    *status = (pdkpass_manual_status_t){.state = PDKPASS_MANUAL_IDLE};
+    return true;
+}
+
 bool pdkpass_results_has_cached_data(void) { return false; }
 
 void pdkpass_results_request_race(size_t race_index)
@@ -580,17 +609,18 @@ static void simulator_set_network(pdkpass_network_state_t state)
     simulator_refresh();
 }
 
-int64_t pdkpass_sync_last_success(pdkpass_sync_service_t service)
+int64_t pdkpass_sync_last_success(pdkpass_sync_status_t service)
 {
     (void)service;
     return 0;
 }
 
 // UI preview only: radio/timers are exercised by firmware service tests.
-void pdkpass_network_request(pdkpass_network_command_t command)
+esp_err_t pdkpass_network_request(pdkpass_network_command_t command)
 {
     simulator_set_network(command == PDKPASS_NETWORK_OPEN_SETUP ? PDKPASS_NETWORK_SETUP :
         command == PDKPASS_NETWORK_RETRY ? PDKPASS_NETWORK_CONNECTING : PDKPASS_NETWORK_OFFLINE);
+    return ESP_OK;
 }
 
 static void simulator_send_button(bsp_btn_t button, bsp_btn_ev_t event)
@@ -987,3 +1017,5 @@ int main(int argc, const char *argv[])
     }
     return 0;
 }
+
+int64_t esp_timer_get_time(void) {return (int64_t)lv_tick_get()*1000;}

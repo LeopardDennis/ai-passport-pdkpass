@@ -6,6 +6,7 @@
 #include "cJSON.h"
 #include "pdkpass_http.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
@@ -15,6 +16,7 @@
 #include "pdkpass_season.h"
 
 #include <stdio.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -30,6 +32,8 @@
 #define RESULTS_WINDOW_SECONDS (5LL * 24LL * 60LL * 60LL)
 #define RESULTS_GRACE_SECONDS (24LL * 60LL * 60LL)
 #define RESULTS_FORCE_COOLDOWN_MS 60000U
+#define RESULTS_SAVE_RETRY_MS 60000U
+#define RESULTS_SAVE_BUSY_RETRY_MS 1000U
 #define RESULTS_CACHE_MAGIC 0x50444B52U
 #define RESULTS_CACHE_VERSION 3U
 
@@ -120,6 +124,8 @@ static size_t s_history_cursor;
 static unsigned s_cache_year;
 static size_t s_cache_count;
 static bool s_cache_dirty;
+// Protected by s_lock; separate from the network scheduler and wall clock.
+static int64_t s_cache_retry_at_us;
 static bool s_has_cached_data;
 static bool s_force_pending;
 static size_t s_force_race = SIZE_MAX;
@@ -127,406 +133,9 @@ static pdkpass_manual_status_t s_force_status;
 static TickType_t s_force_last_tick;
 static bool s_force_has_last_tick;
 
-static void reset_race_cache(size_t race_index, race_cache_t *cache)
-{
-    memset(cache, 0, sizeof(*cache));
-    pdkpass_race_t race;
-    if (pdkpass_season_race_get(race_index, &race)) {
-        cache->meeting_key = race.meeting_key;
-    }
-}
+#include "pdkpass_results_store.inc"
 
-static bool persisted_matches(const results_store_t *stored, unsigned year,
-                              size_t race_count)
-{
-    (void)race_count;
-    return stored && stored->magic == RESULTS_CACHE_MAGIC &&
-           stored->version == RESULTS_CACHE_VERSION && stored->year == year &&
-           stored->race_count > 0 && stored->race_count <= PDKPASS_MAX_RACES;
-}
-
-static int stored_index(const results_store_t *stored, size_t index,
-                         const race_cache_t *race)
-{
-    if (race->meeting_key == 0) {
-        // The old offline calendar stored R13-R23 at indexes 0-10. Shift
-        // only its unkeyed cache; keyed API results still match by identity.
-        if (stored->year == 2026U && stored->race_count == 11U &&
-            pdkpass_season_race_count() == 23U && index >= 12U) {
-            bool legacy = true;
-            for (size_t i = 0; i < stored->race_count; i++) {
-                if (stored->races[i].meeting_key != 0) legacy = false;
-            }
-            if (legacy) return (int)(index - 12U);
-        }
-        return index < stored->race_count && stored->races[index].meeting_key == 0
-                   ? (int)index : -1;
-    }
-    for (size_t i = 0; i < stored->race_count; i++) {
-        if (stored->races[i].meeting_key == race->meeting_key) return (int)i;
-    }
-    return -1;
-}
-
-static void load_cache(void)
-{
-    race_cache_t *loaded = calloc(PDKPASS_MAX_RACES, sizeof(*loaded));
-    results_store_t *stored = malloc(sizeof(*stored));
-    if (!loaded || !stored) {
-        free(loaded);
-        free(stored);
-        return;
-    }
-    for (size_t i = 0; i < PDKPASS_MAX_RACES; i++) {
-        reset_race_cache(i, &loaded[i]);
-    }
-
-    bool valid = false;
-    bool cached_data = false;
-    nvs_handle_t handle;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) == ESP_OK) {
-        size_t size = sizeof(*stored);
-        esp_err_t err = nvs_get_blob(handle, NVS_KEY, stored, &size);
-        if (err == ESP_OK && size == sizeof(legacy_store_t)) {
-            legacy_store_t *legacy = malloc(sizeof(*legacy));
-            if (legacy) {
-                memcpy(legacy, stored, sizeof(*legacy));
-                if (legacy->magic == RESULTS_CACHE_MAGIC && legacy->version == 2U) {
-                    memset(stored, 0, sizeof(*stored));
-                    stored->magic = legacy->magic;
-                    stored->version = RESULTS_CACHE_VERSION;
-                    stored->year = legacy->year;
-                    stored->race_count = legacy->race_count;
-                    for (size_t i = 0; i < PDKPASS_MAX_RACES; i++) {
-                        memcpy(&stored->races[i], &legacy->races[i], sizeof(legacy_race_t));
-                    }
-                    size = sizeof(*stored);
-                }
-                free(legacy);
-            }
-        }
-        nvs_close(handle);
-        size_t race_count = pdkpass_season_race_count();
-        valid = err == ESP_OK && size == sizeof(*stored) &&
-                persisted_matches(stored, pdkpass_season_year(), race_count);
-        if (valid) {
-            for (size_t i = 0; i < race_count; i++) {
-                int match = stored_index(stored, i, &loaded[i]);
-                if (match < 0) continue;
-                const persisted_race_t *source = &stored->races[match];
-                cached_data |= source->discovered || source->present_mask ||
-                               source->cancelled_mask || source->ready_mask;
-                loaded[i].discovered = source->discovered;
-                for (size_t session = 0; session < PDKPASS_SESSION_COUNT;
-                     session++) {
-                    loaded[i].sessions[session].session_key = source->session_keys[session];
-                    uint8_t bit = (uint8_t)(1U << session);
-                    loaded[i].sessions[session].present =
-                        (source->present_mask & bit) != 0U;
-                    loaded[i].sessions[session].cancelled =
-                        (source->cancelled_mask & bit) != 0U;
-                    loaded[i].sessions[session].ready =
-                        (source->ready_mask & bit) != 0U;
-                    memcpy(loaded[i].sessions[session].podium_codes,
-                           source->podium_codes[session],
-                           sizeof(loaded[i].sessions[session].podium_codes));
-                }
-            }
-        }
-    }
-
-    if (s_lock && xSemaphoreTake(s_lock, pdMS_TO_TICKS(2000)) == pdTRUE) {
-        memcpy(s_cache, loaded, sizeof(s_cache));
-        s_cache_year = pdkpass_season_year();
-        s_cache_count = pdkpass_season_race_count();
-        s_cache_dirty = false;
-        s_has_cached_data = cached_data;
-        s_requested_race = SIZE_MAX;
-        s_priority_race = SIZE_MAX;
-        s_priority_until_utc = 0;
-        xSemaphoreGive(s_lock);
-    }
-    if (!valid && nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
-        if (nvs_erase_all(handle) == ESP_OK) nvs_commit(handle);
-        nvs_close(handle);
-    }
-    free(loaded);
-    free(stored);
-}
-
-static esp_err_t save_cache(void)
-{
-    results_store_t *stored = calloc(1, sizeof(*stored));
-    if (!stored) return ESP_ERR_NO_MEM;
-    stored->magic = RESULTS_CACHE_MAGIC;
-    stored->version = RESULTS_CACHE_VERSION;
-    stored->year = (uint16_t)pdkpass_season_year();
-    size_t race_count = pdkpass_season_race_count();
-    if (race_count > PDKPASS_MAX_RACES) race_count = PDKPASS_MAX_RACES;
-    stored->race_count = (uint8_t)race_count;
-    bool cached_data = false;
-    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(2000)) != pdTRUE) {
-        free(stored);
-        return ESP_ERR_TIMEOUT;
-    }
-    for (size_t i = 0; i < race_count; i++) {
-        stored->races[i].meeting_key = s_cache[i].meeting_key;
-        stored->races[i].discovered = s_cache[i].discovered;
-        for (size_t session = 0; session < PDKPASS_SESSION_COUNT; session++) {
-            stored->races[i].session_keys[session] = s_cache[i].sessions[session].session_key;
-            uint8_t bit = (uint8_t)(1U << session);
-            if (s_cache[i].sessions[session].present) {
-                stored->races[i].present_mask |= bit;
-            }
-            if (s_cache[i].sessions[session].cancelled) {
-                stored->races[i].cancelled_mask |= bit;
-            }
-            if (s_cache[i].sessions[session].ready) {
-                stored->races[i].ready_mask |= bit;
-            }
-            memcpy(stored->races[i].podium_codes[session],
-                   s_cache[i].sessions[session].podium_codes,
-                   sizeof(stored->races[i].podium_codes[session]));
-        }
-        cached_data |= stored->races[i].discovered ||
-                       stored->races[i].present_mask ||
-                       stored->races[i].cancelled_mask ||
-                       stored->races[i].ready_mask;
-    }
-    xSemaphoreGive(s_lock);
-
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err == ESP_OK) {
-        err = nvs_set_blob(handle, NVS_KEY, stored, sizeof(*stored));
-        if (err == ESP_OK) err = nvs_commit(handle);
-        nvs_close(handle);
-    }
-    if (err == ESP_OK && xSemaphoreTake(s_lock, pdMS_TO_TICKS(2000)) == pdTRUE) {
-        s_has_cached_data = cached_data;
-        xSemaphoreGive(s_lock);
-    }
-    free(stored);
-    return err;
-}
-
-static bool json_bool(const cJSON *object, const char *name)
-{
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, name);
-    return cJSON_IsTrue(item);
-}
-
-static void update_session_identity(session_cache_t *session, int32_t key,
-                                     bool cancelled, int64_t end_utc)
-{
-    // Legacy caches have no key. Their same-meeting/kind podium is retained
-    // when binding a key for the first time during migration.
-    if (session->session_key != 0 && session->session_key != key) {
-        memset(session, 0, sizeof(*session));
-    }
-    session->session_key = key;
-    session->present = 1;
-    session->cancelled = cancelled;
-    if (cancelled) session->ready = 0;
-    session->end_utc = end_utc;
-}
-
-typedef struct {
-    race_cache_t *cache;
-    int64_t window_start, window_end;
-    bool matched;
-    bool reminder_valid, reminder_matched;
-    int32_t meeting_key, reminder_meeting;
-    pdkpass_reminder_entry_t reminders[PDKPASS_SESSION_COUNT];
-} session_discovery_t;
-
-static void parse_reminder_session(const cJSON *item, session_discovery_t *d)
-{
-    const cJSON *name = cJSON_GetObjectItemCaseSensitive(item, "session_name");
-    if (!cJSON_IsString(name)) { d->reminder_valid = false; return; }
-    pdkpass_session_kind_t kind = pdkpass_session_kind_from_name(name->valuestring);
-    if (kind >= PDKPASS_SESSION_COUNT) return;
-    const cJSON *key = cJSON_GetObjectItemCaseSensitive(item, "session_key");
-    const cJSON *meeting = cJSON_GetObjectItemCaseSensitive(item, "meeting_key");
-    if (d->meeting_key > 0 && cJSON_IsNumber(meeting) && meeting->valueint != d->meeting_key)
-        return;
-    const cJSON *start = cJSON_GetObjectItemCaseSensitive(item, "date_start");
-    const cJSON *end = cJSON_GetObjectItemCaseSensitive(item, "date_end");
-    int64_t start_utc = 0, end_utc = 0;
-    bool has_start = cJSON_IsString(start) && pdkpass_parse_iso8601_utc(start->valuestring, &start_utc);
-    bool has_end = cJSON_IsString(end) && pdkpass_parse_iso8601_utc(end->valuestring, &end_utc);
-    if ((has_start && (start_utc < d->window_start || start_utc > d->window_end)) ||
-        (has_end && (end_utc < d->window_start || end_utc > d->window_end))) return;
-    bool cancelled = json_bool(item, "is_cancelled");
-    if (!cJSON_IsNumber(key) || key->valueint <= 0 || d->reminders[kind].session_key ||
-        (!cancelled && (!has_start || !has_end || start_utc >= end_utc)) ||
-        (!has_start && !has_end && d->meeting_key <= 0)) {
-        d->reminder_valid = false;
-        return;
-    }
-    int32_t reminder_meeting = cJSON_IsNumber(meeting) ? meeting->valueint : d->meeting_key;
-    if (reminder_meeting <= 0 || (d->reminder_meeting && d->reminder_meeting != reminder_meeting)) {
-        d->reminder_valid = false;
-        return;
-    }
-    d->reminder_meeting = reminder_meeting;
-    d->reminders[kind] = (pdkpass_reminder_entry_t){
-        .session_key = key->valueint, .start_utc = start_utc,
-        .flags = cancelled ? PDKPASS_REMINDER_CANCELLED : 0,
-    };
-    d->reminder_matched = true;
-}
-
-static bool parse_discovered_session(const cJSON *item, void *user)
-{
-    session_discovery_t *discovery = user;
-    parse_reminder_session(item, discovery);
-    const cJSON *name = cJSON_GetObjectItemCaseSensitive(item, "session_name");
-    const cJSON *key = cJSON_GetObjectItemCaseSensitive(item, "session_key");
-    const cJSON *date_end = cJSON_GetObjectItemCaseSensitive(item, "date_end");
-    if (!cJSON_IsString(name) || !cJSON_IsNumber(key) ||
-        !cJSON_IsString(date_end)) return true;
-
-    pdkpass_session_kind_t kind =
-        pdkpass_session_kind_from_name(name->valuestring);
-    int64_t end_utc;
-    if (kind >= PDKPASS_SESSION_COUNT ||
-        !pdkpass_parse_iso8601_utc(date_end->valuestring, &end_utc) ||
-        end_utc < discovery->window_start || end_utc > discovery->window_end)
-        return true;
-
-    session_cache_t *session = &discovery->cache->sessions[kind];
-    update_session_identity(session, (int32_t)key->valuedouble,
-                            json_bool(item, "is_cancelled"), end_utc);
-    discovery->matched = true;
-    return true;
-}
-
-static bool discover_sessions(size_t race_index, race_cache_t *cache,
-                              int64_t now_utc)
-{
-    pdkpass_race_t race;
-    if (!pdkpass_season_race_get(race_index, &race)) return false;
-    char url[256];
-    if (race.meeting_key > 0) {
-        snprintf(url, sizeof(url),
-                 "https://api.openf1.org/v1/sessions?meeting_key=%ld",
-                 (long)race.meeting_key);
-    } else {
-        snprintf(url, sizeof(url),
-                 "https://api.openf1.org/v1/sessions?year=%u&country_name=%s",
-                 pdkpass_season_year(), race.api_country);
-    }
-
-    // Do not publish a prefix of an interrupted or malformed response.
-    race_cache_t parsed = *cache;
-    session_discovery_t discovery = {
-        .cache = &parsed,
-        .reminder_valid = true,
-        .meeting_key = race.meeting_key,
-        .window_start = race.switch_at_utc - RESULTS_WINDOW_SECONDS,
-        .window_end = race.switch_at_utc,
-    };
-    if (pdkpass_http_array(url, parse_discovered_session, &discovery) != ESP_OK)
-        return false;
-    if (discovery.matched) parsed.discovered = 1;
-    if (discovery.reminder_matched && discovery.reminder_valid)
-        pdkpass_reminder_update_round(pdkpass_season_year(), race.round,
-                                      discovery.reminder_meeting, discovery.reminders);
-    *cache = parsed;
-    cache->last_discovery_utc = now_utc;
-    return discovery.matched;
-}
-
-static bool parse_podium_item(const cJSON *item, void *user)
-{
-    result_driver_t *top = user;
-    const cJSON *position = cJSON_GetObjectItemCaseSensitive(item, "position");
-    const cJSON *number = cJSON_GetObjectItemCaseSensitive(item, "driver_number");
-    if (cJSON_IsNumber(position) && cJSON_IsNumber(number)) {
-        int place = position->valueint;
-        if (place >= 1 && place <= PDKPASS_PODIUM_SIZE) {
-            top[place - 1].position = (unsigned)place;
-            top[place - 1].driver_number = number->valueint;
-        }
-    }
-    return true;
-}
-
-static bool podium_complete(const result_driver_t top[PDKPASS_PODIUM_SIZE])
-{
-    for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
-        if (top[i].position != i + 1 || top[i].driver_number <= 0) return false;
-    }
-    return true;
-}
-
-static void copy_json_text(char *destination, size_t capacity,
-                           const cJSON *object, const char *name,
-                           const char *fallback)
-{
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, name);
-    snprintf(destination, capacity, "%s",
-             cJSON_IsString(item) ? item->valuestring : fallback);
-}
-
-typedef struct {
-    const result_driver_t *top;
-    char (*podium_codes)[4];
-} podium_details_t;
-
-static bool parse_podium_driver(const cJSON *item, void *user)
-{
-    podium_details_t *details = user;
-    const cJSON *number = cJSON_GetObjectItemCaseSensitive(item, "driver_number");
-    if (!cJSON_IsNumber(number)) return true;
-    for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
-        if (number->valueint != details->top[i].driver_number) continue;
-        char fallback[8];
-        snprintf(fallback, sizeof(fallback), "#%d", details->top[i].driver_number);
-        copy_json_text(details->podium_codes[i], sizeof(details->podium_codes[i]),
-                       item, "name_acronym", fallback);
-    }
-    return true;
-}
-
-static bool podium_drivers_complete(const char podium_codes[PDKPASS_PODIUM_SIZE][4])
-{
-    for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
-        if (podium_codes[i][0] == '\0') return false;
-    }
-    return true;
-}
-
-static bool fetch_result(session_cache_t *session)
-{
-    char url[192];
-    snprintf(url, sizeof(url),
-             "https://api.openf1.org/v1/session_result?session_key=%ld&position%%3C=3",
-             (long)session->session_key);
-    result_driver_t top[PDKPASS_PODIUM_SIZE] = {0};
-    if (pdkpass_http_array(url, parse_podium_item, top) != ESP_OK ||
-        !podium_complete(top)) return false;
-
-    char podium_codes[PDKPASS_PODIUM_SIZE][4] = {0};
-    podium_details_t details = {.top = top, .podium_codes = podium_codes};
-    // The full grid arrives in an 8-10 KB TLS record on OpenF1. Streaming
-    // JSON cannot shrink that record: TLS must first allocate/decrypt it.
-    // Fetch only the three required drivers, keeping each response small.
-    for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
-        snprintf(url, sizeof(url),
-                 "https://api.openf1.org/v1/drivers?session_key=%ld&driver_number=%d",
-                 (long)session->session_key, top[i].driver_number);
-        if (pdkpass_http_array(url, parse_podium_driver, &details) != ESP_OK ||
-            podium_codes[i][0] == '\0') return false;
-    }
-    bool parsed = podium_drivers_complete((const char (*)[4])podium_codes);
-    if (parsed) {
-        memcpy(session->podium_codes, podium_codes, sizeof(podium_codes));
-        session->ready = 1;
-    }
-    return parsed;
-}
+#include "pdkpass_results_parse.inc"
 
 static int64_t retry_interval_seconds(size_t race_index, int64_t now_utc)
 {
@@ -632,9 +241,6 @@ static size_t select_race(int64_t now_utc)
         s_priority_race = race_is_eligible(requested, now_utc) ? requested : SIZE_MAX;
         s_priority_until_utc = now_utc + RESULTS_PRIORITY_SECONDS;
         expedite_requested_race(requested, now_utc);
-        pdkpass_race_t race;
-        if (pdkpass_season_race_get(requested, &race))
-            ESP_LOGD(TAG, "Prioritize R%u results", race.round);
     }
     // A briefly viewed historical round must not keep the radio retrying
     // every five minutes for the rest of the day. Further requests renew it.
@@ -682,10 +288,7 @@ static process_outcome_t process_race(size_t race_index, int64_t now_utc)
     bool fetched = false;
     if (discovery_due(&cache, now_utc)) {
         race_cache_t before_discovery = cache;
-        ESP_LOGD(TAG, "R%u discovering sessions", race.round);
         bool discovered = discover_sessions(race_index, &cache, now_utc);
-        ESP_LOGD(TAG, "R%u session discovery %s", race.round,
-                 discovered ? "complete" : "pending retry");
         cache.last_discovery_utc = now_utc;
         cache.next_discovery_utc = now_utc + (discovered
             ? RESULTS_DISCOVERY_INTERVAL_SECONDS : retry_interval_seconds(race_index, now_utc));
@@ -702,12 +305,8 @@ static process_outcome_t process_race(size_t race_index, int64_t now_utc)
             !pdkpass_session_result_due(now_utc, session->end_utc) ||
             now_utc - session->last_attempt_utc < retry_interval) continue;
         session->last_attempt_utc = now_utc;
-        ESP_LOGD(TAG, "R%u %s fetching podium", race.round,
-                 pdkpass_session_label((pdkpass_session_kind_t)i));
         if (fetch_result(session)) {
             fetched = true;
-            ESP_LOGI(TAG, "R%u %s podium cached", race.round,
-                     pdkpass_session_label((pdkpass_session_kind_t)i));
             changed = true;
             outcome = PROCESS_PROGRESS;
         } else {
@@ -724,25 +323,23 @@ static process_outcome_t process_race(size_t race_index, int64_t now_utc)
 
     s_cache_dirty |= changed;
     if (s_cache_dirty) {
-        esp_err_t err = save_cache();
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "R%u cache save failed: %s",
-                     race.round, esp_err_to_name(err));
-        }
-        if (err == ESP_OK) s_cache_dirty = false;
+        save_cache_with_retry();
     }
     bool new_result = fetched && !s_cache_dirty;
     if (new_result)
-        pdkpass_sync_mark_success(PDKPASS_SYNC_RESULTS, (int64_t)time(NULL));
+        pdkpass_sync_mark_success(PDKPASS_SYNC_STATUS_RESULTS, (int64_t)time(NULL));
     if (changed && s_callback) s_callback(race_index, new_result);
     return outcome;
 }
 
 static void finish_manual_race(size_t race_index, pdkpass_manual_state_t state)
 {
-    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return;
+    // Worker only; terminal status must not be dropped on lock contention.
+    xSemaphoreTake(s_lock, portMAX_DELAY);
     if (s_force_race == race_index && s_force_status.state == PDKPASS_MANUAL_RUNNING) {
-        s_force_status.state = state;
+        s_force_status.state = pdkpass_manual_visible_status(
+            s_force_status, esp_timer_get_time()).state == PDKPASS_MANUAL_TIMED_OUT
+                ? PDKPASS_MANUAL_TIMED_OUT : state;
         s_force_status.generation++;
     }
     xSemaphoreGive(s_lock);
@@ -766,6 +363,14 @@ static bool manual_race_pending(void)
     bool pending = s_force_pending;
     xSemaphoreGive(s_lock);
     return pending;
+}
+
+static int64_t manual_deadline(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int64_t deadline = s_force_status.deadline_us;
+    xSemaphoreGive(s_lock);
+    return deadline;
 }
 
 static bool persisted_race_changed(const race_cache_t *before,
@@ -833,6 +438,10 @@ static void process_manual_race(size_t race_index, int64_t now_utc)
         finish_manual_race(race_index, PDKPASS_MANUAL_FAILED);
         return;
     }
+    if (pdkpass_http_expired()) {
+        finish_manual_race(race_index, PDKPASS_MANUAL_TIMED_OUT);
+        return;
+    }
     bool changed = memcmp(&before, &candidate, sizeof(candidate)) != 0;
     bool needs_save = persisted_race_changed(&before, &candidate);
     if (changed) {
@@ -844,8 +453,7 @@ static void process_manual_race(size_t race_index, int64_t now_utc)
         xSemaphoreGive(s_lock);
         if (needs_save) {
             s_cache_dirty = true;
-            if (save_cache() != ESP_OK) failed = true;
-            else s_cache_dirty = false;
+            if (save_cache_with_retry() != ESP_OK) failed = true;
         }
         if (s_callback) {
             if (first_results && !s_cache_dirty) {
@@ -861,6 +469,9 @@ static void process_manual_race(size_t race_index, int64_t now_utc)
         (failed ? PDKPASS_MANUAL_FAILED : PDKPASS_MANUAL_NOT_READY) :
         failed ? (updated && !s_cache_dirty ? PDKPASS_MANUAL_PARTIAL : PDKPASS_MANUAL_FAILED) :
         updated ? PDKPASS_MANUAL_UPDATED : PDKPASS_MANUAL_UNCHANGED;
+    if ((state == PDKPASS_MANUAL_UPDATED || state == PDKPASS_MANUAL_UNCHANGED) &&
+        !s_cache_dirty && !pdkpass_http_expired())
+        pdkpass_sync_mark_success(PDKPASS_SYNC_STATUS_RESULTS, (int64_t)time(NULL));
     finish_manual_race(race_index, state);
 }
 
@@ -936,7 +547,8 @@ static void results_task(void *arg)
     (void)arg;
     TickType_t delay = pdMS_TO_TICKS(RESULTS_IDLE_DELAY_MS);
     for (;;) {
-        xEventGroupWaitBits(s_events, EVENT_WAKE, pdTRUE, pdFALSE, delay);
+        xEventGroupWaitBits(s_events, EVENT_WAKE, pdTRUE, pdFALSE, cache_retry_wait_ticks(delay));
+        retry_cache_if_due();
         // A UI request may arrive inside HTTP work, before that work writes
         // its next deadline. The queued request must override that stale wait.
         uint32_t wait_ms = (manual_race_pending() || request_pending()) ? 0 :
@@ -951,23 +563,27 @@ static void results_task(void *arg)
         }
         if (wait_ms) { delay = pdMS_TO_TICKS(wait_ms); continue; }
 
+        size_t manual_race;
+        if (take_manual_race(&manual_race)) {
+            if (pdkpass_http_begin_until(manual_deadline())) {
+                if (online_snapshot()) {
+                    if (s_cache_dirty && !pdkpass_http_expired()) save_cache_with_retry();
+                    process_manual_race(manual_race, (int64_t)time(NULL));
+                } else finish_manual_race(manual_race, PDKPASS_MANUAL_OFFLINE);
+                pdkpass_http_end();
+            } else finish_manual_race(manual_race, PDKPASS_MANUAL_TIMED_OUT);
+            delay = next_scheduled_wait((int64_t)time(NULL));
+            pdkpass_sync_plan(PDKPASS_SYNC_RESULTS, delay * portTICK_PERIOD_MS);
+            continue;
+        }
         pdkpass_http_begin();
         if (!online_snapshot()) { pdkpass_http_end(); delay = 1; continue; }
         int64_t now_utc = (int64_t)time(NULL);
-        if (s_cache_dirty && save_cache() == ESP_OK) s_cache_dirty = false;
-        size_t manual_race;
-        if (take_manual_race(&manual_race)) {
-            process_manual_race(manual_race, now_utc);
-            delay = next_scheduled_wait((int64_t)time(NULL));
-            pdkpass_sync_plan(PDKPASS_SYNC_RESULTS, delay * portTICK_PERIOD_MS);
-            pdkpass_http_end();
-            continue;
-        }
+        if (s_cache_dirty) save_cache_with_retry();
         size_t race_index = select_race(now_utc);
         size_t race_count = pdkpass_season_race_count();
         if (race_index >= race_count) {
             delay = next_scheduled_wait(now_utc);
-            if (s_cache_dirty && delay > pdMS_TO_TICKS(60000)) delay = pdMS_TO_TICKS(60000);
             pdkpass_sync_plan(PDKPASS_SYNC_RESULTS, delay * portTICK_PERIOD_MS);
             pdkpass_http_end();
             continue;
@@ -978,7 +594,6 @@ static void results_task(void *arg)
         if (delay < pdMS_TO_TICKS(RESULTS_BACKFILL_DELAY_MS)) {
             delay = pdMS_TO_TICKS(RESULTS_BACKFILL_DELAY_MS);
         }
-        if (s_cache_dirty && delay > pdMS_TO_TICKS(60000)) delay = pdMS_TO_TICKS(60000);
         pdkpass_sync_plan(PDKPASS_SYNC_RESULTS, delay * portTICK_PERIOD_MS);
         pdkpass_http_end();
     }
@@ -1077,6 +692,8 @@ pdkpass_manual_state_t pdkpass_results_force_session(size_t race_index, pdkpass_
         s_force_race = race_index;
         s_force_status.session = session;
         s_force_pending = true;
+        s_force_status.cooldown_until_us = esp_timer_get_time() + 60000000LL;
+        s_force_status.deadline_us = esp_timer_get_time() + PDKPASS_MANUAL_TIMEOUT_US;
         s_force_status.state = PDKPASS_MANUAL_RUNNING;
         s_force_status.generation++;
     }
@@ -1093,7 +710,7 @@ bool pdkpass_results_manual_status(size_t *race_index,
     if (!race_index || !status || !s_lock ||
         xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
     *race_index = s_force_race;
-    *status = s_force_status;
+    *status = pdkpass_manual_visible_status(s_force_status, esp_timer_get_time());
     xSemaphoreGive(s_lock);
     return true;
 }

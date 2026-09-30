@@ -57,21 +57,9 @@ Hardware-affecting changes must also run the applicable on-device checklist in t
 
 ## macOS device log capture
 
-For read-only charging diagnosis, `./tools/validate.sh --battery-diagnostics`
-runs static and firmware validation with `CONFIG_PDKPASS_BATTERY_DIAGNOSTICS=y`
-in temporary defaults. It verifies that the flag was enabled and writes
-`build/FoloToy-AI-Passport-battery-diagnostics-full.bin`, leaving normal defaults
-and the normal merged image untouched. Samples run every 60 seconds even while
-the display sleeps; this image is unsuitable for baseline standby measurements.
-After flashing, close the flasher and capture at least 180 seconds. The collector
-counts `battery_sample` and `battery_read_issue`; correlate raw sample timestamps
-with manually observed charging-LED changes. These are diagnostics, not proof
-of charger termination or cell calibration.
-In each `battery_diag` line, `display_soc` is the integer percentage the UI
-would show, `soc_fraction_256` is the fractional part, and `cell_delta_mv` is
-the voltage change since the preceding valid sample (`cell_delta_valid=0`
-means no comparable sample). Keep the board powered by USB for several samples
-near the apparent plateau, then compare with the same readings after unplugging.
+Release firmware has no charging sampler or USB screenshot debug endpoint.
+Serial output contains necessary warnings and errors only. The collector below
+can record boot or networking failures without flashing or extra battery reads.
 
 On the test Mac, check out the same commit as the firmware being flashed. The
 log collector uses only Python 3's standard library; ESP-IDF and extra Python
@@ -88,7 +76,7 @@ python3 tools/device-test/serial_capture.py --port /dev/cu.usbmodemXXXX --second
 Start capture before restarting the board once, so the boot and reconnection
 logs are included. The collector never flashes, erases, or sends commands to
 the device. It saves a private raw log under `/tmp/pdkpass-device-logs/` and
-prints counts for observed startup, cache, and error messages. Those counts
+prints counts for observed warning and error messages. Those counts
 cannot prove display, button, sound, battery, or timing behavior; follow the
 hardware guide's on-device checklist. Inspect and redact network or personal
 details before sharing a raw log.

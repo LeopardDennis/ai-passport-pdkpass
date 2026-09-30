@@ -14,8 +14,14 @@ void pdkpass_sync_plan(pdkpass_sync_service_t service, uint32_t delay_ms);
 uint32_t pdkpass_sync_wait_ms(pdkpass_sync_service_t service);
 bool pdkpass_sync_idle(void);
 
-// Persist one successful check date per data service. A day-level stamp avoids
+typedef enum {
+    PDKPASS_SYNC_STATUS_CALENDAR, PDKPASS_SYNC_STATUS_RESULTS,
+    PDKPASS_SYNC_STATUS_DRIVERS, PDKPASS_SYNC_STATUS_TEAMS,
+    PDKPASS_SYNC_STATUS_COUNT
+} pdkpass_sync_status_t;
+
+// Persist one successful check date per data set. A day-level stamp avoids
 // repeatedly writing NVS during session backfill; zero means not yet tracked.
 void pdkpass_sync_status_init(void (*callback)(void));
-void pdkpass_sync_mark_success(pdkpass_sync_service_t service, int64_t utc);
-int64_t pdkpass_sync_last_success(pdkpass_sync_service_t service);
+void pdkpass_sync_mark_success(pdkpass_sync_status_t service, int64_t utc);
+int64_t pdkpass_sync_last_success(pdkpass_sync_status_t service);

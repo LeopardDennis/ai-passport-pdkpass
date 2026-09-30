@@ -95,8 +95,8 @@ void pdkpass_state_handle(pdkpass_state_t *state, pdkpass_input_t input,
             state->network_selection = (state->network_selection + 3U) % 4U;
         if (input == PDKPASS_INPUT_DOWN)
             state->network_selection = (state->network_selection + 1U) % 4U;
-        if (input == PDKPASS_INPUT_BACK ||
-            (input == PDKPASS_INPUT_OK && state->network_selection == 3U))
+        if (input == PDKPASS_INPUT_BACK) state->page = PDKPASS_PAGE_HOME;
+        if (input == PDKPASS_INPUT_OK && state->network_selection == 3U)
             state->page = PDKPASS_PAGE_HOME;
         break;
     case PDKPASS_PAGE_NETWORK_CONFIRM:

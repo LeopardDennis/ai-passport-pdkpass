@@ -45,4 +45,5 @@ typedef enum {
     PDKPASS_NETWORK_POLICY,
 } pdkpass_network_command_t;
 // Nonblocking; safe under the UI lock. The worker owns all radio operations.
-void pdkpass_network_request(pdkpass_network_command_t command);
+// Failure means no worker accepted the action; UI callers must end progress.
+esp_err_t pdkpass_network_request(pdkpass_network_command_t command);

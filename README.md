@@ -95,8 +95,13 @@ older firmware is imported automatically. No phone app is required.
 
 The top status changes through `SETUP`, `WIFI...`, `TIME...`, and `WIFI OK`.
 `WIFI OK` indicates connectivity, not that calendar or results data is current.
-The network menu shows the Beijing dates of successful `CAL SYNC` and downloaded
-`RESULTS` updates for the active season. A date from another season is not shown
+The network menu shows separate Beijing dates for successful `CAL SYNC`,
+`RESULTS`, `DRIVERS` and `TEAMS` checks in the active season. Manual and automatic
+checks update the matching date after complete responses are validated and any
+changed data is saved. An unchanged response also counts as a successful check;
+partial points updates record only the table that succeeded. Points checks do
+not update the calendar date. Existing calendar/results dates are retained,
+and each data set writes its date at most once per Beijing day. A date from another season is not shown
 as current: the menu says `CAL 2027 NO SYNC` or `RESULT 2027 NO SYNC` until that
 season is updated. An active-season cache without a recorded date says
 `CACHE DATE?`; `NEVER` means neither cached data nor a recorded update. After time
@@ -117,6 +122,8 @@ The same switch controls the cue when a session result is first saved; button
 cues remain available when `ALERTS` is off.
 
 The approved three-second melody plays at 80%; button cues remain at 50%.
+Audio initialization/open failures retry on a new cue after at least 60 seconds;
+failed cues are discarded rather than replayed later.
 A notice wakes the display for up to 15 seconds, showing the round, session and
 start time. Any key silences and dismisses it without navigating. It then
 restores the previous page and returns to sleep if the display was already dark.
@@ -140,7 +147,9 @@ consumption and simultaneous TLS/audio headroom still require testing.
 
 The display dims after 30 seconds and turns its backlight off after 90 seconds.
 While dark, the LCD controller enters sleep and drawing/invalidation pause; the clock and Beijing race
-switch timers continue. The first key press wakes the display without navigating.
+switch timers continue. Manual-sync polling pauses while dark and reads the
+latest state immediately after a successful key or reminder wake. The first key
+press wakes the display without navigating.
 If you browse other rounds on the home screen, the displayed round returns to
 the current weekend when the screen turns off after 90 seconds of inactivity.
 ADC keys are still scanned every 20 ms, rather than relying on unverified GPIO
@@ -180,10 +189,16 @@ normal weekends skip sprint qualifying/sprint, and sprint weekends skip FP2/FP3.
 Before session metadata arrives, the bundled calendar supplies the weekend
 format; downloaded metadata takes precedence. Scheduled sessions remain
 visible while results are pending, and cancelled sessions retain their notice.
-Press OK on results to recheck every completed session in the selected round,
-including cached results that may have been corrected. The footer reports the
+Press OK on results to recheck only the displayed session, including cached
+results that may have been corrected. Other sessions remain unchanged. The footer reports the
 outcome; existing results remain visible if a request fails. Repeated manual
-requests have a 60-second cooldown.
+requests have a 60-second cooldown. Each accepted refresh has a 120-second
+total deadline, including shared HTTP waits; expiration shows `SYNC TIMEOUT`.
+If saving downloaded results fails, the cache stays pending and retries locally
+after 60 seconds, including while offline. A busy shared transaction delays
+that retry until available; successful saving stops the local retry. Manual
+refresh still reports its save failure. Pending changes can be lost if power
+is removed before a successful save.
 Opening a result or waking its page prioritizes that round across successive
 session downloads. Failed requests for that round retry after five minutes,
 even when background backfill has a longer delay. Selecting another round
@@ -246,7 +261,8 @@ Hold DOWN on home to open `TEAM POINTS`; hold UP for driver standings.
 UP/DOWN scroll through rankings; hold OK to return home. Short OK refreshes both
 driver and team standings without reloading the calendar. Existing tables stay
 visible during the request; the footer reports the outcome. Repeated manual
-requests have a 60-second cooldown.
+requests have a 60-second cooldown. Each accepted refresh has a 120-second
+total deadline, including shared HTTP waits; expiration shows `SYNC TIMEOUT`.
 The home DOWN hold no longer opens the calendar list; short UP/DOWN still browse races.
 Team points come directly from Jolpica constructor standings, including provider
 adjustments, rather than a sum of driver scores. They refresh automatically with
@@ -254,6 +270,18 @@ the season worker and have an independent offline cache for up to 16 teams.
 Until the first complete download, the page shows pending data. New Year clears
 the visible old-season teams until current-season data arrives; driver points,
 team points and calendar failures do not discard one another's valid caches.
+
+### Refresh resources
+
+Repeated manual sync shows the actual cooldown in seconds. Each serialized
+refresh reuses one same-origin HTTPS client and releases TLS before cache saves
+or when the refresh ends. PDKPASS audio allocates TX/DAC only, keeping recording
+available to other BSP consumers through the full-duplex initializer.
+
+Storage erasure has a dedicated C module for legacy credential cleanup. Private
+store, parser, standings, portal and network-page implementation groups live in
+`.inc` files included by their owning service; their workers and locks retain
+one owner without adding tasks or shared mutable interfaces.
 
 ### Year-independent circuit catalog
 
@@ -335,26 +363,12 @@ PDKPASS is an independent fan project and is not affiliated with or endorsed by
 Formula 1, the FIA, or FoloToy. Formula 1 and related marks belong to their
 respective owners.
 
-## Reliability and debug builds
+## Reliability
 
-For charging diagnosis, `./tools/validate.sh --battery-diagnostics` runs the full
-validation gate and builds a separate `build/FoloToy-AI-Passport-battery-diagnostics-full.bin`.
-It enables `CONFIG_PDKPASS_BATTERY_DIAGNOSTICS` only in isolated build defaults;
-normal builds keep it off. The existing I/O worker logs a `battery_diag` sample
-at startup and every 60 seconds, even with the display asleep. Extra sampling
-changes idle power, so use normal firmware for battery-life measurements.
-`soc_raw` is in 1/256 percent, `soc_x100=9650` means 96.50%, `cell_mv` is millivolts,
-and CONFIG/mode, VERSION and `read_error` expose gauge state and read failures.
-A missing field is -1; `soc_valid=0` rejects unreadable/out-of-range SOC. These
-are separate register reads, not an atomic hardware snapshot. No gauge/profile
-writes, percentage remapping or charging/full-status inference is performed.
-Record the charging LED transition manually while capturing serial logs.
-
-Normal logs retain startup, accepted season/result caches, reminders and errors.
-Codec-open, background progress and Wi-Fi parking messages use DEBUG level.
-Battery polling no longer logs raw SOC or performs extra voltage reads; startup
-and setup no longer sample memory solely for informational logs. HTTP failure
-heap diagnostics remain available for actionable network/allocation failures.
+Release firmware keeps necessary warnings and errors only. It contains no
+charging-diagnostic sampling, I2C scanner, USB screenshot task, progress logs
+or heap sampling. Battery display still uses the gauge's measured SOC; charging
+and SOC parameters are unchanged.
 
 Standings are checked again 30 minutes after the recorded race end; failed
 synchronization retries after five minutes. The displayed standings date refers
@@ -363,14 +377,9 @@ download date. Published Sprint points may precede that round's scheduled race. 
 weekends take priority over historical backfill. API availability and rate limits
 can delay publication beyond these local retry intervals.
 
-An HTTP, JSON parsing, or allocation failure emits a `pdk_http` serial log
-line with the failure stage, HTTP status, error and response byte count.
-It also reports free heap and largest contiguous block before the request, before cleanup,
-and after cleanup; `low` is the minimum free heap since boot, not a
-request-only measurement. JSON parsing/allocation failures after download
-use the same format. No URL or response body is logged. Capture these lines
-and the surrounding network events when diagnosing a device; redact any
-unrelated personal or network information before sharing logs.
+HTTP, JSON parsing and allocation failures retain compact error reports with
+stage, status and error code. Logs contain no request URLs, response bodies,
+Wi-Fi passwords or other secrets.
 
 Setup uses a new random password each time it starts. Wait for an in-flight
 connection test to finish before submitting another network. `NTP ERR` means
@@ -380,9 +389,7 @@ time is only an offline estimate and does not account for power-off duration.
 The home status prefixes its date with `~`; this estimate does not trigger
 automatic round or season changes until time synchronization succeeds.
 
-Normal firmware disables the USB screenshot worker to save resources. Enable
-`CONFIG_PDKPASS_SCREENSHOT` in menuconfig for device screenshot debugging; capture
-has a two-second output deadline. The native simulator remains available for
-screenshots. Screen-off stops the UI idle timer; automatic light sleep is
+Use the native simulator for previews and photographs for device evidence.
+Screen-off stops the UI idle timer; automatic light sleep is
 configured, but ADC-button responsiveness and actual battery current still
 require board validation.

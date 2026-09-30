@@ -9,6 +9,7 @@
 #include "pdkpass_results.h"
 #include "pdkpass_reminder.h"
 #include "pdkpass_sound.h"
+#include "esp_timer.h"
 #include "pdkpass_schedule.h"
 #include "pdkpass_season_core.h"
 #include "pdkpass_season.h"
@@ -89,6 +90,7 @@ static uint32_t s_battery_background = UINT32_MAX;
 static pdkpass_network_state_t s_network_state = PDKPASS_NETWORK_STARTING;
 static char s_setup_ssid[33];
 static char s_setup_password[16];
+static int64_t s_sync_cooldown_until_us;
 static char s_setup_error[32];
 static unsigned s_setup_seconds_left;
 static bool s_hotspot_active;
@@ -549,6 +551,17 @@ static bool sync_notice_active(uint32_t until)
 
 static void update_manual_hint(void)
 {
+    if (s_sync_reject_page == s_state.page && s_sync_cooldown_until_us) {
+        int64_t remaining = s_sync_cooldown_until_us - esp_timer_get_time();
+        if (remaining > 0) {
+            char cooldown[32];
+            snprintf(cooldown, sizeof(cooldown), "WAIT %us TO SYNC", (unsigned)((remaining + 999999) / 1000000));
+            set_hint(cooldown);
+            return;
+        }
+        s_sync_cooldown_until_us = 0;
+        s_sync_reject_until = 0;
+    }
     bool results = s_state.page == PDKPASS_PAGE_RESULTS;
     bool points = s_state.page == PDKPASS_PAGE_STANDINGS ||
                   s_state.page == PDKPASS_PAGE_TEAM_STANDINGS;
@@ -572,7 +585,8 @@ static void update_manual_hint(void)
                 status.state == PDKPASS_MANUAL_UNCHANGED ? "NO NEW DATA" :
                 status.state == PDKPASS_MANUAL_PARTIAL ? "PARTIAL UPDATE" :
                 status.state == PDKPASS_MANUAL_NOT_READY ? "RESULT PENDING" :
-                status.state == PDKPASS_MANUAL_OFFLINE ? "WIFI OFFLINE" : "SYNC FAILED";
+                status.state == PDKPASS_MANUAL_OFFLINE ? "WIFI OFFLINE" :
+                status.state == PDKPASS_MANUAL_TIMED_OUT ? "SYNC TIMEOUT" : "SYNC FAILED";
             snprintf(hint, sizeof(hint), "%s %s",
                      detail_session_short_label(status.session), word);
             set_hint(hint);
@@ -588,7 +602,8 @@ static void update_manual_hint(void)
             status.state == PDKPASS_MANUAL_UPDATED ? "UPDATED" :
             status.state == PDKPASS_MANUAL_UNCHANGED ? "NO NEW DATA" :
             status.state == PDKPASS_MANUAL_PARTIAL ? "PARTIAL UPDATE" :
-            status.state == PDKPASS_MANUAL_OFFLINE ? "WIFI OFFLINE" : "SYNC FAILED";
+            status.state == PDKPASS_MANUAL_OFFLINE ? "WIFI OFFLINE" :
+            status.state == PDKPASS_MANUAL_TIMED_OUT ? "SYNC TIMEOUT" : "SYNC FAILED";
         snprintf(hint, sizeof(hint), "POINTS %s", word);
         set_hint(hint);
         return;
@@ -598,7 +613,10 @@ static void update_manual_hint(void)
 
 static void manual_sync_tick(lv_timer_t *timer)
 {
-    (void)timer;
+    if (s_idle_stage == 2) {
+        if (timer) lv_timer_pause(timer);
+        return;
+    }
     pdkpass_manual_status_t status;
     size_t race_index;
     bool redraw_results = false;
@@ -628,177 +646,7 @@ static void title_for_season(char *output, size_t capacity,
              (unsigned)(s_season.year % 100U));
 }
 
-static void render_wifi_setup_info(void)
-{
-    set_title("PDKPASS WIFI");
-    set_status(s_network_state == PDKPASS_NETWORK_CONNECTING ? "CONNECTING" : "SETUP MODE", UI_RED);
-    content_reset(UI_PAPER, 0xE6E7DA);
-
-    make_center_label(s_content, "CONNECT PHONE TO", 0, 7, INNER_W,
-                      &lv_font_unscii_8, UI_SKY_DARK);
-    lv_obj_t *ssid = make_card(s_content, 5, 24, 200, 34, UI_SKY, 3);
-    make_medium_label(ssid, s_setup_ssid, 0, 2, 194, 0xFFFFFF);
-    make_center_label(s_content, "PASSWORD", 0, 67, INNER_W,
-                      &lv_font_unscii_8, UI_SKY_DARK);
-    lv_obj_t *password = make_card(s_content, 5, 81, 200, 29, UI_YELLOW, 3);
-    make_medium_label(password, s_setup_password, 0, 0, 194, UI_INK);
-    make_center_label(s_content, s_setup_error[0] ? s_setup_error : "OPEN IN BROWSER", 0, 121, INNER_W,
-                      &lv_font_unscii_8, s_setup_error[0] ? UI_RED : UI_SKY_DARK);
-    make_center_label(s_content, PDKPASS_SETUP_IP, 0, 140, INNER_W,
-                      &lv_font_unscii_16, UI_INK);
-    char remaining[28];
-    snprintf(remaining, sizeof(remaining), "AUTO OFF %02u:%02u",
-             s_setup_seconds_left / 60U, s_setup_seconds_left % 60U);
-    s_setup_countdown = make_center_label(s_content, remaining, 0, 164, INNER_W,
-                      &lv_font_unscii_8, UI_RED);
-    set_hint(s_setup_qr_failed ? "HOLD:BACK" : "OK:SCAN  HOLD:BACK");
-}
-
-static bool render_wifi_setup_scan(void)
-{
-    char payload[128];
-    if (!pdkpass_wifi_qr_payload(payload, sizeof(payload),
-                                  s_setup_ssid, s_setup_password)) return false;
-
-    set_title("PDKPASS WIFI");
-    set_status(s_network_state == PDKPASS_NETWORK_CONNECTING ? "CONNECTING" : "SETUP MODE", UI_RED);
-    content_reset(UI_PAPER, 0xE6E7DA);
-    make_center_label(s_content, "SCAN TO CONNECT", 0, 4, INNER_W,
-                      &lv_font_unscii_8, UI_SKY_DARK);
-
-    lv_obj_t *frame = make_card(s_content, 37, 20, 136, 136, 0xFFFFFF, 2);
-    lv_obj_t *qr = lv_qrcode_create(frame);
-    if (!qr) return false;
-    lv_qrcode_set_size(qr, 132);
-    lv_qrcode_set_dark_color(qr, lv_color_hex(UI_INK));
-    lv_qrcode_set_light_color(qr, lv_color_white());
-    lv_qrcode_set_quiet_zone(qr, true);
-    lv_obj_set_pos(qr, 0, 0);
-    if (lv_qrcode_update(qr, payload, strlen(payload)) != LV_RESULT_OK) return false;
-
-    char remaining[28];
-    snprintf(remaining, sizeof(remaining), "AUTO OFF %02u:%02u",
-             s_setup_seconds_left / 60U, s_setup_seconds_left % 60U);
-    s_setup_countdown = make_center_label(s_content, remaining, 0, 164, INNER_W,
-                      &lv_font_unscii_8, UI_RED);
-    set_hint("OK:INFO  HOLD:BACK");
-    return true;
-}
-
-static void render_wifi_setup(void)
-{
-    if (!s_setup_show_info && !s_setup_qr_failed && render_wifi_setup_scan()) return;
-    s_setup_qr_failed = !s_setup_show_info;
-    render_wifi_setup_info();
-}
-
-static void format_sync_line(pdkpass_sync_service_t service, unsigned season_year,
-                             int64_t last, bool cached, char *line, size_t size)
-{
-    const char *label = service == PDKPASS_SYNC_SEASON ? "CAL SYNC" : "RESULTS";
-    bool other_season = false;
-    if (last > 0) {
-        time_t local = (time_t)(last + BEIJING_OFFSET_SECONDS);
-        struct tm parts;
-        gmtime_r(&local, &parts);
-        unsigned date_year = (unsigned)(parts.tm_year + 1900);
-        other_season = season_year != 0U && date_year != season_year;
-        if (!other_season) {
-            snprintf(line, size, "%s %02u.%02d.%02d", label,
-                     date_year % 100U, parts.tm_mon + 1, parts.tm_mday);
-            return;
-        }
-    }
-    if (cached) {
-        snprintf(line, size, "%s CACHE DATE?",
-                 service == PDKPASS_SYNC_SEASON ? "CAL" : "RESULT");
-    } else if (other_season) {
-        snprintf(line, size, "%s %u NO SYNC",
-                 service == PDKPASS_SYNC_SEASON ? "CAL" : "RESULT",
-                 season_year);
-    } else {
-        snprintf(line, size, "%s NEVER", label);
-    }
-}
-
-static void render_network_menu(void)
-{
-    set_title("NETWORK");
-    set_status(s_network_state == PDKPASS_NETWORK_ONLINE ? "WI-FI CONNECTED" : "WI-FI OPTIONS", UI_SKY);
-    content_reset(UI_SKY, UI_SKY_DARK);
-    for (unsigned i = 0; i < PDKPASS_SYNC_COUNT; i++) {
-        pdkpass_sync_service_t service = (pdkpass_sync_service_t)i;
-        bool cached = service == PDKPASS_SYNC_SEASON
-                          ? pdkpass_season_has_cached_data()
-                          : pdkpass_results_has_cached_data();
-        char line[32];
-        format_sync_line(service, s_season.year,
-                         pdkpass_sync_last_success(service), cached,
-                         line, sizeof(line));
-        make_center_label(s_content, line, 0, (int)i * 15, INNER_W,
-                          &lv_font_unscii_8, UI_PAPER);
-    }
-    const char *titles[] = {"RETRY WI-FI", "WI-FI SETUP",
-        pdkpass_reminder_enabled() ? "ALERTS: ON" : "ALERTS: OFF", "BACK"};
-    for (unsigned i = 0; i < 4U; i++) {
-        bool selected = s_state.network_selection == i;
-        uint32_t ink = selected ? UI_INK : UI_SKY_DARK;
-        lv_obj_t *card = make_card(s_content, 5, 35 + (int)i * 36, 200, 30,
-                                   selected ? UI_YELLOW : UI_PAPER, 2);
-        s_network_cards[i] = card;
-        // One centered action per card leaves vertical padding and a clear
-        // gap between four rows in the fixed-height menu.
-        make_center_label(card, titles[i], 2, 5, 192, &lv_font_unscii_16, ink);
-    }
-    set_hint("UP/DN OK:GO HOLD:BACK");
-}
-
-static bool update_network_selection(unsigned previous, unsigned selected)
-{
-    if (previous >= 4U || selected >= 4U ||
-        !s_network_cards[previous] || !s_network_cards[selected]) return false;
-    const unsigned rows[] = {previous, selected};
-    for (size_t i = 0; i < 2U; i++) {
-        unsigned row = rows[i];
-        bool active = row == selected;
-        lv_obj_t *card = s_network_cards[row];
-        lv_obj_set_style_bg_color(card,
-            lv_color_hex(active ? UI_YELLOW : UI_PAPER), 0);
-        uint32_t ink = active ? UI_INK : UI_SKY_DARK;
-        for (uint32_t child = 0; child < lv_obj_get_child_count(card); child++)
-            lv_obj_set_style_text_color(lv_obj_get_child(card, child),
-                                        lv_color_hex(ink), 0);
-    }
-    return true;
-}
-
-static void render_network_progress(void)
-{
-    if (s_hotspot_active) { render_wifi_setup(); return; }
-    set_title("WI-FI");
-    set_status("SAVED NETWORKS", UI_SKY);
-    content_reset(UI_SKY, UI_SKY_DARK);
-    bool busy = s_network_state == PDKPASS_NETWORK_CONNECTING;
-    make_center_label(s_content, busy ? "SEARCHING" : "NOT CONNECTED", 0, 30,
-                      INNER_W, &lv_font_unscii_16, UI_PAPER);
-    make_center_label(s_content, busy ? "TRYING SAVED WI-FI" : s_setup_error,
-                      0, 76, INNER_W, &lv_font_unscii_8, UI_PAPER);
-    make_center_label(s_content, "HOTSPOT IS OFF", 0, 120, INNER_W,
-                      &lv_font_unscii_8, UI_YELLOW);
-    set_hint(busy ? "HOLD:CANCEL" : "OK:MENU HOLD:MENU");
-}
-
-static void render_network_confirm(void)
-{
-    set_title("WI-FI SETUP");
-    set_status("CONFIRM", UI_YELLOW);
-    content_reset(UI_PAPER, 0xE6E7DA);
-    make_center_label(s_content, "ADD NETWORK?", 0, 25, INNER_W, &lv_font_unscii_16, UI_INK);
-    make_center_label(s_content, "CURRENT CONNECTION", 0, 70, INNER_W, &lv_font_unscii_8, UI_INK);
-    make_center_label(s_content, "MAY BE INTERRUPTED", 0, 89, INNER_W, &lv_font_unscii_8, UI_INK);
-    make_center_label(s_content, "HOTSPOT: MAX 10 MIN", 0, 130, INNER_W, &lv_font_unscii_8, UI_RED);
-    set_hint("OK:NEXT  HOLD:CANCEL");
-}
+#include "pdkpass_ui_network.inc"
 
 static void render_season_complete(void)
 {
@@ -1662,6 +1510,7 @@ static void idle_tick(lv_timer_t *timer)
         bsp_display_sleep(true);
         pdkpass_power_display(false);
         s_idle_stage = 2;
+        lv_timer_pause(s_sync_timer);
         if (s_state.page == PDKPASS_PAGE_HOME && s_state.home_browsing) {
             pdkpass_state_reset_home_race(&s_state, s_season.race_count);
             render();
@@ -1692,6 +1541,7 @@ void pdkpass_ui_reminder_dismiss(void)
         bsp_display_sleep(true);
         pdkpass_power_display(false);
         s_idle_stage = 2;
+        lv_timer_pause(s_sync_timer);
         s_needs_render = true;
         lv_timer_pause(s_idle_timer);
     } else {
@@ -1721,6 +1571,9 @@ void pdkpass_ui_reminder_show(const pdkpass_reminder_entry_t *alert)
     if (s_idle_stage != 2 || bsp_display_sleep(false) == ESP_OK) {
         bsp_lvgl_set_drawing(true);
         s_idle_stage = 0;
+        manual_sync_tick(NULL);
+        lv_timer_reset(s_sync_timer);
+        lv_timer_resume(s_sync_timer);
         bsp_display_backlight(100);
     } else {
         pdkpass_power_display(false);
@@ -1796,9 +1649,17 @@ void pdkpass_ui_enter(bool battery_available)
 
 static void show_manual_sync_rejection(pdkpass_manual_state_t state)
 {
+    s_sync_cooldown_until_us = 0;
+    if (state == PDKPASS_MANUAL_COOLDOWN) {
+        pdkpass_manual_status_t status;
+        size_t race;
+        bool ok = s_state.page == PDKPASS_PAGE_RESULTS
+            ? pdkpass_results_manual_status(&race, &status) : pdkpass_season_manual_status(&status);
+        if (ok) s_sync_cooldown_until_us = status.cooldown_until_us;
+    }
     const char *text = state == PDKPASS_MANUAL_OFFLINE ? "WIFI OFFLINE" :
         state == PDKPASS_MANUAL_BUSY ? "SYNC IN PROGRESS" :
-        state == PDKPASS_MANUAL_COOLDOWN ? "WAIT 60S TO SYNC" :
+        state == PDKPASS_MANUAL_COOLDOWN ? "PLEASE WAIT" :
         state == PDKPASS_MANUAL_NOT_READY ? "RESULT PENDING" : "SYNC FAILED";
     if (s_state.page == PDKPASS_PAGE_RESULTS &&
         s_state.selected_race < s_season.race_count) {
@@ -1864,13 +1725,11 @@ void pdkpass_ui_sync_status_update(void)
     if (s_state.page == PDKPASS_PAGE_NETWORK) render();
 }
 
-void pdkpass_ui_season_update(void)
+bool pdkpass_ui_season_update(void)
 {
-    pdkpass_season_snapshot_t updated;
-    if (!pdkpass_season_snapshot(&updated)) return;
-    s_season = updated;
-    memset(&s_team_standings, 0, sizeof(s_team_standings));
-    pdkpass_season_team_snapshot(&s_team_standings);
+    // Already serialized by LVGL: copy directly into persistent UI storage.
+    if (!pdkpass_season_snapshot(&s_season)) return false;
+    if (!pdkpass_season_team_snapshot(&s_team_standings)) return false;
     if (s_state.selected_team >= s_team_standings.count)
         s_state.selected_team = s_team_standings.count ? s_team_standings.count - 1U : 0U;
     s_list_page = -1;
@@ -1891,6 +1750,7 @@ void pdkpass_ui_season_update(void)
         pdkpass_state_set_home_race(&s_state, next, s_season.race_count);
     }
     render();
+    return true;
 }
 
 void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
@@ -1908,6 +1768,11 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         }
         s_last_activity = lv_tick_get();
         s_idle_stage = 0;
+        if (was_off) {
+            manual_sync_tick(NULL);
+            lv_timer_reset(s_sync_timer);
+            lv_timer_resume(s_sync_timer);
+        }
         lv_timer_set_period(s_idle_timer, IDLE_DIM_SECONDS * 1000U);
         lv_timer_reset(s_idle_timer);
         lv_timer_resume(s_idle_timer);
@@ -1980,6 +1845,7 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
             : pdkpass_season_force_points();
         if (state == PDKPASS_MANUAL_RUNNING) {
             s_sync_reject_until = 0U;
+            s_sync_cooldown_until_us = 0;
             update_manual_hint();
         } else show_manual_sync_rejection(state);
         return;
@@ -2002,7 +1868,11 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         s_setup_show_info = false;
         s_setup_qr_failed = false;
         render();
-        pdkpass_network_request(setup ? PDKPASS_NETWORK_OPEN_SETUP : PDKPASS_NETWORK_RETRY);
+        if (pdkpass_network_request(setup ? PDKPASS_NETWORK_OPEN_SETUP : PDKPASS_NETWORK_RETRY) != ESP_OK) {
+            s_network_state = PDKPASS_NETWORK_OFFLINE;
+            snprintf(s_setup_error, sizeof(s_setup_error), "START FAILED / RETRY");
+            render();
+        }
         return;
     }
     if (s_state.page == PDKPASS_PAGE_RESULTS)

@@ -1,11 +1,11 @@
 idf_component_register(
     SRCS "main.c"
-         "pdkpass_battery_diagnostics.c"
          "ui_pixel.c"
          "ui_pixel_math.c"
          "pdkpass_data.c"
          "pdkpass_calendar.c"
          "pdkpass_model.c"
+         "pdkpass_storage.c"
          "pdkpass_power.c"
          "pdkpass_network.c"
          "pdkpass_http.c"
@@ -19,12 +19,12 @@ idf_component_register(
          "pdkpass_sound_core.c"
          "pdkpass_sync.c"
          "pdkpass_sync_policy.c"
-         "pdkpass_screenshot.c"
          "pdkpass_season.c"
          "pdkpass_season_core.c"
          "pdkpass_theme.c"
          "pdkpass_tracks.c"
          "pdkpass_ui.c"
+         "pdkpass_ui_updates.c"
          "pdkpass_wifi_form.c"
          "pdkpass_wifi_nearby.c"
          "pdkpass_wifi_qr.c"
@@ -32,6 +32,6 @@ idf_component_register(
     INCLUDE_DIRS "."
     EMBED_TXTFILES "pdkpass_setup_page.html" "pdkpass_setup_status.html"
     REQUIRES bsp esp_event esp_http_client esp_http_server esp_hw_support
-             esp_netif esp_wifi esp_driver_usb_serial_jtag json lwip mbedtls
+             esp_netif esp_wifi json lwip mbedtls
              nvs_flash esp_timer esp_pm heap
 )

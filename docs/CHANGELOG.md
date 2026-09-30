@@ -6,6 +6,41 @@
 
 ## Unreleased
 
+- Keep the network menu fourth action as `BACK`, with no maintenance pages.
+- Reuse one same-origin HTTPS client within a serialized refresh, releasing it
+  on error, origin changes, before cache writes and at transaction end.
+- Use playback-only I2S/DAC audio for PDKPASS cues, without an RX channel.
+- Remove legacy Wi-Fi keys only after the profiles blob commits successfully.
+- Show the actual remaining manual-sync cooldown and reject invalid numeric
+  identifiers, duplicate sessions/podium entries and mismatched meetings.
+
+- Record manual and automatic successful checks separately for calendar, results,
+  driver points and team points. Count validated unchanged responses, retain old
+  calendar/results dates, and advance only successful tables on partial updates.
+- Pause manual-sync polling while the screen is dark and refresh the latest
+  status immediately after successful key/reminder wake-up.
+- Roll back codec interfaces and I2S channels on every audio initialization
+  failure, close partially opened streams, and retry initialization/open on a
+  new cue after at least 60 seconds.
+
+- Retry failed results-cache saves locally after 60 seconds, independently of
+  connectivity and scheduled downloads. Retry shortly when the shared transaction
+  is busy, stop after a successful commit, and retain manual save-failure feedback.
+
+- Recover network initialization/task allocation failures through explicit retry
+  or setup, without orphan queues or duplicate Wi-Fi resources.
+- Retain and coalesce UI updates until the LVGL lock and cached snapshots are
+  available. Copy transient setup strings before notifying the UI worker.
+- Bound manual results/points refresh to 120 seconds from acceptance, including
+  shared HTTP waits. Show `SYNC TIMEOUT`, stop expired requests, preserve cached
+  results and reliably publish terminal status after worker cleanup.
+- Copy season snapshots directly into persistent UI storage, removing the
+  season-sized local buffer from the task stack.
+
+- Prepare release firmware by removing charging-diagnostic and USB screenshot
+  code, variants, I2C scanning, progress logs and heap sampling. Keep essential
+  warnings/errors, battery display and native simulator checks.
+
 - Short OK on results refreshes only the displayed session (FP1, FP2, FP3,
   sprint qualifying, sprint, qualifying or race), preserving other results.
   Name that session in sync feedback.

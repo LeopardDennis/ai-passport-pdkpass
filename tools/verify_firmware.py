@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import struct
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,7 +26,6 @@ CARDID_SIZE = 0x4000
 RECOVERY_OFFSET = 0x700000
 RECOVERY_SIZE = 0x100000
 ENTRY = struct.Struct("<HBBII16sI")
-RECOVERY_BOOT_MARKER = b"UP held: booting permanent recovery"
 
 
 @dataclass(frozen=True)
@@ -71,6 +71,23 @@ def parse_partition_table(raw: bytes) -> tuple[list[Partition], bool]:
     if not partitions:
         raise ValueError("partition table is empty")
     return partitions, found_md5
+
+
+def verify_recovery_hook(bootloader_elf: Path) -> None:
+    """Require the linked strong hook, independent of release log verbosity."""
+    result = subprocess.run(
+        ["riscv32-esp-elf-nm", "--defined-only", str(bootloader_elf)],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode:
+        raise ValueError("cannot inspect bootloader Recovery symbols")
+    strong_functions = set()
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 3 and fields[1] == "T":
+            strong_functions.add(fields[2])
+    if not {"bootloader_after_init", "bootloader_hooks_include"} <= strong_functions:
+        raise ValueError("bootloader is missing the 5-second UP Recovery hook")
 
 
 def verify_recovery_contract(merged: bytes, build_dir: Path) -> None:
@@ -120,9 +137,7 @@ def verify_recovery_contract(merged: bytes, build_dir: Path) -> None:
         if any(byte != 0xFF for byte in payload):
             raise ValueError(f"merged artifact contains forbidden {label} payload bytes")
 
-    bootloader = (build_dir / "bootloader" / "bootloader.bin").read_bytes()
-    if RECOVERY_BOOT_MARKER not in bootloader:
-        raise ValueError("bootloader is missing the 5-second UP Recovery hook")
+    verify_recovery_hook(build_dir / "bootloader" / "bootloader.elf")
 
     print(f"Mini-program BLE contract: PASS (app {app_size} / {APP_MAX_SIZE} bytes)")
 

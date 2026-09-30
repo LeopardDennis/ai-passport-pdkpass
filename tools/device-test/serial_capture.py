@@ -18,15 +18,7 @@ from pathlib import Path
 
 
 EVENTS = {
-    "boot": re.compile(r"PDKPASS starting"),
-    "ready": re.compile(r"PDKPASS ready"),
-    "battery_sample": re.compile(r"battery_diag.*sample uptime_ms="),
-    "battery_read_issue": re.compile(r"battery_diag.*read_error=(?!0(?:\s|$))-?\d+"),
-    "ui_ready": re.compile(r"UI objects ready"),
     "wifi_ip": re.compile(r"got ip:|WIFI OK", re.IGNORECASE),
-    "season_loaded": re.compile(r"Loaded \d+ season:"),
-    "season_adopted": re.compile(r"Adopted \d+ season:"),
-    "result_cached": re.compile(r"R\d+ .* podium cached"),
     "http_issue": re.compile(r"pdk_http.*GET stage="),
     "sound_issue": re.compile(r"Button sound .*failed|Button sound unavailable"),
     "panic": re.compile(r"Guru Meditation|assert failed|Brownout detector|panic'ed|abort\(\)"),

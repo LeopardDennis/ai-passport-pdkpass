@@ -87,7 +87,6 @@ esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user) {
         s_cali = NULL;
     }
 
-    ESP_LOGI(TAG, "按键就绪:ADC1_CH%d 三键分压", BSP_BTN_ADC_CHANNEL);
     return ESP_OK;
 }
 

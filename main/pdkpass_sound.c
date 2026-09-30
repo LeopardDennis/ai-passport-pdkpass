@@ -4,6 +4,7 @@
 #include "pdkpass_reminder.h"
 #include "pdkpass_sound_core.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -11,6 +12,7 @@
 #include <stdatomic.h>
 
 #define SOUND_IDLE_MS 250U
+#define SOUND_RETRY_US (60LL * 1000000LL)
 #define SOUND_VOLUME 50U
 #define RESULT_VOLUME 70U
 
@@ -84,9 +86,10 @@ static void sound_worker(void *unused)
 {
     (void)unused;
     // Prepare on this worker at startup, not on the first button press.
-    bool available = bsp_audio_init() == ESP_OK;
+    bool available = bsp_audio_init_playback() == ESP_OK;
     if (!available) ESP_LOGW(TAG, "Button sound unavailable: audio init failed");
     bool opened = available && open_sound();
+    int64_t retry_at_us = opened ? 0 : esp_timer_get_time() + SOUND_RETRY_US;
     pdkpass_sound_kind_t kind;
     for (;;) {
         TickType_t wait = opened ? pdMS_TO_TICKS(SOUND_IDLE_MS) : portMAX_DELAY;
@@ -95,10 +98,21 @@ static void sound_worker(void *unused)
             opened = false;
             continue;
         }
-        if (!available) continue;
         if (!opened) {
-            opened = open_sound();
-            if (!opened) continue;
+            if (esp_timer_get_time() < retry_at_us) {
+                if (kind == PDKPASS_SOUND_REMINDER) pdkpass_sound_reminder_stop();
+                continue;
+            }
+            if (!available) {
+                available = bsp_audio_init_playback() == ESP_OK;
+                if (!available) ESP_LOGW(TAG, "Audio init retry failed");
+            }
+            opened = available && open_sound();
+            retry_at_us = opened ? 0 : esp_timer_get_time() + SOUND_RETRY_US;
+            if (!opened) {
+                if (kind == PDKPASS_SOUND_REMINDER) pdkpass_sound_reminder_stop();
+                continue;
+            }
         }
         // A newer press during codec startup supersedes an old pending cue.
         pdkpass_sound_kind_t latest;

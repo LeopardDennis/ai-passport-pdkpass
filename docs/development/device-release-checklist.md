@@ -19,7 +19,6 @@ Record the firmware filename, SHA-256, Git commit, test time, and observed resul
 | Power and battery | Dims at 30 seconds, sleeps at 90 seconds, wakes on a button; record battery display and charge LED | Pending |
 | Continued operation | Repeated page navigation, setup, and network requests do not restart or noticeably slow the device | Pending |
 | Recovery | Build compatibility passes; device entry and BLE discovery are pending, without unnecessary writes | Pending |
-| Charging diagnosis | Collect `battery_diag` across a charge LED transition and record voltage and raw SOC | Pending |
-| Publication evidence | Obtain a fresh screen capture and receipt without secrets; restore normal image and repeat smoke tests | Pending |
+| Publication evidence | Photograph the release firmware on the device without secrets; retain the test record | Pending |
 
 A real scheduled alert, long-term idle power, and a complete charge/discharge curve cannot be proved by one evening's test. Mark them as follow-up observations if they are not covered.

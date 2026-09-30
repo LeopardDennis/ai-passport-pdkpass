@@ -4,7 +4,6 @@
 #include "bootloader_common.h"
 #include "bootloader_config.h"
 #include "bootloader_utility.h"
-#include "esp_log.h"
 
 #define RECOVERY_BUTTON_GPIO  0
 #define RECOVERY_HOLD_SECONDS 5
@@ -22,8 +21,6 @@ void bootloader_after_init(void)
         return;
     }
 
-    ESP_LOGI("recovery_boot", "UP held: booting permanent recovery at 0x%x",
-             RECOVERY_OFFSET);
     bootloader_state_t state = { 0 };
     state.factory.offset = RECOVERY_OFFSET;
     state.factory.size = RECOVERY_SIZE;

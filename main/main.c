@@ -1,6 +1,5 @@
 // PDKPASS application entry point for FoloToy AI Passport.
 #include "bsp_battery.h"
-#include "pdkpass_battery_diagnostics.h"
 #include "bsp_button.h"
 #include "bsp_display.h"
 #include "bsp_pins.h"
@@ -14,15 +13,21 @@
 #include "pdkpass_results.h"
 #include "pdkpass_reminder.h"
 #include <time.h>
-#include "pdkpass_screenshot.h"
 #include "pdkpass_season.h"
 #include "pdkpass_sound.h"
 #include "pdkpass_sync_policy.h"
 #include "pdkpass_ui.h"
+#include "pdkpass_ui_updates.h"
 
 static const char *TAG = "pdkpass";
 
 #define BATTERY_LIT_POLL_MS 60000U
+
+typedef struct { bsp_btn_t button; bsp_btn_ev_t event; bool reschedule; } key_event_t;
+static QueueHandle_t s_keys;
+static portMUX_TYPE s_updates_lock = portMUX_INITIALIZER_UNLOCKED;
+static pdkpass_ui_updates_t s_updates;
+static void wake_reminder_worker(void);
 
 static void on_network(const pdkpass_network_update_t *update)
 {
@@ -30,43 +35,72 @@ static void on_network(const pdkpass_network_update_t *update)
                                update->time_valid);
     pdkpass_results_set_online(update->state == PDKPASS_NETWORK_ONLINE);
     pdkpass_reminder_set_time_valid(update->time_valid);
-    if (!bsp_lvgl_lock(500)) return;
-    pdkpass_ui_network_update(update);
-    bsp_lvgl_unlock();
+    portENTER_CRITICAL(&s_updates_lock);
+    pdkpass_ui_updates_network(&s_updates, update);
+    portEXIT_CRITICAL(&s_updates_lock);
+    wake_reminder_worker();
 }
 
 static void on_season(void)
 {
     pdkpass_results_season_changed();
     pdkpass_reminder_season_changed();
-    if (!bsp_lvgl_lock(500)) return;
-    pdkpass_ui_season_update();
-    bsp_lvgl_unlock();
+    portENTER_CRITICAL(&s_updates_lock);
+    s_updates.season = true;
+    portEXIT_CRITICAL(&s_updates_lock);
+    wake_reminder_worker();
 }
 
 static void on_results(size_t race_index, bool new_result)
 {
     if (new_result) pdkpass_sound_result_ready();
-    if (!bsp_lvgl_lock(500)) return;
-    pdkpass_ui_results_update(race_index);
-    bsp_lvgl_unlock();
+    if (race_index >= PDKPASS_MAX_RACES) return;
+    portENTER_CRITICAL(&s_updates_lock);
+    s_updates.races |= UINT32_C(1) << race_index;
+    portEXIT_CRITICAL(&s_updates_lock);
+    wake_reminder_worker();
 }
 
 static void on_data_status(void)
 {
-    if (!bsp_lvgl_lock(500)) return;
-    pdkpass_ui_sync_status_update();
-    bsp_lvgl_unlock();
+    portENTER_CRITICAL(&s_updates_lock);
+    s_updates.status = true;
+    portEXIT_CRITICAL(&s_updates_lock);
+    wake_reminder_worker();
 }
-
-typedef struct { bsp_btn_t button; bsp_btn_ev_t event; bool reschedule; } key_event_t;
-static QueueHandle_t s_keys;
 
 static void wake_reminder_worker(void)
 {
     if (!s_keys) return;
     key_event_t event = {.reschedule = true};
     xQueueSend(s_keys, &event, 0);
+}
+
+static bool ui_updates_pending(void)
+{
+    portENTER_CRITICAL(&s_updates_lock);
+    bool pending = pdkpass_ui_updates_pending(&s_updates);
+    portEXIT_CRITICAL(&s_updates_lock);
+    return pending;
+}
+
+static void dispatch_ui_updates(void)
+{
+    if (!ui_updates_pending() || !bsp_lvgl_lock(500)) return;
+    pdkpass_ui_updates_t updates;
+    portENTER_CRITICAL(&s_updates_lock);
+    pdkpass_ui_updates_take(&s_updates, &updates);
+    portEXIT_CRITICAL(&s_updates_lock);
+    if (updates.network) pdkpass_ui_network_update(&updates.update);
+    if (updates.season && !pdkpass_ui_season_update()) {
+        portENTER_CRITICAL(&s_updates_lock);
+        s_updates.season = true;
+        portEXIT_CRITICAL(&s_updates_lock);
+    }
+    for (size_t i = 0; i < PDKPASS_MAX_RACES; ++i)
+        if (updates.races & (UINT32_C(1) << i)) pdkpass_ui_results_update(i);
+    if (updates.status) pdkpass_ui_sync_status_update();
+    bsp_lvgl_unlock();
 }
 
 typedef enum {
@@ -100,7 +134,7 @@ static void ui_worker(void *arg)
     bool alert_pending = false;
     pdkpass_reminder_entry_t alert;
     for (;;) {
-        pdkpass_battery_diagnostics_poll();
+        dispatch_ui_updates();
         if (!monotonic_ready && bsp_lvgl_lock(500)) {
             monotonic_ready = bsp_lvgl_use_monotonic_clock() == ESP_OK;
             bsp_lvgl_unlock();
@@ -132,13 +166,12 @@ static void ui_worker(void *arg)
         now = xTaskGetTickCount();
         TickType_t wait = battery_paused_for_dark ? portMAX_DELAY :
             ((int32_t)(next_battery - now) > 0 ? next_battery - now : 1);
-        uint32_t diagnostic_ms = pdkpass_battery_diagnostics_wait_ms();
-        if (diagnostic_ms != UINT32_MAX && pdMS_TO_TICKS(diagnostic_ms) < wait)
-            wait = pdMS_TO_TICKS(diagnostic_ms);
         uint32_t reminder_ms = pdkpass_reminder_wait_ms((int64_t)time(NULL));
         if (reminder_ms != UINT32_MAX && pdMS_TO_TICKS(reminder_ms) < wait)
             wait = pdMS_TO_TICKS(reminder_ms);
         if (!wait) wait = 1;
+        if (ui_updates_pending() && wait > pdMS_TO_TICKS(100))
+            wait = pdMS_TO_TICKS(100);
         if (alert_pending && wait > pdMS_TO_TICKS(100)) wait = pdMS_TO_TICKS(100);
         if (!monotonic_ready && wait > pdMS_TO_TICKS(1000))
             wait = pdMS_TO_TICKS(1000);
@@ -174,7 +207,6 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "PDKPASS starting");
     esp_err_t power_err = pdkpass_power_init();
     if (power_err != ESP_OK) ESP_LOGW(TAG, "Power management unavailable: %s", esp_err_to_name(power_err));
 
@@ -191,8 +223,7 @@ void app_main(void)
         ESP_LOGE(TAG, "Season service failed to start");
     }
 
-    lv_display_t *display = NULL;
-    if (bsp_display_init() != ESP_OK || !(display = bsp_lvgl_init())) {
+    if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) {
         ESP_LOGE(TAG,
                  "Display/LVGL init failed (MOSI=%d SCLK=%d CS=%d DC=%d BL=%d)",
                  BSP_LCD_MOSI, BSP_LCD_SCLK, BSP_LCD_CS, BSP_LCD_DC, BSP_LCD_BL);
@@ -204,7 +235,6 @@ void app_main(void)
     bool battery_available = bsp_battery_init() == ESP_OK;
     if (bsp_lvgl_lock(1000)) {
         pdkpass_ui_enter(battery_available);
-        ESP_LOGI(TAG, "UI objects ready");
         bsp_lvgl_unlock();
     }
 
@@ -220,17 +250,14 @@ void app_main(void)
         ESP_LOGE(TAG, "Button init failed; the current screen remains readable");
     }
 
-    if (pdkpass_screenshot_start(display) != ESP_OK) {
-        ESP_LOGE(TAG, "Release screenshot service failed to start");
-    }
-
     if (pdkpass_results_start(on_results) != ESP_OK) {
         ESP_LOGE(TAG, "Session results service failed to start");
     }
 
     if (pdkpass_network_start(on_network) != ESP_OK) {
         ESP_LOGE(TAG, "Network time service failed to start");
+        const pdkpass_network_update_t failed = {.state = PDKPASS_NETWORK_OFFLINE};
+        on_network(&failed);
     }
 
-    ESP_LOGI(TAG, "PDKPASS ready; battery=%d", battery_available);
 }

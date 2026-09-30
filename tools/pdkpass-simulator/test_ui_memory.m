@@ -62,6 +62,7 @@ int main(void)
         }
         s_home_race_index = 0; // Australia's medium-length name exercises fitted scaling.
         simulator_initialize();
+        s_simulator_online = NO; // Keep seeded page fixtures independent of HTTP.
         lv_obj_t *australia = find_label(lv_screen_active(), "AUSTRALIA");
         assert(australia);
         assert(lv_obj_get_style_transform_scale_x(australia, 0) > 256);
@@ -138,7 +139,7 @@ int main(void)
         check_memory();
         simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // stays on results
         assert(find_label(lv_screen_active(), "MAX VERSTAPPEN"));
-        assert(find_label(lv_screen_active(), "UP/DN:PAGE HOLD:BACK"));
+        assert(find_label(lv_screen_active(), "R1 WIFI OFFLINE"));
         // A downloaded schedule is not a downloaded result. Exercise the
         // historical-session regression and missing timestamps restored from NVS.
         sample->status = PDKPASS_RESULT_SCHEDULED;
@@ -345,18 +346,22 @@ int main(void)
         lv_timer_set_repeat_count(schedule_probe, 1);
         pdkpass_ui_battery_update(19);
         pdkpass_ui_season_update();
+        unsigned dark_results = s_results_status_reads, dark_points = s_points_status_reads;
         lv_tick_inc(60000);
         lv_timer_handler();
+        assert(s_results_status_reads == dark_results && s_points_status_reads == dark_points);
         assert(dark_timer_fired == 1);
         assert(!lv_display_is_invalidation_enabled(lv_display_get_default()));
         assert(lv_timer_get_paused(lv_display_get_refr_timer(lv_display_get_default())));
         s_panel_wake_fail = true;
         simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
         assert(pdkpass_ui_display_dark() && s_panel_sleeping);
+        assert(s_results_status_reads == dark_results && s_points_status_reads == dark_points);
         assert(!lv_display_is_invalidation_enabled(lv_display_get_default()));
         s_panel_wake_fail = false;
         simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
         assert(!pdkpass_ui_display_dark());
+        assert(s_results_status_reads > dark_results && s_points_status_reads > dark_points);
         assert(!s_panel_sleeping);
         assert(lv_display_is_invalidation_enabled(lv_display_get_default()));
         check_memory();
@@ -389,6 +394,13 @@ int main(void)
         // Persistent toggle in the four-row network menu remains readable.
         simulator_send_button(BSP_BTN_OK,BSP_BTN_LONG);
         assert(find_label(lv_screen_active(),"ALERTS: ON"));
+        const char *sync_rows[] = {"CAL SYNC NEVER", "RESULTS NEVER", "DRIVERS CACHE DATE?", "TEAMS CACHE DATE?"};
+        for (unsigned row = 0; row < 4; row++) {
+            lv_obj_t *label = find_label(lv_screen_active(), sync_rows[row]);
+            assert(label && lv_obj_get_y(label) == (int)row * 14);
+        }
+        lv_obj_t *back = lv_obj_get_parent(find_label(lv_screen_active(), "BACK"));
+        assert(lv_obj_get_y(back) + lv_obj_get_height(back) <= 177);
         for(unsigned i=0;i<4;i++) {
             lv_obj_t *label=find_label(lv_screen_active(),"ALERTS: ON");
             assert(label);
@@ -402,6 +414,11 @@ int main(void)
         check_memory();
         simulator_send_button(BSP_BTN_OK,BSP_BTN_CLICK);
         assert(pdkpass_reminder_enabled());
+        // The fourth menu action returns directly home.
+        simulator_send_button(BSP_BTN_DOWN,BSP_BTN_CLICK);
+        simulator_send_button(BSP_BTN_OK,BSP_BTN_CLICK);
+        assert(!find_label(lv_screen_active(), "ALERTS: ON"));
+        check_memory();
         lv_mem_monitor_t memory;
         lv_mem_monitor(&memory);
         printf("UI memory PASS: configured=%u usable=%zu peak=%zu largest=%zu\n",

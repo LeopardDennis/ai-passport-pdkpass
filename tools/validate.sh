@@ -5,7 +5,7 @@ mode="${1:---all}"
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
-    echo "Usage: $0 [--all|--static|--firmware|--battery-diagnostics|--hardware-diagnostics]" >&2
+    echo "Usage: $0 [--all|--static|--firmware]" >&2
 }
 
 run_static_checks() {
@@ -94,7 +94,6 @@ run_static_checks() {
 
 run_firmware_checks() (
     local validation_build_dir
-    local variant="${1:-normal}"
     local defaults_file="${repo_root}/sdkconfig.defaults"
     local artifact="FoloToy-AI-Passport-full.bin"
 
@@ -106,27 +105,18 @@ run_firmware_checks() (
     validation_build_dir="$(mktemp -d /tmp/ai-passport-firmware.XXXXXX)"
     trap 'case "${validation_build_dir}" in /tmp/ai-passport-firmware.*) rm -rf -- "${validation_build_dir}" ;; esac' EXIT
 
-    if [[ "${variant}" == "battery-diagnostics" || "${variant}" == "hardware-diagnostics" ]]; then
-        defaults_file="${validation_build_dir}/sdkconfig.defaults"
-        cp "${repo_root}/sdkconfig.defaults" "${defaults_file}"
-        printf '\nCONFIG_PDKPASS_BATTERY_DIAGNOSTICS=y\n' >> "${defaults_file}"
-        artifact="FoloToy-AI-Passport-battery-diagnostics-full.bin"
-        if [[ "${variant}" == "hardware-diagnostics" ]]; then
-            printf 'CONFIG_PDKPASS_SCREENSHOT=y\n' >> "${defaults_file}"
-            artifact="FoloToy-AI-Passport-hardware-diagnostics-full.bin"
-        fi
-    fi
     SDKCONFIG_DEFAULTS="${defaults_file}" \
         idf.py -B "${validation_build_dir}" \
         -D "SDKCONFIG=${validation_build_dir}/sdkconfig" build
-    if [[ "${variant}" == "battery-diagnostics" || "${variant}" == "hardware-diagnostics" ]]; then
-        grep -qx 'CONFIG_PDKPASS_BATTERY_DIAGNOSTICS=y' "${validation_build_dir}/sdkconfig"
-        echo "Battery diagnostics: enabled (60-second read-only sampling)"
+    grep -qx 'CONFIG_LOG_DEFAULT_LEVEL=2' "${validation_build_dir}/sdkconfig"
+    grep -qx 'CONFIG_LOG_MAXIMUM_LEVEL=2' "${validation_build_dir}/sdkconfig"
+    grep -qx 'CONFIG_BOOTLOADER_LOG_LEVEL=2' "${validation_build_dir}/sdkconfig"
+    grep -qx 'CONFIG_COMPILER_OPTIMIZATION_SIZE=y' "${validation_build_dir}/sdkconfig"
+    if grep -Eq '^CONFIG_PDKPASS_(BATTERY_DIAGNOSTICS|SCREENSHOT)=y$' "${validation_build_dir}/sdkconfig"; then
+        echo "ERROR: obsolete diagnostic feature enabled in release config." >&2
+        return 1
     fi
-    if [[ "${variant}" == "hardware-diagnostics" ]]; then
-        grep -qx 'CONFIG_PDKPASS_SCREENSHOT=y' "${validation_build_dir}/sdkconfig"
-        echo "USB screenshot protocol: enabled (FAP_SCREENSHOT_V1)"
-    fi
+    echo "Release configuration: PASS (size optimization, warnings/errors only)"
     idf.py -B "${validation_build_dir}" merge-bin \
         -o "${validation_build_dir}/FoloToy-AI-Passport-full.bin"
     python3 tools/verify_firmware.py "${validation_build_dir}"
@@ -142,14 +132,6 @@ case "${mode}" in
     --all)
         run_static_checks
         run_firmware_checks
-        ;;
-    --battery-diagnostics)
-        run_static_checks
-        run_firmware_checks battery-diagnostics
-        ;;
-    --hardware-diagnostics)
-        run_static_checks
-        run_firmware_checks hardware-diagnostics
         ;;
     --static)
         run_static_checks

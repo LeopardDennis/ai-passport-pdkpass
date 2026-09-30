@@ -93,7 +93,7 @@ GPIO0 同时是按键 ADC 节点和 ESP32-C3 启动相关管脚；GPIO21 是背�
 
 ```text
 app_main
-  ├─ bsp_i2c_init → bsp_i2c_scan
+  ├─ bsp_i2c_init
   ├─ bsp_display_init → bsp_lvgl_init → backlight 100%
   ├─ bsp_button_init(on_key)
   ├─ bsp_audio_init
@@ -180,7 +180,6 @@ I2C0 使用 SDA GPIO10、SCL GPIO7。ES8311 地址为 7 bit `0x18`，CW2017 为 
 
 - 不要在同一个 I2C port 上为扫描或单个设备再创建临时 master bus。
 - IDF 5.5.3 中，重复建总线后走错误清理可能解绑正式 SDA/SCL，使两个芯片同时失联。扫描必须用现有总线上的 `i2c_master_probe()`。
-- `bsp_i2c_scan()` 扫描 0x08–0x77，适合启动诊断；它返回 OK 只表示扫描完成，不表示一定找到设备。
 - CW2017 设备速率明确为 100 kHz。ES8311 控制接口由 `esp_codec_dev` 管理。
 - ES8311 创建控制接口时库 API 要求 8 bit 地址，因此传入 `0x18 << 1`；其他使用 7 bit 地址的 ESP-IDF API 不应照搬此移位。
 
@@ -200,13 +199,19 @@ MCU 是 I2S master，ES8311 是 slave；I2S0 的 TX/RX 全双工通道共享 MCL
 
 音频约束：
 
-- `bsp_audio_set_format(hz, bits, ch)` 是使用 PCM 前的必要步骤。
+- 音频初始化失败会释放本次分配的接口与通道，保留共享 I2C 总线，可再次初始化；
+  调用方须串行执行初始化、格式切换、PCM 读写与停止。
+- `bsp_audio_set_format(hz, bits, ch)` 是使用 PCM 前的必要步骤。打开失败会关闭部分开启的音频流，
+  后续格式调用可重新尝试。
 - `esp_codec_dev_open()` 对已打开设备会直接返回而不重新配置采样率。因此格式变化时必须 close 后再 open；现有 BSP 已处理，不能删掉。
 - close/open 周围的 I2S enable 是为满足驱动内部 disable 状态机，避免 READY 状态报错。
 - 不要在 open 后手写 ES8311 REG01–REG06 时钟分频；驱动已根据采样率和 256×fs MCLK 配置。
 - `no_dac_ref=true` 对单声道麦克风录音是必要的；改为 false 会让读入通道成为 DAC reference，表现为录音恒零。
 - 麦克风模拟输入增益当前为 30 dB；输出音量 API 为 0–100%。增益和音量不是同一个概念。
 - `bsp_audio_read/write` 是阻塞调用，不能放在按键回调或 LVGL 任务中。
+- `bsp_audio_init_playback()` 仅分配 TX，并使用 DAC/输出模式。PDKPASS 所有提示音使用此接口；
+  此模式下 `bsp_audio_read()` 返回无效状态。`bsp_audio_init()` 保留全双工录音。
+  初始化后不能隐式切换模式；两种模式共享失败清理和关闭后重开逻辑。
 - `bsp_audio_stop()` 在短音效后关闭 PCM 并停止 I2S 时钟；下次调用
   `bsp_audio_set_format()` 会复用已分配通道重新打开 codec。
 - I2S DMA 当前为 6 个 descriptor、每个 240 frame。更改 DMA 或 LVGL buffer 前必须联合评估内部 RAM。
@@ -227,8 +232,6 @@ CW2017 在共享 I2C 地址 0x63。初始化读取 VERSION 和 CONFIG。休眠/�
 - 读取 SOC 不再打印原始采样日志，也不附带读取电压。PDKPASS 仅亮屏及唤醒时采样，
   需要电压时显式调用电压接口。
 - 电压：读 0x02–0x03 的 14 bit 值，换算为 `raw × 312.5 µV`，API 返回 mV。
-- `bsp_battery_read_diagnostics()` 只读 SOC、VCELL、CONFIG、VERSION，不写参数。
-  失败项为 -1，其余成功项保留；显式诊断构建每 60 秒调用一次，熄屏也继续。
 - 事务超时当前为 100 ms，设备时钟为 100 kHz。
 - 芯片不应答时初始化返回 `ESP_ERR_NOT_FOUND`，菜单标记失败，但整机继续运行。
 

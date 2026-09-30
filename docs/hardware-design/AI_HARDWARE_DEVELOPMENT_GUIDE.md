@@ -143,7 +143,15 @@ Troubleshoot in order: bus-init log, scan results for `0x18`/`0x63`, power/groun
 
 The MCU is I2S master and the ES8311 is slave. I2S0 TX/RX shares MCLK GPIO6, BCLK GPIO5, and WS GPIO3; DOUT is GPIO2 and DIN is GPIO4. The demo opens 16 kHz, 16-bit, mono PCM over a physically two-slot standard-I2S bus.
 
-- Call `bsp_audio_set_format()` before PCM I/O.
+- Audio initialization failures release interfaces and channels allocated by
+  that attempt while retaining the shared I2C bus. Initialization may be retried;
+  callers must serialize initialization, format changes, PCM I/O and stop.
+- `bsp_audio_init_playback()` allocates TX only and selects DAC/output mode.
+  PDKPASS uses it for all cues; `bsp_audio_read()` rejects playback-only mode.
+  `bsp_audio_init()` retains full-duplex recording. An initialized mode cannot
+  be switched implicitly; both modes share failure rollback and reopen handling.
+- Call `bsp_audio_set_format()` before PCM I/O. Failed opens close partial streams
+  so a later format call can retry safely.
 - A format change must close and reopen `esp_codec_dev`; an already open device is not reconfigured.
 - Preserve the I2S enable/disable sequence around close/open.
 - Do not write ES8311 clock-divider registers after open; the driver derives them from sample rate and 256×fs MCLK.
@@ -170,9 +178,6 @@ and CONFIG](https://uploadcdn.oneyac.com/upload/document/1737612108523_8373.pdf)
 - SOC reads do not log raw samples or read voltage as a side effect. PDKPASS
   polls SOC only while lit/on wake; use the voltage API explicitly when needed.
 - Voltage uses the 14-bit value at `0x02–0x03`, converted as `raw × 312.5 µV`, and returned in mV.
-- `bsp_battery_read_diagnostics()` reads raw SOC, VCELL, CONFIG and VERSION without
-  writes. Failed fields are -1; partial successes remain available. An explicit
-  diagnostic build uses this API every 60 seconds, including while dark.
 - Transactions use a 100 ms timeout at 100 kHz.
 - A missing device returns `ESP_ERR_NOT_FOUND`; the battery page is disabled without stopping the application.
 

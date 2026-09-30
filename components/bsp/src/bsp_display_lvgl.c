@@ -42,7 +42,6 @@ lv_display_t *bsp_lvgl_init(void) {
     s_disp = lvgl_port_add_disp(&dc);
     if (!s_disp) { ESP_LOGE(TAG, "lvgl_port_add_disp 失败"); return NULL; }
 
-    ESP_LOGI(TAG, "LVGL 就绪");
     return s_disp;
 }
 

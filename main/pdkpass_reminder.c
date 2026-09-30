@@ -164,8 +164,6 @@ bool pdkpass_reminder_poll(int64_t now, pdkpass_reminder_entry_t *alert)
     if (index >= 0) {
         *alert = s_store.schedule.entries[index];
         delivered = true;
-        ESP_LOGI(TAG, "R%u session=%ld starts in %ld seconds", alert->round,
-                 (long)alert->session_key, (long)(alert->start_utc - now));
     }
 done:
     xSemaphoreGive(s_lock);

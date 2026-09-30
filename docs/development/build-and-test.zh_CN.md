@@ -54,21 +54,8 @@ cc -std=c11 -Wall -Wextra -Werror -Imain \
 
 ## macOS 真机日志采集
 
-充电排查使用 `./tools/validate.sh --battery-diagnostics`，运行静态和固件验证，在临时
-默认配置中启用 `CONFIG_PDKPASS_BATTERY_DIAGNOSTICS=y` 并检查生效，输出
-`build/FoloToy-AI-Passport-battery-diagnostics-full.bin`。普通默认配置与普通合并固件
-保持不变。每 60 秒采样，熄屏也继续，因此该版本不用于待机功耗基准测试。
-刷入后关闭刷机工具，至少采集 180 秒。采集脚本统计 `battery_sample` 和
-`battery_read_issue`，将原始日志时间与手动观察的充电灯变化对应；这些数据不等于
-已证明充电终止或电芯校准正确。
-每条 `battery_diag` 日志中的 `display_soc` 是界面使用的整数电量，
-`soc_fraction_256` 是小数部分；`cell_delta_mv` 是相邻有效采样的电压变化，
-`cell_delta_valid=0` 表示没有可比样本。接上 USB 后在电量看似停滞时连续采集几次，
-再拔掉 USB 对比读数。
-
-测试用 Mac 应检出与烧录固件相同的提交。采集工具只依赖 Python 3 标准库，采集时
-不需要 ESP-IDF 或额外 Python 包。刷机并完成 Wi-Fi 配置后，关闭刷机页面和其他
-串口监视器，保持 USB 数据线连接：
+发布固件已移除充电采样和 USB 截图调试入口。串口仅保留必要的警告和错误；
+下面的采集工具可记录启动或联网故障，不进行刷写或充电采样。
 
 ```bash
 python3 tools/device-test/serial_capture.py --list-ports
@@ -79,7 +66,7 @@ python3 tools/device-test/serial_capture.py --port /dev/cu.usbmodemXXXX --second
 
 先开始采集，再重启设备一次，才能记录完整启动与重新联网过程。采集工具不会烧录、
 擦除或向设备发送命令。原始日志以私有权限保存在 `/tmp/pdkpass-device-logs/`，终端
-只汇总观察到的启动、缓存和错误消息。这些计数不能证明屏幕、按键、声音、电池或
+只汇总观察到的警告和错误消息。这些计数不能证明屏幕、按键、声音、电池或
 定时行为正常；这些项目仍按硬件指南在真机验收。分享原始日志前应检查并遮盖网络或
 个人信息。
 

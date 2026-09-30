@@ -8,6 +8,8 @@ import importlib.util
 import struct
 import sys
 import unittest
+from unittest.mock import patch
+from subprocess import CompletedProcess
 from pathlib import Path
 
 
@@ -60,6 +62,32 @@ class PartitionParserTest(unittest.TestCase):
         raw[28] ^= 1
         with self.assertRaisesRegex(ValueError, "MD5"):
             VERIFY.parse_partition_table(bytes(raw))
+
+
+class RecoveryHookTest(unittest.TestCase):
+    def check_symbols(self, symbols: str) -> None:
+        with patch.object(VERIFY.subprocess, "run", return_value=CompletedProcess(
+                args=[], returncode=0, stdout=symbols, stderr="")):
+            VERIFY.verify_recovery_hook(Path("bootloader.elf"))
+
+    def test_accepts_strong_release_hook_without_log_marker(self) -> None:
+        self.check_symbols("40380000 T bootloader_after_init\n"
+                           "40380100 T bootloader_hooks_include\n")
+
+    def test_rejects_default_weak_hook(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Recovery hook"):
+            self.check_symbols("40380000 W bootloader_after_init\n"
+                               "40380100 T bootloader_hooks_include\n")
+
+    def test_rejects_missing_component(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Recovery hook"):
+            self.check_symbols("40380000 T bootloader_after_init\n")
+
+    def test_rejects_symbol_tool_failure(self) -> None:
+        with patch.object(VERIFY.subprocess, "run", return_value=CompletedProcess(
+                args=[], returncode=1, stdout="", stderr="invalid ELF")):
+            with self.assertRaisesRegex(ValueError, "cannot inspect"):
+                VERIFY.verify_recovery_hook(Path("bootloader.elf"))
 
 
 if __name__ == "__main__":

@@ -78,7 +78,6 @@ static void backlight_init(void) {
     if (e != ESP_OK) { ESP_LOGE(TAG, "ledc_channel_config 失败: %s", esp_err_to_name(e)); return; }
 
     s_bl_ready = true;
-    ESP_LOGI(TAG, "背光 LEDC 就绪 gpio=%d", BSP_LCD_BL);
 }
 
 esp_err_t bsp_display_init(void) {
@@ -132,7 +131,6 @@ esp_err_t bsp_display_init(void) {
     esp_lcd_panel_disp_on_off(s_panel, true);                    // 0x29 DISPON
 
     backlight_init();
-    ESP_LOGI(TAG, "显示就绪 %dx%d", BSP_LCD_W, BSP_LCD_H);
     return ESP_OK;
 }
 

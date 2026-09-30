@@ -1,6 +1,7 @@
 #include "pdkpass_network.h"
 #include "pdkpass_http.h"
 #include "pdkpass_sync_policy.h"
+#include "pdkpass_storage.h"
 #include "pdkpass_power.h"
 
 #include "pdkpass_wifi_form.h"
@@ -59,6 +60,9 @@ extern const char _binary_pdkpass_setup_page_html_start[];
 extern const char _binary_pdkpass_setup_status_html_start[];
 
 static EventGroupHandle_t s_events;
+static portMUX_TYPE s_start_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_starting;
+static bool s_wifi_initialized;
 static SemaphoreHandle_t s_candidate_lock;
 static pdkpass_network_callback_t s_callback;
 static esp_netif_t *s_sta_netif;
@@ -157,8 +161,10 @@ static bool load_credentials(void)
     size_t blob_size = sizeof(s_profiles);
     esp_err_t blob_err = nvs_get_blob(handle, "profiles", &s_profiles, &blob_size);
     if (blob_err == ESP_OK && blob_size == sizeof(s_profiles) &&
-        pdkpass_wifi_profiles_valid(&s_profiles) && s_profiles.count) {
+        pdkpass_wifi_profiles_valid(&s_profiles)) {
         nvs_close(handle);
+        if (!s_profiles.count) { memset(s_working_ssid, 0, sizeof(s_working_ssid));
+            memset(s_working_password, 0, sizeof(s_working_password)); return false; }
         memcpy(s_working_ssid, s_profiles.entries[0].ssid, sizeof(s_working_ssid));
         memcpy(s_working_password, s_profiles.entries[0].password, sizeof(s_working_password));
         return true;
@@ -189,7 +195,12 @@ static esp_err_t save_credentials(const char *ssid, const char *password)
     err = nvs_set_blob(handle, "profiles", &next, sizeof(next));
     if (err == ESP_OK) err = nvs_commit(handle);
     nvs_close(handle);
-    if (err == ESP_OK) s_profiles = next;
+    if (err == ESP_OK) {
+        s_profiles = next;
+        const char *const legacy[] = {"ssid", "password"};
+        esp_err_t cleanup = pdkpass_storage_erase(NVS_NAMESPACE, legacy, 2);
+        if (cleanup != ESP_OK) ESP_LOGW(TAG, "Legacy credentials cleanup failed: %s", esp_err_to_name(cleanup));
+    }
     return err;
 }
 
@@ -282,114 +293,7 @@ static void start_sntp_once(void)
     s_sntp_started = true;
 }
 
-static esp_err_t root_get(httpd_req_t *request)
-{
-    httpd_resp_set_type(request, "text/html; charset=utf-8");
-    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-    return httpd_resp_sendstr(request, _binary_pdkpass_setup_page_html_start);
-}
-
-static esp_err_t nearby_get(httpd_req_t *request)
-{
-    char json[512];
-    if (!pdkpass_wifi_nearby_json(&s_setup_nearby, s_setup_scan_failed,
-                                   json, sizeof(json))) {
-        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "Nearby network list unavailable");
-        return ESP_FAIL;
-    }
-    httpd_resp_set_type(request, "application/json; charset=utf-8");
-    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-    return httpd_resp_sendstr(request, json);
-}
-
-static esp_err_t save_post(httpd_req_t *request)
-{
-    if (request->content_len <= 0 || request->content_len > FORM_BODY_LIMIT) {
-        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid form size");
-        return ESP_FAIL;
-    }
-
-    char body[FORM_BODY_LIMIT + 1];
-    size_t received = 0;
-    while (received < (size_t)request->content_len) {
-        int result = httpd_req_recv(request, body + received,
-                                    request->content_len - received);
-        if (result <= 0) {
-            httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST,
-                                "Incomplete form");
-            return ESP_FAIL;
-        }
-        received += (size_t)result;
-    }
-    body[received] = '\0';
-
-    char ssid[33];
-    char password[65];
-    if (!pdkpass_wifi_form_parse(body, received, ssid, sizeof(ssid),
-                                  password, sizeof(password))) {
-        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST,
-                            "Check Wi-Fi name and password");
-        return ESP_FAIL;
-    }
-
-    if (xSemaphoreTake(s_candidate_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
-        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "Please try again");
-        return ESP_FAIL;
-    }
-    if (s_candidate_busy) {
-        xSemaphoreGive(s_candidate_lock);
-        httpd_resp_set_status(request, "409 Conflict");
-        return httpd_resp_sendstr(request, "A connection is already being tested. Please wait.");
-    }
-    s_candidate_busy = true;
-    memcpy(s_candidate_ssid, ssid, sizeof(s_candidate_ssid));
-    memcpy(s_candidate_password, password, sizeof(s_candidate_password));
-    xSemaphoreGive(s_candidate_lock);
-    xEventGroupSetBits(s_events, EVENT_CANDIDATE);
-
-    httpd_resp_set_status(request, "202 Accepted");
-    httpd_resp_set_type(request, "text/html; charset=utf-8");
-    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-    return httpd_resp_sendstr(request, _binary_pdkpass_setup_status_html_start);
-}
-
-static esp_err_t start_http_server(void)
-{
-    if (s_http) return ESP_OK;
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_open_sockets = 3;
-    config.lru_purge_enable = true;
-    config.stack_size = 6144;
-
-    esp_err_t err = httpd_start(&s_http, &config);
-    if (err != ESP_OK) return err;
-    const httpd_uri_t root = {
-        .uri = "/", .method = HTTP_GET, .handler = root_get,
-    };
-    const httpd_uri_t nearby = {
-        .uri = "/networks", .method = HTTP_GET, .handler = nearby_get,
-    };
-    const httpd_uri_t save = {
-        .uri = "/save", .method = HTTP_POST, .handler = save_post,
-    };
-    err = httpd_register_uri_handler(s_http, &root);
-    if (err == ESP_OK) err = httpd_register_uri_handler(s_http, &nearby);
-    if (err == ESP_OK) err = httpd_register_uri_handler(s_http, &save);
-    if (err != ESP_OK) {
-        httpd_stop(s_http);
-        s_http = NULL;
-    }
-    return err;
-}
-
-static void stop_http_server(void)
-{
-    if (!s_http) return;
-    httpd_stop(s_http);
-    s_http = NULL;
-}
+#include "pdkpass_network_portal.inc"
 
 static esp_err_t configure_station(const char *ssid, const char *password)
 {
@@ -440,8 +344,6 @@ static void scan_setup_nearby(void)
         s_setup_scan_failed = true;
         ESP_LOGW(TAG, "Setup scan result failed: %s", esp_err_to_name(err));
     }
-    ESP_LOGI(TAG, "Setup scan found %u APs, showing %u",
-             (unsigned)total, (unsigned)s_setup_nearby.count);
 }
 
 static esp_err_t start_setup(void)
@@ -489,7 +391,6 @@ static esp_err_t start_setup(void)
     s_setup_started = esp_timer_get_time();
     s_setup_idle_since = s_setup_started;
     s_testing_candidate = false;
-    ESP_LOGI(TAG, "Wi-Fi setup ready");
     publish_state(PDKPASS_NETWORK_SETUP);
     return ESP_OK;
 }
@@ -697,22 +598,30 @@ static esp_err_t prepare_network(void)
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
     err = esp_event_loop_create_default();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
-    s_sta_netif = esp_netif_create_default_wifi_sta();
-    s_ap_netif = esp_netif_create_default_wifi_ap();
+    // Retain successful initialization stages so an explicit retry cannot
+    // duplicate interfaces, Wi-Fi ownership or registered event handlers.
+    if (!s_sta_netif) s_sta_netif = esp_netif_create_default_wifi_sta();
+    if (!s_ap_netif) s_ap_netif = esp_netif_create_default_wifi_ap();
     if (!s_sta_netif || !s_ap_netif) return ESP_ERR_NO_MEM;
     err = configure_setup_address();
     if (err != ESP_OK) return err;
 
     wifi_init_config_t wifi_init = WIFI_INIT_CONFIG_DEFAULT();
-    err = esp_wifi_init(&wifi_init);
-    if (err != ESP_OK) return err;
-    err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                              wifi_event, NULL,
-                                              &s_wifi_handler);
-    if (err != ESP_OK) return err;
-    err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                              ip_event, NULL, &s_ip_handler);
-    if (err != ESP_OK) return err;
+    if (!s_wifi_initialized) {
+        err = esp_wifi_init(&wifi_init);
+        if (err != ESP_OK) return err;
+        s_wifi_initialized = true;
+    }
+    if (!s_wifi_handler) {
+        err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                                  wifi_event, NULL, &s_wifi_handler);
+        if (err != ESP_OK) return err;
+    }
+    if (!s_ip_handler) {
+        err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                                  ip_event, NULL, &s_ip_handler);
+        if (err != ESP_OK) return err;
+    }
     err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
     if (err != ESP_OK) return err;
     err = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
@@ -751,11 +660,10 @@ static void network_task(void *arg)
 {
     (void)arg;
     esp_err_t err = prepare_network();
-    if (err != ESP_OK) {
+    bool ready = err == ESP_OK;
+    if (!ready) {
         ESP_LOGE(TAG, "Network startup failed: %s", esp_err_to_name(err));
         publish_state(PDKPASS_NETWORK_OFFLINE);
-        vTaskDelete(NULL);
-        return;
     }
 
     for (;;) {
@@ -763,7 +671,18 @@ static void network_task(void *arg)
             s_events, STATION_EVENTS | EVENT_CANDIDATE |
                           EVENT_TIME_SYNCED | EVENT_RETRY | EVENT_SETUP | EVENT_CANCEL | EVENT_CLIENT |
                           EVENT_SYNC | EVENT_POLICY,
-            pdTRUE, pdFALSE, network_wait_ticks(esp_timer_get_time()));
+            pdTRUE, pdFALSE, ready ? network_wait_ticks(esp_timer_get_time()) : portMAX_DELAY);
+
+        if (!ready) {
+            // No automatic retry loop: only a user retry/setup may initialize
+            // failed stages again. Cancel always has priority over retry.
+            if (!(bits & EVENT_CANCEL) && (bits & (EVENT_RETRY | EVENT_SETUP))) {
+                err = prepare_network();
+                ready = err == ESP_OK;
+                if (!ready) ESP_LOGE(TAG, "Network retry failed: %s", esp_err_to_name(err));
+            }
+            if (!ready) { publish_state(PDKPASS_NETWORK_OFFLINE); continue; }
+        }
 
         if (bits & EVENT_CANCEL) {
             s_auto_parked = false;
@@ -917,8 +836,6 @@ static void network_task(void *arg)
             if (s_time_synced_boot && pdkpass_sync_idle() && pdkpass_http_try_begin()) {
                 if (pdkpass_sync_idle()) {
                     s_auto_parked = go_offline() == ESP_OK;
-                    if (s_auto_parked)
-                        ESP_LOGD(TAG, "Wi-Fi parked until next data sync");
                 }
                 pdkpass_http_end();
             }
@@ -929,24 +846,55 @@ static void network_task(void *arg)
 esp_err_t pdkpass_network_start(pdkpass_network_callback_t callback)
 {
     if (!callback) return ESP_ERR_INVALID_ARG;
-    if (s_events) return ESP_ERR_INVALID_STATE;
+    portENTER_CRITICAL(&s_start_lock);
+    if (s_events || s_starting) {
+        portEXIT_CRITICAL(&s_start_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_starting = true;
+    portEXIT_CRITICAL(&s_start_lock);
     s_callback = callback;
     s_events = xEventGroupCreate();
     s_candidate_lock = xSemaphoreCreateMutex();
-    if (!s_events || !s_candidate_lock) return ESP_ERR_NO_MEM;
-    if (xTaskCreate(network_task, "pdkpass_net", NETWORK_TASK_STACK, NULL,
+    esp_err_t err = ESP_OK;
+    if (!s_events || !s_candidate_lock ||
+        xTaskCreate(network_task, "pdkpass_net", NETWORK_TASK_STACK, NULL,
                     NETWORK_TASK_PRIORITY, NULL) != pdPASS) {
-        return ESP_ERR_NO_MEM;
+        if (s_events) vEventGroupDelete(s_events);
+        if (s_candidate_lock) vSemaphoreDelete(s_candidate_lock);
+        s_events = NULL;
+        s_candidate_lock = NULL;
+        err = ESP_ERR_NO_MEM;
+        // Allocation may be retried from the UI. Return the failure without
+        // running service callbacks while the caller holds the LVGL lock.
     }
-    return ESP_OK;
+    portENTER_CRITICAL(&s_start_lock);
+    s_starting = false;
+    portEXIT_CRITICAL(&s_start_lock);
+    return err;
 }
 
-void pdkpass_network_request(pdkpass_network_command_t command)
+esp_err_t pdkpass_network_request(pdkpass_network_command_t command)
 {
-    if (!s_events) return;
+    portENTER_CRITICAL(&s_start_lock);
+    bool starting = s_starting;
+    EventGroupHandle_t events = starting ? NULL : s_events;
+    pdkpass_network_callback_t callback = s_callback;
+    portEXIT_CRITICAL(&s_start_lock);
+    if (starting) return ESP_ERR_INVALID_STATE;
+    // Task allocation can fail before the first worker exists. User actions
+    // may allocate it again; all actual radio operations remain in that task.
+    if (!events && callback &&
+        (command == PDKPASS_NETWORK_RETRY || command == PDKPASS_NETWORK_OPEN_SETUP)) {
+        esp_err_t err = pdkpass_network_start(callback);
+        if (err != ESP_OK) return err;
+        events = s_events;
+    }
+    if (!events) return ESP_ERR_INVALID_STATE;
     EventBits_t bits = command == PDKPASS_NETWORK_CANCEL ? EVENT_CANCEL :
         command == PDKPASS_NETWORK_SYNC ? EVENT_SYNC :
         command == PDKPASS_NETWORK_POLICY ? EVENT_POLICY :
         command == PDKPASS_NETWORK_OPEN_SETUP ? EVENT_SETUP : EVENT_RETRY;
-    xEventGroupSetBits(s_events, bits);
+    xEventGroupSetBits(events, bits);
+    return ESP_OK;
 }

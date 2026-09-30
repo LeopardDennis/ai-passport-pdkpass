@@ -7,7 +7,11 @@
 #include <stdint.h>
 
 // 初始化 codec 与 I2S。内部会调 bsp_i2c_init()(幂等),无需外部先调。
+// 失败时回收本次创建的接口和通道，保留共享 I2C 总线，可再次初始化。
+// 初始化、格式、读写和停止操作须由调用方串行化。
 esp_err_t bsp_audio_init(void);
+// TX-only initialization for playback products; incompatible mode requests fail.
+esp_err_t bsp_audio_init_playback(void);
 
 // 设置采样格式。同格式重复调用是廉价的(直接复用已打开的 codec)。
 //

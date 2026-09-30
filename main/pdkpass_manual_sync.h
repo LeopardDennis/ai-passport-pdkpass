@@ -13,10 +13,28 @@ typedef enum {
     PDKPASS_MANUAL_BUSY,
     PDKPASS_MANUAL_COOLDOWN,
     PDKPASS_MANUAL_NOT_READY,
+    PDKPASS_MANUAL_TIMED_OUT,
 } pdkpass_manual_state_t;
 
 typedef struct {
     pdkpass_manual_state_t state;
     uint32_t generation;
+    int64_t deadline_us; // Monotonic, includes time waiting for other HTTP work.
+    int64_t cooldown_until_us; // Monotonic retry eligibility.
     unsigned session; // Selected results session; unused for points refresh.
 } pdkpass_manual_status_t;
+
+#define PDKPASS_MANUAL_TIMEOUT_US (120LL * 1000000LL)
+
+// Project a deadline into UI feedback without releasing worker ownership.
+// A new request stays BUSY until the old worker has stopped and cleaned up.
+static inline pdkpass_manual_status_t pdkpass_manual_visible_status(
+    pdkpass_manual_status_t status, int64_t now_us)
+{
+    if (status.state == PDKPASS_MANUAL_RUNNING && status.deadline_us > 0 &&
+        now_us >= status.deadline_us) {
+        status.state = PDKPASS_MANUAL_TIMED_OUT;
+        status.generation++;
+    }
+    return status;
+}

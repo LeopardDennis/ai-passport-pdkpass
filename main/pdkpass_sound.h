@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 // Prepares audio on a worker at startup; closes it after 250 ms idle.
+// Failed init/open attempts retry on a new cue after at least 60 seconds.
 esp_err_t pdkpass_sound_start(void);
 
 // Non-blocking button callback entry: PRESS cues immediately; long OK adds

@@ -11,7 +11,3 @@ esp_err_t bsp_i2c_init(void);
 
 // 取共享总线句柄。未初始化时返回 NULL。
 i2c_master_bus_handle_t bsp_i2c_bus(void);
-
-// 扫描 0x08..0x77 并打印所有应答的设备。排查"芯片是不是没焊好/地址对不对"极有用。
-// 直接在正式总线上扫,不要另开临时总线 —— 原因见 bsp_i2c.c 中 bsp_i2c_scan() 的注释。
-esp_err_t bsp_i2c_scan(void);
