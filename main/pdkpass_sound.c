@@ -12,6 +12,7 @@
 
 #define SOUND_IDLE_MS 250U
 #define SOUND_VOLUME 50U
+#define RESULT_VOLUME 70U
 
 static const char *TAG = "pdkpass_sound";
 static QueueHandle_t s_queue;
@@ -113,6 +114,8 @@ static void sound_worker(void *unused)
             continue;
         size_t count = pdkpass_sound_render(kind, s_pcm, PDKPASS_SOUND_SAMPLES);
         if (count > 0U) {
+            if (kind == PDKPASS_SOUND_RESULT_READY)
+                bsp_audio_set_volume(RESULT_VOLUME);
             if (bsp_audio_write(s_pcm, count * sizeof(s_pcm[0])) == ESP_OK) {
                 // Allow queued PCM to finish; keep the codec warm for nearby
                 // presses, then close it after the bounded idle interval.
@@ -122,6 +125,8 @@ static void sound_worker(void *unused)
                 bsp_audio_stop();
                 opened = false;
             }
+            if (kind == PDKPASS_SOUND_RESULT_READY)
+                bsp_audio_set_volume(SOUND_VOLUME);
         }
     }
 }

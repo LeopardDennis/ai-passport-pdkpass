@@ -88,3 +88,16 @@ uint32_t pdkpass_reminder_wait(const pdkpass_reminder_schedule_t *s,
     if (seconds > 86400) seconds = 86400;
     return (uint32_t)seconds * 1000U;
 }
+
+int pdkpass_reminder_next_session(
+    const pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT], int64_t now)
+{
+    int next = -1;
+    if (!entries) return next;
+    for (int i = 0; i < PDKPASS_SESSION_COUNT; i++) {
+        if (entries[i].start_utc <= now || entries[i].start_utc <= 0 ||
+            (entries[i].flags & PDKPASS_REMINDER_CANCELLED)) continue;
+        if (next < 0 || entries[i].start_utc < entries[next].start_utc) next = i;
+    }
+    return next;
+}

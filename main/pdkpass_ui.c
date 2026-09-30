@@ -37,6 +37,7 @@
 #define FOOTER_Y 281
 #define FOOTER_W 224
 #define FOOTER_H 32
+#define FOOTER_TEXT_PAD 4
 #define INNER_W 210
 #define INNER_H 177
 #define CALENDAR_ROWS 5
@@ -52,6 +53,7 @@ static lv_obj_t *s_status;
 static lv_obj_t *s_content;
 static lv_obj_t *s_hint_box;
 static lv_obj_t *s_hint;
+static char s_home_session_text[22];
 static lv_obj_t *s_battery;
 static lv_obj_t *s_battery_fill;
 static lv_obj_t *s_battery_tip;
@@ -521,7 +523,23 @@ static void show_status_flags(void)
 
 static void set_hint(const char *text)
 {
-    if (strcmp(lv_label_get_text(s_hint), text) != 0) lv_label_set_text(s_hint, text);
+    if (strcmp(lv_label_get_text(s_hint), text) == 0) return;
+    lv_label_set_text(s_hint, text);
+
+    // Fit long hints in width only; shorter status messages restore the
+    // full available-width centered label and unscaled text height.
+    lv_point_t size;
+    lv_text_get_size(&size, text, &pdkpass_body_font, 0, 0,
+                     LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    const int available_width = FOOTER_W - 6 - 2 * FOOTER_TEXT_PAD;
+    const int source_width = size.x + 2;
+    const int scale = ui_pixel_fit_scale(source_width, available_width, 256);
+    const int label_width = scale < 256 ? source_width : available_width;
+    lv_obj_set_width(s_hint, label_width);
+    lv_obj_set_style_transform_pivot_x(s_hint, 0, 0);
+    lv_obj_set_style_transform_scale_x(s_hint, scale, 0);
+    lv_obj_set_x(s_hint,
+        FOOTER_TEXT_PAD + (available_width - label_width * scale / 256) / 2);
 }
 
 static bool sync_notice_active(uint32_t until)
@@ -731,7 +749,7 @@ static void render_network_menu(void)
         // gap between four rows in the fixed-height menu.
         make_center_label(card, titles[i], 2, 5, 192, &lv_font_unscii_16, ink);
     }
-    set_hint("UP/DN OK  HOLD:BACK");
+    set_hint("UP/DN OK:GO HOLD:BACK");
 }
 
 static bool update_network_selection(unsigned previous, unsigned selected)
@@ -766,7 +784,7 @@ static void render_network_progress(void)
                       0, 76, INNER_W, &lv_font_unscii_8, UI_PAPER);
     make_center_label(s_content, "HOTSPOT IS OFF", 0, 120, INNER_W,
                       &lv_font_unscii_8, UI_YELLOW);
-    set_hint(busy ? "HOLD OK CANCEL" : "OK / HOLD: MENU");
+    set_hint(busy ? "HOLD:CANCEL" : "OK:MENU HOLD:MENU");
 }
 
 static void render_network_confirm(void)
@@ -856,9 +874,74 @@ static void make_progress(size_t current, size_t total)
     for (int i = 0; i < segments; i++) {
         uint32_t color = i < filled ? (i == 0 ? UI_RED : UI_YELLOW)
                                     : UI_PAPER;
-        make_card(s_content, x, 163, width, 9, color, 2);
+        make_card(s_content, x, 168, width, 9, color, 2);
         x += width + gap;
     }
+}
+
+// Offline calendars contain only three published session times. Do not infer
+// missing practice/sprint times; complete discovered schedules take precedence.
+static int64_t home_calendar_start(const char *line)
+{
+    char month[4], extra;
+    unsigned day, hour, minute;
+    const char *date = strchr(line, ' ');
+    while (date) {
+        while (*date == ' ') date++;
+        if (*date >= '0' && *date <= '9') break;
+        date = strchr(date, ' ');
+    }
+    if (!date || sscanf(date, "%u %3s %u:%u %c", &day, month,
+                       &hour, &minute, &extra) != 4 || day < 1 || day > 31 ||
+        hour > 23 || minute > 59) return 0;
+    static const char *months[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+        "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+    unsigned m = 0;
+    while (m < 12 && strcmp(month, months[m]) != 0) m++;
+    if (m == 12) return 0;
+    char iso[40];
+    snprintf(iso, sizeof(iso), "%04u-%02u-%02uT%02u:%02u:00+08:00",
+             s_season.year, m + 1, day, hour, minute);
+    int64_t start = 0;
+    return pdkpass_parse_iso8601_utc(iso, &start) ? start : 0;
+}
+
+static int64_t home_next_session(char *output, size_t capacity)
+{
+    if (!s_time_valid) {
+        snprintf(output, capacity, "SYNC CLOCK");
+        return 0;
+    }
+    const pdkpass_race_t *race = &s_season.races[s_state.selected_race];
+    pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT] = {0};
+    bool complete = pdkpass_reminder_round_schedule(s_season.year,
+                                                   race->meeting_key, entries);
+    if (!complete) {
+        entries[PDKPASS_SESSION_FP1].start_utc = home_calendar_start(race->session_one_cn);
+        entries[detail_middle_session(race)].start_utc = home_calendar_start(race->session_two_cn);
+        entries[PDKPASS_SESSION_RACE].start_utc = home_calendar_start(race->race_cn);
+        for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++) {
+            pdkpass_result_snapshot_t result;
+            if (pdkpass_results_get(s_state.selected_race, i, &result) &&
+                (result.status == PDKPASS_RESULT_CANCELLED ||
+                 result.status == PDKPASS_RESULT_NOT_HELD ||
+                 result.status == PDKPASS_RESULT_READY))
+                entries[i].flags |= PDKPASS_REMINDER_CANCELLED;
+        }
+    }
+    int64_t now = (int64_t)time(NULL);
+    int next = pdkpass_reminder_next_session(entries, now);
+    if (next < 0) {
+        snprintf(output, capacity, "%s", complete || now >= race->switch_at_utc
+                                         ? "NO NEXT SESSION" : "SCHEDULE TBD");
+        return 0;
+    }
+    time_t local = (time_t)(entries[next].start_utc + BEIJING_OFFSET_SECONDS);
+    struct tm tm;
+    gmtime_r(&local, &tm);
+    snprintf(output, capacity, "%s %02d:%02d CST",
+             detail_session_short_label(next), tm.tm_hour, tm.tm_min);
+    return entries[next].start_utc;
 }
 
 static void render_home(void)
@@ -908,21 +991,21 @@ static void render_home(void)
     make_center_label(s_content, weekend, 0, 94, INNER_W,
                       &lv_font_unscii_16, UI_PAPER);
 
-    lv_obj_t *race_card = make_card(s_content, 8, 116, 194, 29,
+    lv_obj_t *race_card = make_card(s_content, 8, 113, 194, 27,
                                     race->accent, 3);
     char race_time[22];
-    size_t race_line_length = strlen(race->race_cn);
-    const char *time_text = race_line_length >= 5U
-                                ? race->race_cn + race_line_length - 5U
-                                : "--:--";
-    if (strlen(time_text) == 5 && time_text[2] == ':' &&
-        time_text[0] >= '0' && time_text[0] <= '2' &&
-        time_text[1] >= '0' && time_text[1] <= '9' &&
-        time_text[3] >= '0' && time_text[3] <= '5' &&
-        time_text[4] >= '0' && time_text[4] <= '9')
-        snprintf(race_time, sizeof(race_time), "RACE %s CST", time_text);
-    else snprintf(race_time, sizeof(race_time), "RACE TIME TBD");
-    make_medium_label(race_card, race_time, 0, 0, 188,
+    int64_t next_start = home_next_session(race_time, sizeof(race_time));
+    snprintf(s_home_session_text, sizeof(s_home_session_text), "%s", race_time);
+    if (s_clock_timer && s_time_valid) {
+        int64_t now = (int64_t)time(NULL);
+        int64_t deadline = pdkpass_schedule_next_check(now, s_season.races,
+                                                      s_season.race_count);
+        if (next_start > now && next_start < deadline) deadline = next_start;
+        uint64_t delay = deadline > now ? (uint64_t)(deadline - now) * 1000U : 1000U;
+        lv_timer_set_period(s_clock_timer, delay > UINT32_MAX ? UINT32_MAX : (uint32_t)delay);
+        lv_timer_reset(s_clock_timer);
+    }
+    make_medium_label(race_card, race_time, 0, -2, 188,
                       contrast_color(race->accent));
     char page[20];
     snprintf(page, sizeof(page), "%u / %u",
@@ -1027,7 +1110,7 @@ static void render_calendar(void)
     s_list_page = PDKPASS_PAGE_CALENDAR;
     s_list_start = start;
     s_list_selected = s_state.selected_race;
-    set_hint("UP/DN OK  HOLD:HOME");
+    set_hint("UP/DN OK:VIEW HOLD:HOME");
 }
 
 static void render_standings(void)
@@ -1246,7 +1329,7 @@ static void render_detail(void)
         make_center_label(row, line, 1, 4, 204,
                           &lv_font_unscii_8, UI_INK);
     }
-    set_hint("UP/DN OK  HOLD:BACK");
+    set_hint("UP/DN OK:VIEW HOLD:BACK");
 }
 
 static void render_results(void)
@@ -1539,11 +1622,23 @@ static void clock_tick(lv_timer_t *timer)
     pdkpass_state_set_home_race(&s_state, next, s_season.race_count);
     if (s_state.page == PDKPASS_PAGE_HOME) {
         if (previous != next && !s_state.home_browsing) render();
-        else update_home_status();
+        else {
+            char line[22];
+            line[0] = '\0';
+            if (s_state.selected_race < s_season.race_count) home_next_session(line, sizeof(line));
+            if (!s_state.season_complete && strcmp(line, s_home_session_text) != 0) render();
+            else update_home_status();
+        }
     }
 
     int64_t deadline = pdkpass_schedule_next_check(now, s_season.races,
                                                    s_season.race_count);
+    if (s_state.page == PDKPASS_PAGE_HOME &&
+        s_state.selected_race < s_season.race_count && !s_state.season_complete) {
+        char line[22];
+        int64_t session_start = home_next_session(line, sizeof(line));
+        if (session_start > now && session_start < deadline) deadline = session_start;
+    }
     uint64_t delay_ms = deadline > now ? (uint64_t)(deadline - now) * 1000U
                                        : 1000U;
     if (delay_ms > UINT32_MAX) delay_ms = UINT32_MAX;
@@ -1682,9 +1777,9 @@ void pdkpass_ui_enter(bool battery_available)
                                       CONTENT_W, CONTENT_H, UI_SKY);
     s_hint_box = ui_pixel_ticket_create(s_screen, FOOTER_X, FOOTER_Y,
                                         FOOTER_W, FOOTER_H, UI_PAPER, true);
-    // Center the visible glyphs inside the ticket; the centered-label helper's
-    // extra 3 px inset makes this full-width hint look shifted to the right.
-    s_hint = make_label(s_hint_box, "", 0, 9, FOOTER_W - 6,
+    // Reserve equal text margins inside the ticket border.
+    s_hint = make_label(s_hint_box, "", FOOTER_TEXT_PAD, 9,
+                        FOOTER_W - 6 - 2 * FOOTER_TEXT_PAD,
                         &lv_font_unscii_8, UI_INK);
     lv_obj_set_style_text_align(s_hint, LV_TEXT_ALIGN_CENTER, 0);
 
@@ -1757,7 +1852,8 @@ void pdkpass_ui_network_update(const pdkpass_network_update_t *update)
 
 void pdkpass_ui_results_update(size_t race_index)
 {
-    if ((s_state.page == PDKPASS_PAGE_RESULTS ||
+    if ((s_state.page == PDKPASS_PAGE_HOME ||
+         s_state.page == PDKPASS_PAGE_RESULTS ||
          s_state.page == PDKPASS_PAGE_RACE_DETAIL) &&
         s_state.selected_race == race_index) render();
 }

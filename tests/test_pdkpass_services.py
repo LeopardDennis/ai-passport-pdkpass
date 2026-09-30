@@ -269,7 +269,7 @@ static jmp_buf done;
 static unsigned step, init_calls, opens, stops, writes, sounds, ui_keys, probes;
 static unsigned volume, delays;
 static bool init_fail, write_fail, coalesced, alerts_enabled=true;
-static bool queued_disabled_result;
+static bool queued_disabled_result, queued_enabled_result;
 bool pdkpass_reminder_enabled(void) {return alerts_enabled;}
 static atomic_bool s_reminder_active, s_reminder_cancelled;
 static void play_reminder(void) {assert(false);}
@@ -283,6 +283,7 @@ static void bsp_audio_set_volume(unsigned value) {volume=value;}
 static void bsp_audio_stop(void) {stops++;}
 static int bsp_audio_write(const void *pcm,size_t bytes) {
  assert(pcm==s_pcm && bytes==PDKPASS_SOUND_SAMPLES*sizeof(int16_t));
+ assert(volume==(rendered[writes]==PDKPASS_SOUND_RESULT_READY ? 70U : 50U));
  writes++;return write_fail ? -1 : ESP_OK;
 }
 static void vTaskDelay(unsigned ticks) {assert(ticks==70);delays++;}
@@ -305,6 +306,15 @@ static int xQueueSend(QueueHandle_t queue,const void *value,unsigned wait) {
 }
 static int xQueueReceive(QueueHandle_t queue,void *value,unsigned wait) {
  assert(queue==s_queue);
+ if(queued_enabled_result) {
+  if(wait==0) return 0;
+  if(step++==0) {
+   *(pdkpass_sound_kind_t *)value=PDKPASS_SOUND_RESULT_READY;
+   return pdTRUE;
+  }
+  assert(wait==250 && writes==1 && volume==50 && delays==1);
+  longjmp(done,1);
+ }
  if(queued_disabled_result) {
   if(wait==0) return 0;
   if(step++==0) {
@@ -348,7 +358,7 @@ static int xQueueReceive(QueueHandle_t queue,void *value,unsigned wait) {
 }
 """
         code += '\n'.join(line for line in source.splitlines()
-                          if line.startswith('#define SOUND_')) + '\n'
+                          if line.startswith(('#define SOUND_', '#define RESULT_VOLUME'))) + '\n'
         code += function(source, 'static bool open_sound(')
         code += function(source, 'static void sound_worker(')
         code += function(source, 'void pdkpass_sound_key(')
@@ -390,6 +400,10 @@ int main(void) {
  queued_disabled_result=true;alerts_enabled=false;
  if(setjmp(done)==0) sound_worker(NULL);
  assert(writes==0); // A queued result cue is dropped if ALERTS turns off.
+ step=init_calls=opens=stops=writes=delays=0;queued_disabled_result=false;
+ queued_enabled_result=true;alerts_enabled=true;
+ if(setjmp(done)==0) sound_worker(NULL);
+ assert(writes==1 && rendered[0]==PDKPASS_SOUND_RESULT_READY && volume==50);
  puts("Press dispatch, warm audio reuse, idle stop and audio failure cleanup: PASS");
 }
 """

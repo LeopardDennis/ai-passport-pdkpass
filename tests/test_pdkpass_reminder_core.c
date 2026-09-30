@@ -5,6 +5,17 @@
 
 int main(void)
 {
+    pdkpass_reminder_entry_t upcoming[PDKPASS_SESSION_COUNT] = {0};
+    upcoming[PDKPASS_SESSION_RACE].start_utc = 300;
+    upcoming[PDKPASS_SESSION_FP2].start_utc = 100;
+    upcoming[PDKPASS_SESSION_SPRINT].start_utc = 200;
+    upcoming[PDKPASS_SESSION_FP2].flags = PDKPASS_REMINDER_FIRED;
+    assert(pdkpass_reminder_next_session(upcoming, 99) == PDKPASS_SESSION_FP2);
+    assert(pdkpass_reminder_next_session(upcoming, 100) == PDKPASS_SESSION_SPRINT);
+    upcoming[PDKPASS_SESSION_SPRINT].flags = PDKPASS_REMINDER_CANCELLED;
+    assert(pdkpass_reminder_next_session(upcoming, 100) == PDKPASS_SESSION_RACE);
+    assert(pdkpass_reminder_next_session(upcoming, 300) == -1);
+    assert(pdkpass_reminder_next_session(NULL, 0) == -1);
     const int64_t start = 1790400000LL;
     pdkpass_reminder_schedule_t s = {.enabled = 1};
     pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT] = {0};

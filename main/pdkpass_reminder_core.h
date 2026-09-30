@@ -31,3 +31,7 @@ int pdkpass_reminder_due(const pdkpass_reminder_schedule_t *schedule,
                          bool time_valid, int64_t now);
 uint32_t pdkpass_reminder_wait(const pdkpass_reminder_schedule_t *schedule,
                               bool time_valid, int64_t now);
+
+// Earliest strictly future, non-cancelled session; independent of alert settings.
+int pdkpass_reminder_next_session(
+    const pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT], int64_t now);

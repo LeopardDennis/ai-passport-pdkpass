@@ -6,6 +6,25 @@
 
 ## Unreleased
 
+- Balance home pagination spacing: move and shorten the session card, and lower the progress bar while retaining centered session text.
+
+- Center home session text vertically in its time card by moving it up 1 px.
+
+- Show the selected round's next upcoming session and Beijing start time on home, using discovered schedules with calendar fallback. Skip cancelled/started sessions and refresh at session starts; show clock/schedule status when unavailable.
+
+- Clarify calendar, race-detail and network-menu footer actions with
+  OK:VIEW, OK:VIEW and OK:GO. Use HOLD:CANCEL while retrying Wi-Fi
+  and OK:MENU HOLD:MENU after failure, matching the shared key:action format.
+
+- Fit long footer hints horizontally within the ticket while preserving text
+  height and centering. Show the full results/points navigation hints and
+  points synchronization/cooldown messages; restore normal width when a
+  shorter message replaces them. Reserve 4 px of space on each side inside
+  the footer border.
+
+- Raise the cue for a newly saved session result to 70% volume. Button cues
+  remain at 50%, and session reminders remain at 80%.
+
 - Short OK on results refreshes only the selected round, including corrections
   to cached podiums. Short OK on either points page refreshes driver and team
   standings without reloading the calendar. Keep cached data visible, show

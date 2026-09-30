@@ -185,3 +185,22 @@ uint32_t pdkpass_reminder_wait_ms(int64_t now)
     xSemaphoreGive(s_lock);
     return wait;
 }
+
+bool pdkpass_reminder_round_schedule(unsigned year, int32_t meeting_key,
+    pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT])
+{
+    if (!entries || meeting_key <= 0 || !s_lock ||
+        xSemaphoreTake(s_lock, 0) != pdTRUE) return false;
+    bool found = false;
+    if (s_store.schedule.year == year) {
+        for (size_t i = 0; i < PDKPASS_MAX_RACES; i++) {
+            if (s_store.schedule.meeting_keys[i] != meeting_key) continue;
+            memcpy(entries, &s_store.schedule.entries[i * PDKPASS_SESSION_COUNT],
+                   sizeof(*entries) * PDKPASS_SESSION_COUNT);
+            found = true;
+            break;
+        }
+    }
+    xSemaphoreGive(s_lock);
+    return found;
+}

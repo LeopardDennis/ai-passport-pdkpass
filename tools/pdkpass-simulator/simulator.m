@@ -103,6 +103,9 @@ static int s_simulator_battery = 88;
 
 static bool s_reminders_enabled = true;
 static bool s_reminder_sound_playing;
+bool pdkpass_reminder_round_schedule(unsigned year, int32_t meeting_key,
+    pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT])
+{ (void)year; (void)meeting_key; (void)entries; return false; }
 bool pdkpass_reminder_enabled(void) { return s_reminders_enabled; }
 void pdkpass_reminder_set_enabled(bool enabled) { s_reminders_enabled = enabled; }
 void pdkpass_sound_reminder_play(void) { s_reminder_sound_playing = true; }
