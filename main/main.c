@@ -1,3 +1,4 @@
+#include "pdkpass_cache.h"
 // PDKPASS application entry point for FoloToy AI Passport.
 #include "bsp_battery.h"
 #include "bsp_button.h"
@@ -215,6 +216,9 @@ void app_main(void)
         ESP_LOGE(TAG, "NVS init failed without erase: %s",
                  esp_err_to_name(nvs_err));
     }
+    esp_err_t cache_err = pdkpass_cache_init();
+    if (cache_err != ESP_OK)
+        ESP_LOGW(TAG, "Data cache init failed without erase: %s", esp_err_to_name(cache_err));
     pdkpass_sync_status_init(on_data_status);
     if (pdkpass_reminder_init(wake_reminder_worker) != ESP_OK)
         ESP_LOGW(TAG, "Session reminders unavailable");

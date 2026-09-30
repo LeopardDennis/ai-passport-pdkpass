@@ -821,6 +821,9 @@ static void network_task(void *arg)
             // recheck connectivity after acquiring this same mutex.
             if (s_time_synced_boot && pdkpass_sync_idle() && pdkpass_http_try_begin()) {
                 if (pdkpass_sync_idle()) {
+                    ESP_LOGW(TAG, "Wi-Fi parking: season_wait_ms=%lu results_wait_ms=%lu",
+                             (unsigned long)pdkpass_sync_wait_ms(PDKPASS_SYNC_SEASON),
+                             (unsigned long)pdkpass_sync_wait_ms(PDKPASS_SYNC_RESULTS));
                     s_auto_parked = go_offline() == ESP_OK;
                 }
                 pdkpass_http_end();

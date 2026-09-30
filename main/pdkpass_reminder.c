@@ -1,3 +1,4 @@
+#include "pdkpass_cache.h"
 #include "pdkpass_reminder.h"
 #include "pdkpass_season.h"
 #include "freertos/FreeRTOS.h"
@@ -27,13 +28,7 @@ static int64_t s_retry_utc;
 
 static esp_err_t persist(void)
 {
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open("pdk_reminder", NVS_READWRITE, &handle);
-    if (err != ESP_OK) return err;
-    err = nvs_set_blob(handle, "schedule", &s_store, sizeof(s_store));
-    if (err == ESP_OK) err = nvs_commit(handle);
-    nvs_close(handle);
-    return err;
+    return pdkpass_cache_write_blob("pdk_reminder", "schedule", &s_store, sizeof(s_store));
 }
 
 esp_err_t pdkpass_reminder_init(void (*wake_worker)(void))
@@ -42,13 +37,8 @@ esp_err_t pdkpass_reminder_init(void (*wake_worker)(void))
     s_lock = xSemaphoreCreateMutex();
     if (!s_lock) return ESP_ERR_NO_MEM;
     s_wake = wake_worker;
-    nvs_handle_t handle;
     size_t size = sizeof(s_store);
-    esp_err_t err = nvs_open("pdk_reminder", NVS_READONLY, &handle);
-    if (err == ESP_OK) {
-        err = nvs_get_blob(handle, "schedule", &s_store, &size);
-        nvs_close(handle);
-    }
+    esp_err_t err = pdkpass_cache_read_blob("pdk_reminder", "schedule", &s_store, &size);
     if (err != ESP_OK || size != sizeof(s_store) ||
         s_store.magic != REMINDER_MAGIC || s_store.version != REMINDER_VERSION ||
         s_store.schedule.year > 2100 || s_store.schedule.enabled > 1) {

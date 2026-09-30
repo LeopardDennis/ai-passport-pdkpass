@@ -75,6 +75,15 @@ uint32_t pdkpass_sync_wait_ms(pdkpass_sync_service_t service)
     return wait;
 }
 
+void pdkpass_sync_hold(pdkpass_sync_service_t service, bool held)
+{
+    if ((unsigned)service >= PDKPASS_SYNC_COUNT) return;
+    portENTER_CRITICAL(&s_guard);
+    s_policy.held[service] = held;
+    portEXIT_CRITICAL(&s_guard);
+    pdkpass_network_request(PDKPASS_NETWORK_POLICY);
+}
+
 bool pdkpass_sync_idle(void)
 {
     int64_t now = esp_timer_get_time() / 1000;

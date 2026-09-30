@@ -13,6 +13,13 @@
 > `idf.py flash`。`idf.py build` 和
 > `idf.py flash` 只作为增量开发命令，不作为默认交付方式。
 
+PDKPASS 数据缓存使用 `0x310000` 处的 64 KB `pdk_cache` NVS 分区。
+原有 24 KB `nvs` 保留 Wi-Fi 配置和小型系统数据。新分区位于固定的 3 MB
+应用范围之后、受保护的 `cardid` 之前，由运行时初始化，不打包缓存内容。
+从尚无该分区的固件升级时必须同时安装匹配的分区表；仅更新应用、保留旧分区表
+无法使用新缓存分区。缓存按键回退读取原有 NVS，新副本提交后才回收对应旧键。
+初始化或写入失败不会触发整分区擦除。
+
 ```bash
 source <ESP-IDF-v5.5.3-路径>/export.sh
 idf.py --version             # 必须输出 ESP-IDF v5.5.3

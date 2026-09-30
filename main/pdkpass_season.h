@@ -47,6 +47,8 @@ esp_err_t pdkpass_season_start(pdkpass_season_callback_t callback);
 void pdkpass_season_set_network(bool online, bool time_valid);
 
 // Refresh both driver and constructor standings without fetching the calendar.
+// Offline requests reconnect saved Wi-Fi in worker context; the 120-second
+// deadline covers connection, queueing and HTTP. Hold radio until cleanup.
 pdkpass_manual_state_t pdkpass_season_force_points(void);
 bool pdkpass_season_manual_status(pdkpass_manual_status_t *status);
 

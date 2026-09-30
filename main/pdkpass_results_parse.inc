@@ -200,11 +200,14 @@ static bool parse_podium_driver(const cJSON *item, void *user)
     if (!json_positive_key(number, &driver) || driver > 99) return false;
     for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
         if (driver != details->top[i].driver_number) continue;
-        if (details->podium_codes[i][0]) return false;
-        char fallback[8];
+        char fallback[8], code[4] = {0};
         snprintf(fallback, sizeof(fallback), "#%d", details->top[i].driver_number);
-        copy_json_text(details->podium_codes[i], sizeof(details->podium_codes[i]),
-                       item, "name_acronym", fallback);
+        copy_json_text(code, sizeof(code), item, "name_acronym", fallback);
+        // Repeated records that agree on the displayed identity are harmless.
+        // Conflicting records still reject the entire candidate and keep cache.
+        if (details->podium_codes[i][0])
+            return strcmp(details->podium_codes[i], code) == 0;
+        memcpy(details->podium_codes[i], code, sizeof(code));
     }
     return true;
 }

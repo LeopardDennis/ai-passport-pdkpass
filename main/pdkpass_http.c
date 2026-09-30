@@ -16,6 +16,10 @@ static SemaphoreHandle_t s_transaction;
 static int64_t s_deadline_us;
 static int64_t s_retry_at_us;
 static int64_t s_jolpica_retry_at_us;
+// Shared across transactions/services and radio reconnects. OpenF1's free
+// limit is 30/minute; 2.1-second spacing leaves headroom below that limit.
+// Jolpica permits 500/hour; 7.3-second spacing also meets its burst limit.
+static int64_t s_request_at_us[3];
 // One TLS connection, owned by the shared transaction, never retained while idle.
 static esp_http_client_handle_t s_client;
 static unsigned s_client_origin;
@@ -102,7 +106,12 @@ static bool stream_item(const char *json, void *context)
     response_t *response = context;
     const char *end = NULL;
     cJSON *object = cJSON_ParseWithOpts(json, &end, true);
-    bool ok = cJSON_IsObject(object) && response->item(object, response->context);
+    bool ok = cJSON_IsObject(object);
+    if (!ok) response->failure_stage = "json-item";
+    else if (!response->item(object, response->context)) {
+        response->failure_stage = "item-rejected";
+        ok = false;
+    }
     cJSON_Delete(object);
     return ok;
 }
@@ -141,7 +150,7 @@ static esp_err_t http_event(esp_http_client_event_t *event)
     if (r->stream) {
         r->length += count;
         if (!pdkpass_json_stream_feed(r->stream, event->data, count)) {
-            r->failure_stage = "json-stream";
+            if (!r->failure_stage) r->failure_stage = "json-stream";
             return r->error = ESP_ERR_INVALID_RESPONSE;
         }
         return ESP_OK;
@@ -165,11 +174,38 @@ static esp_err_t http_event(esp_http_client_event_t *event)
     return ESP_OK;
 }
 
+static bool wait_for_request(unsigned origin, int64_t retry_at)
+{
+    int64_t now = esp_timer_get_time();
+    // Automatic refreshes defer server cooldown to their scheduler. Manual
+    // refreshes may wait, within their original deadline, instead of failing
+    // immediately when another worker just encountered a rate limit.
+    if (!s_deadline_us && now < retry_at) return false;
+    int64_t ready = retry_at;
+    if (origin && s_request_at_us[origin] > ready) ready = s_request_at_us[origin];
+    if (pdkpass_http_expired() || (s_deadline_us > 0 && ready >= s_deadline_us)) return false;
+    while (now < ready) {
+        int64_t remaining_ms = (ready - now + 999) / 1000;
+        if (remaining_ms > 1000) remaining_ms = 1000;
+        TickType_t ticks = pdMS_TO_TICKS(remaining_ms);
+        vTaskDelay(ticks ? ticks : 1);
+        if (pdkpass_http_expired()) return false;
+        now = esp_timer_get_time();
+    }
+    if (origin) s_request_at_us[origin] = now + (origin == 1 ? 2100000LL : 7300000LL);
+    return true;
+}
+
 static esp_err_t perform(const char *url, response_t *r)
 {
     int64_t *retry_at = strncmp(url, "https://api.jolpi.ca/", sizeof("https://api.jolpi.ca/") - 1U) == 0
                             ? &s_jolpica_retry_at_us : &s_retry_at_us;
-    if (pdkpass_http_expired() || esp_timer_get_time() < *retry_at) return ESP_ERR_TIMEOUT;
+    unsigned origin = http_origin(url);
+    if (!wait_for_request(origin, *retry_at)) {
+        report_failure(pdkpass_http_expired() ? "operation-timeout" : "request-wait",
+                       0, ESP_ERR_TIMEOUT, 0);
+        return ESP_ERR_TIMEOUT;
+    }
     esp_http_client_config_t config = {
         .url = url, .event_handler = http_event, .user_data = r,
         .crt_bundle_attach = esp_crt_bundle_attach, .timeout_ms = 15000,
@@ -177,7 +213,6 @@ static esp_err_t perform(const char *url, response_t *r)
         .is_async = s_deadline_us > 0,
         .keep_alive_enable = true,
     };
-    unsigned origin = http_origin(url);
     bool reusable = s_transaction_active && origin != 0;
     if (s_client && (!reusable || origin != s_client_origin)) pdkpass_http_release();
     esp_http_client_handle_t client = s_client;

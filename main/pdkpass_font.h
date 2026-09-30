@@ -1,4 +1,6 @@
 // Derived from LVGL's MIT-licensed UNSCII 8 bitmap (ASCII 32-127).
+// E-acute/U-diaeresis replace the duplicated top row with an accent and spacer.
+// Lowercase variants share uppercase glyphs: API names uppercase ASCII only.
 // Nearest-neighbor bitmap enlargement: 1.25x width, 1.5x height.
 // Precomputed 1-bpp glyphs avoid per-label transform layers on the 64 KB pool.
 #pragma once
@@ -61,6 +63,8 @@ static const uint8_t pdkpass_body_bitmap[] = {
     0xf0, 0x1c, 0x1c, 0x1c, 0x0f, 0xff, 0xff, 0xff, 0xff, 0x80, 0xf0, 0xf0, 0x1c, 0x1c, 0x1c, 0x0f,
     0x0f, 0x1c, 0x1c, 0x1c, 0xf0, 0x3d, 0x9e, 0xfb, 0xc0, 0xe0, 0x70, 0x34, 0x1a, 0x0d, 0x3e, 0x8b,
     0x45, 0xc2, 0x01, 0x00, 0x80, 0x40,
+    0x04, 0x00, 0xff, 0xe0, 0xe0, 0xe0, 0xfe, 0xfe, 0xe0, 0xe0, 0xe0, 0xff,
+    0x24, 0x00, 0xe3, 0xe3, 0xe3, 0xe3, 0xe3, 0xe3, 0xe3, 0xe3, 0xe3, 0x3e,
 };
 static const lv_font_fmt_txt_glyph_dsc_t pdkpass_body_glyphs[] = {
     {.bitmap_index=0, .adv_w=0, .box_w=0, .box_h=0, .ofs_x=0, .ofs_y=0},
@@ -160,14 +164,24 @@ static const lv_font_fmt_txt_glyph_dsc_t pdkpass_body_glyphs[] = {
     {.bitmap_index=874, .adv_w=160, .box_w=8, .box_h=11, .ofs_x=1, .ofs_y=2},
     {.bitmap_index=885, .adv_w=160, .box_w=9, .box_h=3, .ofs_x=0, .ofs_y=9},
     {.bitmap_index=889, .adv_w=160, .box_w=9, .box_h=11, .ofs_x=0, .ofs_y=2},
+    {.bitmap_index=902, .adv_w=160, .box_w=8, .box_h=12, .ofs_x=1, .ofs_y=2},
+    {.bitmap_index=914, .adv_w=160, .box_w=8, .box_h=12, .ofs_x=1, .ofs_y=2},
 };
 static const lv_font_fmt_txt_cmap_t pdkpass_body_cmaps[] = {
     {.range_start=32, .range_length=96, .glyph_id_start=1,
      .type=LV_FONT_FMT_TXT_CMAP_FORMAT0_TINY},
+    {.range_start=0x00c9, .range_length=1, .glyph_id_start=97,
+     .type=LV_FONT_FMT_TXT_CMAP_FORMAT0_TINY}, // E-acute
+    {.range_start=0x00dc, .range_length=1, .glyph_id_start=98,
+     .type=LV_FONT_FMT_TXT_CMAP_FORMAT0_TINY}, // U-diaeresis
+    {.range_start=0x00e9, .range_length=1, .glyph_id_start=97,
+     .type=LV_FONT_FMT_TXT_CMAP_FORMAT0_TINY}, // e-acute in uppercased API names
+    {.range_start=0x00fc, .range_length=1, .glyph_id_start=98,
+     .type=LV_FONT_FMT_TXT_CMAP_FORMAT0_TINY}, // u-diaeresis in uppercased API names
 };
 static const lv_font_fmt_txt_dsc_t pdkpass_body_data = {
     .glyph_bitmap=pdkpass_body_bitmap, .glyph_dsc=pdkpass_body_glyphs,
-    .cmaps=pdkpass_body_cmaps, .cmap_num=1, .bpp=1,
+    .cmaps=pdkpass_body_cmaps, .cmap_num=5, .bpp=1,
 };
 static const lv_font_t pdkpass_body_font = {
     .get_glyph_dsc=lv_font_get_glyph_dsc_fmt_txt,

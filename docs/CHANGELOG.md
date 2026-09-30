@@ -6,6 +6,20 @@
 
 ## Unreleased
 
+- Show `Completed` on home when the selected round has no next session.
+
+- Reconnect saved Wi-Fi for manual standings/results refreshes, retaining queued
+  work within its original deadline and holding radio power until cleanup.
+- Pace OpenF1/Jolpica requests across both workers and wait out server cooldowns
+  within a manual refresh deadline. Accept identical driver records while
+  rejecting conflicts; distinguish invalid JSON from rejected data in logs.
+- Store season, standings, results and reminder blobs in a dedicated 64 KB NVS
+  partition at `0x310000`, with per-key legacy reads and commit-before-cleanup
+  migration to avoid filling the 24 KB system/credential NVS partition.
+
+- Add pixel-font glyphs for accented E and U in driver surnames, including
+  lowercase API variants, so Hülkenberg and Pérez render from existing caches.
+
 - Keep the network menu fourth action as `BACK`, with no maintenance pages.
 - Reuse one same-origin HTTPS client within a serialized refresh, releasing it
   on error, origin changes, before cache writes and at transaction end.

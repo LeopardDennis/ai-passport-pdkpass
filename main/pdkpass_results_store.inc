@@ -55,10 +55,9 @@ static void load_cache(void)
 
     bool valid = false;
     bool cached_data = false;
-    nvs_handle_t handle;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) == ESP_OK) {
+    {
         size_t size = sizeof(*stored);
-        esp_err_t err = nvs_get_blob(handle, NVS_KEY, stored, &size);
+        esp_err_t err = pdkpass_cache_read_blob(NVS_NAMESPACE, NVS_KEY, stored, &size);
         if (err == ESP_OK && size == sizeof(legacy_store_t)) {
             legacy_store_t *legacy = malloc(sizeof(*legacy));
             if (legacy) {
@@ -77,7 +76,6 @@ static void load_cache(void)
                 free(legacy);
             }
         }
-        nvs_close(handle);
         size_t race_count = pdkpass_season_race_count();
         valid = err == ESP_OK && size == sizeof(*stored) &&
                 persisted_matches(stored, pdkpass_season_year(), race_count);
@@ -119,10 +117,7 @@ static void load_cache(void)
         s_priority_until_utc = 0;
         xSemaphoreGive(s_lock);
     }
-    if (!valid && nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
-        if (nvs_erase_all(handle) == ESP_OK) nvs_commit(handle);
-        nvs_close(handle);
-    }
+    if (!valid) pdkpass_cache_forget_namespace(NVS_NAMESPACE);
     free(loaded);
     free(stored);
 }
@@ -168,13 +163,7 @@ static esp_err_t save_cache(void)
     }
     xSemaphoreGive(s_lock);
 
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err == ESP_OK) {
-        err = nvs_set_blob(handle, NVS_KEY, stored, sizeof(*stored));
-        if (err == ESP_OK) err = nvs_commit(handle);
-        nvs_close(handle);
-    }
+    esp_err_t err = pdkpass_cache_write_blob(NVS_NAMESPACE, NVS_KEY, stored, sizeof(*stored));
     if (err == ESP_OK && xSemaphoreTake(s_lock, pdMS_TO_TICKS(2000)) == pdTRUE) {
         s_has_cached_data = cached_data;
         xSemaphoreGive(s_lock);

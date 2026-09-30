@@ -1,3 +1,4 @@
+#include "pdkpass_cache.h"
 #include "pdkpass_season.h"
 #include "pdkpass_calendar.h"
 #include "pdkpass_tracks.h"
@@ -571,6 +572,7 @@ static void finish_points_force(pdkpass_manual_state_t state)
             s_points_force_status, esp_timer_get_time()).state == PDKPASS_MANUAL_TIMED_OUT
                 ? PDKPASS_MANUAL_TIMED_OUT : state;
         s_points_force_status.generation++;
+        pdkpass_sync_hold(PDKPASS_SYNC_SEASON, false);
     }
     xSemaphoreGive(s_lock);
 }
@@ -631,6 +633,7 @@ static TickType_t offline_wait(uint32_t network_wait_ms, int64_t now_utc)
 static void season_task(void *arg)
 {
     (void)arg;
+    bool manual_connect_requested = false;
     TickType_t delay = portMAX_DELAY;
     for (;;) {
         xEventGroupWaitBits(s_events, EVENT_WAKE, pdTRUE, pdFALSE, delay);
@@ -638,11 +641,26 @@ static void season_task(void *arg)
         uint32_t wait_ms = points_force_pending() ? 0 :
                            pdkpass_sync_wait_ms(PDKPASS_SYNC_SEASON);
         if (!network_ready()) {
-            if (take_points_force()) finish_points_force(PDKPASS_MANUAL_OFFLINE);
+            if (points_force_pending()) {
+                uint32_t connect_wait = pdkpass_manual_connect_wait_ms(
+                    manual_deadline(), esp_timer_get_time());
+                bool failed = connect_wait && !manual_connect_requested &&
+                    pdkpass_network_request(PDKPASS_NETWORK_RETRY) != ESP_OK;
+                if (!connect_wait || failed) {
+                    if (take_points_force()) finish_points_force(failed
+                        ? PDKPASS_MANUAL_OFFLINE : PDKPASS_MANUAL_TIMED_OUT);
+                    manual_connect_requested = false;
+                } else {
+                    manual_connect_requested = true;
+                    delay = pdMS_TO_TICKS(connect_wait);
+                    continue;
+                }
+            } else manual_connect_requested = false;
             if (!wait_ms) pdkpass_network_request(PDKPASS_NETWORK_SYNC);
             delay = offline_wait(wait_ms, (int64_t)time(NULL));
             continue;
         }
+        manual_connect_requested = false;
         if (wait_ms) { delay = pdMS_TO_TICKS(wait_ms); continue; }
         int64_t now_utc = (int64_t)time(NULL);
         if (take_points_force()) {
@@ -726,8 +744,7 @@ pdkpass_manual_state_t pdkpass_season_force_points(void)
         return PDKPASS_MANUAL_BUSY;
     TickType_t now = xTaskGetTickCount();
     pdkpass_manual_state_t result = PDKPASS_MANUAL_RUNNING;
-    if (!s_online || !s_time_valid) result = PDKPASS_MANUAL_OFFLINE;
-    else if (s_points_force_status.state == PDKPASS_MANUAL_RUNNING)
+    if (s_points_force_status.state == PDKPASS_MANUAL_RUNNING)
         result = PDKPASS_MANUAL_BUSY;
     else if (s_points_force_has_last_tick &&
              now - s_points_force_last_tick < pdMS_TO_TICKS(POINTS_FORCE_COOLDOWN_MS))
@@ -740,6 +757,7 @@ pdkpass_manual_state_t pdkpass_season_force_points(void)
         s_points_force_status.deadline_us = esp_timer_get_time() + PDKPASS_MANUAL_TIMEOUT_US;
         s_points_force_status.state = PDKPASS_MANUAL_RUNNING;
         s_points_force_status.generation++;
+        pdkpass_sync_hold(PDKPASS_SYNC_SEASON, true);
     }
     xSemaphoreGive(s_lock);
     if (result == PDKPASS_MANUAL_RUNNING) {

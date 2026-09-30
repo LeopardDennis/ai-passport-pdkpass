@@ -15,7 +15,8 @@ bool pdkpass_sync_policy_idle(const pdkpass_sync_policy_t *policy, int64_t now_m
     for (unsigned i = 0; i < PDKPASS_SYNC_COUNT; i++) {
         // Keep a working connection for imminent work/backfill, rather than
         // spending more energy reconnecting between adjacent requests.
-        if (pdkpass_sync_policy_wait(policy, (pdkpass_sync_service_t)i, now_ms) <= 60000U)
+        if (policy->held[i] ||
+            pdkpass_sync_policy_wait(policy, (pdkpass_sync_service_t)i, now_ms) <= 60000U)
             return false;
     }
     return true;

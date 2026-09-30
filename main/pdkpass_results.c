@@ -1,3 +1,4 @@
+#include "pdkpass_cache.h"
 #include "pdkpass_results.h"
 #include "pdkpass_reminder.h"
 #include "pdkpass_sync_policy.h"
@@ -341,6 +342,7 @@ static void finish_manual_race(size_t race_index, pdkpass_manual_state_t state)
             s_force_status, esp_timer_get_time()).state == PDKPASS_MANUAL_TIMED_OUT
                 ? PDKPASS_MANUAL_TIMED_OUT : state;
         s_force_status.generation++;
+        pdkpass_sync_hold(PDKPASS_SYNC_RESULTS, false);
     }
     xSemaphoreGive(s_lock);
 }
@@ -545,6 +547,7 @@ static bool online_snapshot(void)
 static void results_task(void *arg)
 {
     (void)arg;
+    bool manual_connect_requested = false;
     TickType_t delay = pdMS_TO_TICKS(RESULTS_IDLE_DELAY_MS);
     for (;;) {
         xEventGroupWaitBits(s_events, EVENT_WAKE, pdTRUE, pdFALSE, cache_retry_wait_ticks(delay));
@@ -554,13 +557,27 @@ static void results_task(void *arg)
         uint32_t wait_ms = (manual_race_pending() || request_pending()) ? 0 :
                            pdkpass_sync_wait_ms(PDKPASS_SYNC_RESULTS);
         if (!online_snapshot()) {
-            size_t manual_race;
-            if (take_manual_race(&manual_race))
-                finish_manual_race(manual_race, PDKPASS_MANUAL_OFFLINE);
+            if (manual_race_pending()) {
+                uint32_t connect_wait = pdkpass_manual_connect_wait_ms(
+                    manual_deadline(), esp_timer_get_time());
+                bool failed = connect_wait && !manual_connect_requested &&
+                    pdkpass_network_request(PDKPASS_NETWORK_RETRY) != ESP_OK;
+                if (!connect_wait || failed) {
+                    size_t manual_race;
+                    if (take_manual_race(&manual_race)) finish_manual_race(manual_race,
+                        failed ? PDKPASS_MANUAL_OFFLINE : PDKPASS_MANUAL_TIMED_OUT);
+                    manual_connect_requested = false;
+                } else {
+                    manual_connect_requested = true;
+                    delay = pdMS_TO_TICKS(connect_wait);
+                    continue;
+                }
+            } else manual_connect_requested = false;
             if (!wait_ms) pdkpass_network_request(PDKPASS_NETWORK_SYNC);
             delay = wait_ms ? pdMS_TO_TICKS(wait_ms) : portMAX_DELAY;
             continue;
         }
+        manual_connect_requested = false;
         if (wait_ms) { delay = pdMS_TO_TICKS(wait_ms); continue; }
 
         size_t manual_race;
@@ -680,8 +697,7 @@ pdkpass_manual_state_t pdkpass_results_force_session(size_t race_index, pdkpass_
         return PDKPASS_MANUAL_BUSY;
     TickType_t now = xTaskGetTickCount();
     pdkpass_manual_state_t result = PDKPASS_MANUAL_RUNNING;
-    if (!s_online) result = PDKPASS_MANUAL_OFFLINE;
-    else if (s_force_status.state == PDKPASS_MANUAL_RUNNING)
+    if (s_force_status.state == PDKPASS_MANUAL_RUNNING)
         result = PDKPASS_MANUAL_BUSY;
     else if (s_force_has_last_tick &&
              now - s_force_last_tick < pdMS_TO_TICKS(RESULTS_FORCE_COOLDOWN_MS))
@@ -696,6 +712,7 @@ pdkpass_manual_state_t pdkpass_results_force_session(size_t race_index, pdkpass_
         s_force_status.deadline_us = esp_timer_get_time() + PDKPASS_MANUAL_TIMEOUT_US;
         s_force_status.state = PDKPASS_MANUAL_RUNNING;
         s_force_status.generation++;
+        pdkpass_sync_hold(PDKPASS_SYNC_RESULTS, true);
     }
     xSemaphoreGive(s_lock);
     if (result == PDKPASS_MANUAL_RUNNING) {

@@ -22,6 +22,8 @@ esp_err_t pdkpass_http_get(const char *url, size_t limit, char **json);
 typedef bool (*pdkpass_http_item_fn)(const cJSON *item, void *context);
 esp_err_t pdkpass_http_array(const char *url, pdkpass_http_item_fn item,
                              void *context);
+// GETs pace each API across both workers/transactions. Manual requests wait
+// for a server cooldown within the existing transaction deadline.
 // Failure-only error reporting for allocations/JSON parsing after a successful GET.
 // Stage names must be static, non-sensitive labels; never log response bodies.
 void pdkpass_http_report_data_failure(const char *stage, esp_err_t err,

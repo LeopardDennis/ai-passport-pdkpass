@@ -3,6 +3,7 @@
 #include "simulator.m"
 #undef main
 #include <assert.h>
+#include "src/misc/lv_text_private.h"
 static unsigned dark_timer_fired;
 static void dark_timer(lv_timer_t *timer) { (void)timer; dark_timer_fired++; }
 
@@ -12,6 +13,13 @@ static void check_body_text(lv_obj_t *obj)
     if (lv_obj_check_type(obj, &lv_label_class)) {
         const lv_font_t *font = lv_obj_get_style_text_font(obj, 0);
         if (font->line_height == 14) {
+            const char *text = lv_label_get_text(obj);
+            uint32_t offset = 0, letter;
+            while ((letter = lv_text_encoded_next(text, &offset)) != 0) {
+                lv_font_glyph_dsc_t glyph = {0};
+                assert(lv_font_get_glyph_dsc(font, &glyph, letter, 0));
+                assert(!glyph.is_placeholder);
+            }
             lv_point_t size;
             lv_text_get_size(&size, lv_label_get_text(obj), font,
                              lv_obj_get_style_text_letter_space(obj, 0), 0,
@@ -82,6 +90,16 @@ int main(void)
         pdkpass_ui_season_update();
         assert(find_label(lv_screen_active(), "ANTONELLI"));
         assert(!find_label(lv_screen_active(), "DRIVER DATA PENDING"));
+        // Persisted/API UTF-8 surnames must render real glyphs on the production
+        // standings row, including lowercase accents retained by copy_upper().
+        lv_obj_t *name = find_label(lv_screen_active(), "ANTONELLI");
+        assert(name);
+        const char *accented[] = {"HÜLKENBERG", "HüLKENBERG", "PÉREZ", "PéREZ"};
+        for (size_t i = 0; i < sizeof(accented) / sizeof(accented[0]); i++) {
+            lv_label_set_text(name, accented[i]);
+            check_memory();
+        }
+        lv_label_set_text(name, "ANTONELLI");
         s_preview_year = 2027;
         pdkpass_ui_season_update();
         assert(find_label(lv_screen_active(), "DRIVER DATA PENDING"));

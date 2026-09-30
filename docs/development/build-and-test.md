@@ -15,6 +15,16 @@ the [environment bootstrap](environment-setup.md) first.
 > `idf.py build` and `idf.py flash` as incremental development commands, not the
 > default delivery path.
 
+PDKPASS data caches use the 64 KB `pdk_cache` NVS partition at `0x310000`.
+The 24 KB default `nvs` partition retains Wi-Fi profiles and small system data.
+The new partition starts after the factory application's fixed 3 MB range and
+ends before protected `cardid`. It is initialized at runtime, with no packaged
+cache payload. Install the matching partition table when moving from firmware
+that predates this partition; an app-only update with an old table cannot use it.
+Cache reads fall back per key to legacy default-NVS blobs; writes commit the
+new copy before reclaiming that one old key. Failed initialization or writes
+never trigger a whole-partition erase.
+
 ```bash
 source <path-to-esp-idf-v5.5.3>/export.sh
 idf.py --version             # must report ESP-IDF v5.5.3

@@ -312,12 +312,9 @@ static bool team_snapshot_valid(const pdkpass_team_snapshot_t *snapshot)
 static void load_team_cache(void)
 {
     memset(&s_teams, 0, sizeof(s_teams));
-    nvs_handle_t handle;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return;
     team_cache_t stored = {0};
     size_t size = sizeof(stored);
-    esp_err_t err = nvs_get_blob(handle, "teams", &stored, &size);
-    nvs_close(handle);
+    esp_err_t err = pdkpass_cache_read_blob(NVS_NAMESPACE, "teams", &stored, &size);
     if (err == ESP_OK && size == sizeof(stored) &&
         stored.magic == TEAM_CACHE_MAGIC && stored.version == 1 &&
         team_snapshot_valid(&stored.snapshot)) s_teams = stored.snapshot;
@@ -328,13 +325,7 @@ static esp_err_t save_team_cache(const pdkpass_team_snapshot_t *snapshot)
     pdkpass_http_release();
     team_cache_t stored = {.magic = TEAM_CACHE_MAGIC, .version = 1,
                            .snapshot = *snapshot};
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err == ESP_OK) {
-        err = nvs_set_blob(handle, "teams", &stored, sizeof(stored));
-        if (err == ESP_OK) err = nvs_commit(handle);
-        nvs_close(handle);
-    }
+    esp_err_t err = pdkpass_cache_write_blob(NVS_NAMESPACE, "teams", &stored, sizeof(stored));
     return err;
 }
 

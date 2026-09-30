@@ -782,7 +782,7 @@ static int64_t home_next_session(char *output, size_t capacity)
     int next = pdkpass_reminder_next_session(entries, now);
     if (next < 0) {
         snprintf(output, capacity, "%s", complete || now >= race->switch_at_utc
-                                         ? "NO NEXT SESSION" : "SCHEDULE TBD");
+                                         ? "Completed" : "SCHEDULE TBD");
         return 0;
     }
     time_t local = (time_t)(entries[next].start_utc + BEIJING_OFFSET_SECONDS);

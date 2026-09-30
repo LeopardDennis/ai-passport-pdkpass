@@ -73,16 +73,10 @@ static void load_cache(void)
 {
     initialize_fallback();
     s_has_cached_data = false;
-    nvs_handle_t handle;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return;
     season_cache_t *stored = malloc(sizeof(*stored));
-    if (!stored) {
-        nvs_close(handle);
-        return;
-    }
+    if (!stored) return;
     size_t size = sizeof(*stored);
-    esp_err_t err = nvs_get_blob(handle, NVS_KEY, stored, &size);
-    nvs_close(handle);
+    esp_err_t err = pdkpass_cache_read_blob(NVS_NAMESPACE, NVS_KEY, stored, &size);
     bool loaded = false;
     if (err == ESP_OK &&
         (size == sizeof(*stored) || size == sizeof(legacy_season_cache_t)) &&
@@ -117,13 +111,7 @@ static esp_err_t save_cache(const pdkpass_season_snapshot_t *season)
     stored->magic = SEASON_CACHE_MAGIC;
     stored->version = SEASON_CACHE_VERSION;
     stored->season = *season;
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err == ESP_OK) {
-        err = nvs_set_blob(handle, NVS_KEY, stored, sizeof(*stored));
-        if (err == ESP_OK) err = nvs_commit(handle);
-        nvs_close(handle);
-    }
+    esp_err_t err = pdkpass_cache_write_blob(NVS_NAMESPACE, NVS_KEY, stored, sizeof(*stored));
     free(stored);
     return err;
 }
