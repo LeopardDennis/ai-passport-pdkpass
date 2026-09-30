@@ -6,10 +6,9 @@
 
 ## Unreleased
 
-- Stop inheriting downloaded calendar, driver/team points and results across
-  firmware images. Clear their private/legacy namespaces and sync dates before
-  starting services, commit the image marker last, and keep same-image reboot
-  caches, Wi-Fi and reminder settings. Remove default-NVS cache fallback.
+- Remove automatic cache clearing on firmware changes. Startup preserves valid
+  downloaded calendar, driver/team points, results and sync dates across both
+  reboots and upgrades. Keep default-NVS data-cache fallback disabled.
 
 - Finish queued manual results refreshes when an automatic fetch saves the same
   session, avoiding a duplicate download. Publish manual completion before

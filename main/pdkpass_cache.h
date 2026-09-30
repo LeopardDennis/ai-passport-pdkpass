@@ -4,11 +4,9 @@
 
 #define PDKPASS_CACHE_PARTITION "pdk_cache"
 
-// Initialize before services. A different firmware image clears downloaded
-// calendar/standings/results and their sync dates in private and legacy NVS.
-// Reboots of the same image retain caches. Cleanup commits before the image
-// marker; on failure cache access is disabled and retries at the next boot.
-// Wi-Fi, clock, reminder preferences, cardid and Recovery are preserved.
+// Initialize the private partition before services without clearing data.
+// Reboots and firmware upgrades retain valid caches and sync dates. Failed
+// initialization disables cache access; it never erases a partition.
 esp_err_t pdkpass_cache_init(void);
 // Read/write only the private partition; never import old default-NVS data.
 esp_err_t pdkpass_cache_read_blob(const char *ns, const char *key,

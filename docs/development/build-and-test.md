@@ -21,13 +21,12 @@ The new partition starts after the factory application's fixed 3 MB range and
 ends before protected `cardid`. It is initialized at runtime, with no packaged
 cache payload. Install the matching partition table when moving from firmware
 that predates this partition; an app-only update with an old table cannot use it.
-Caches belong to the running firmware image, identified by its application ELF
-SHA-256. On the first boot of a different image (or with no image marker), clear
-only `pdk_season` and `pdk_results` in private and default NVS, and `pdk_sync`
-in default NVS. Commit the new marker after cleanup succeeds. Same-image
-reboots retain offline caches; default-NVS cache import is disabled. Wi-Fi,
-clock and reminder settings remain intact. Cleanup failures disable cache
-access and retry on the next boot; no whole partition is erased.
+Cache initialization only opens the private partition; reboots and firmware
+upgrades retain valid downloaded data and sync dates. There is no firmware
+image comparison or automatic startup cleanup. Default-NVS cache import is
+disabled. Wi-Fi, clock and reminder settings remain intact. Initialization
+failures disable cache access without erasing data. Invalid results may still
+explicitly discard their private namespace; no whole partition is erased.
 
 ```bash
 source <path-to-esp-idf-v5.5.3>/export.sh

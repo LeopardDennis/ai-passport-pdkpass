@@ -34,7 +34,7 @@ def compile_run(code, extra=()):
         source = Path(directory) / 'test.c'
         binary = Path(directory) / 'test'
         # Service tests fake persistence at the cache API. The cache adapter's
-        # partition selection and image ownership are tested separately with its real
+        # partition access and initialization are tested separately with its real
         # production bodies and independent default/private NVS stores.
         adapters = {
             'pdkpass_cache_read_blob': (
@@ -3937,7 +3937,7 @@ int main(void) {
         compile_run(code, ['main/pdkpass_sync_policy.c'])
 
 
-    def test_cache_image_ownership_reset_and_same_image_restart(self):
+    def test_cache_init_preserves_data_and_never_imports_default_nvs(self):
         source = production_source(ROOT / 'main/pdkpass_cache.c')
         code = r'''
 #include <assert.h>
@@ -3947,24 +3947,20 @@ int main(void) {
 #include <string.h>
 #include "pdkpass_cache.h"
 typedef int nvs_handle_t;
-typedef struct {uint8_t app_elf_sha256[32];} esp_app_desc_t;
 #define NVS_READONLY 0
 #define NVS_READWRITE 1
 #define ESP_ERR_NVS_NOT_FOUND 9
-#define ESP_ERR_NVS_INVALID_LENGTH 10
 #define ESP_FAIL -1
 #define ESP_ERR_INVALID_STATE 0x103
 #define ESP_LOGW(...) ((void)0)
 static const char *TAG="test";
 static bool s_ready;
-static esp_app_desc_t image={.app_elf_sha256={1}};
-static const esp_app_desc_t *esp_app_get_description(void) {return &image;}
 // Separate committed stores; credentials and reminder settings must survive.
 static const char *const names[]={"pdk_season","pdk_results","pdk_sync","pdk_reminder","wifi","pdk_meta"};
 static uint8_t disk[2][6][64], staged[2][6][64];
 static size_t sizes[2][6], staged_sizes[2][6];
-static bool fail_init,fail_open,fail_erase,fail_commit,fail_marker_set;
-static unsigned clears,default_reads;
+static bool fail_init,fail_open,fail_erase,fail_commit,fail_set;
+static unsigned clears,default_reads,meta_opens;
 static int fail_commit_handle=-1;
 static int namespace_index(const char *ns) {
  for(int i=0;i<6;i++)if(!strcmp(ns,names[i]))return i;
@@ -3975,6 +3971,7 @@ static int nvs_flash_init_partition(const char *partition) {
 }
 static int open_namespace(int store,const char *ns,int mode,int *handle) {
  int i=namespace_index(ns);assert(i!=4); // Production must never open Wi-Fi.
+ if(i==5)meta_opens++;
  if(fail_open)return ESP_FAIL;
  if(mode==NVS_READONLY&&!sizes[store][i])return ESP_ERR_NVS_NOT_FOUND;
  *handle=store*10+i;
@@ -3984,16 +3981,18 @@ static int open_namespace(int store,const char *ns,int mode,int *handle) {
 static int nvs_open_from_partition(const char *partition,const char *ns,int mode,int *handle) {
  assert(!strcmp(partition,PDKPASS_CACHE_PARTITION));return open_namespace(1,ns,mode,handle);
 }
-static int nvs_open(const char *ns,int mode,int *handle) {return open_namespace(0,ns,mode,handle);}
+static int nvs_open(const char *ns,int mode,int *handle) {
+ (void)ns;(void)mode;(void)handle;default_reads++;assert(false);return ESP_FAIL;
+}
 static int nvs_get_blob(int h,const char *key,void *out,size_t *size) {
  int store=h/10,i=h%10;(void)key;if(!store)default_reads++;
  if(!sizes[store][i])return ESP_ERR_NVS_NOT_FOUND;
- if(*size<sizes[store][i]){*size=sizes[store][i];return ESP_ERR_NVS_INVALID_LENGTH;}
+ if(*size<sizes[store][i])return ESP_FAIL;
  *size=sizes[store][i];memcpy(out,disk[store][i],*size);return ESP_OK;
 }
 static int nvs_set_blob(int h,const char *key,const void *data,size_t size) {
  int store=h/10,i=h%10;(void)key;assert(store==1&&size<=64);
- if(i==5&&fail_marker_set)return ESP_FAIL;
+ if(fail_set)return ESP_FAIL;
  memcpy(staged[store][i],data,size);staged_sizes[store][i]=size;return ESP_OK;
 }
 static int nvs_erase_all(int h) {
@@ -4011,7 +4010,7 @@ static void seed(void) {
  for(int store=0;store<2;store++)for(int i=0;i<5;i++) {
   disk[store][i][0]=(uint8_t)(20+i);sizes[store][i]=1;
  }
- clears=default_reads=0;fail_commit_handle=-1;fail_init=fail_open=fail_erase=fail_commit=fail_marker_set=false;
+ clears=default_reads=meta_opens=0;fail_commit_handle=-1;fail_init=fail_open=fail_erase=fail_commit=fail_set=false;
 }
 static void assert_preserved(void) {
  for(int store=0;store<2;store++)for(int i=3;i<5;i++)
@@ -4024,53 +4023,41 @@ static void assert_preserved(void) {
             code += function(source, sig)
         code += r'''
 int main(void) {
- seed();assert(pdkpass_cache_init()==ESP_OK&&s_ready);
- assert(clears==5); // Season/results in both stores; sync dates in default NVS.
- for(int store=0;store<2;store++)assert(!sizes[store][0]&&!sizes[store][1]);
- assert(!sizes[0][2]&&sizes[1][5]==32);assert_preserved();
- const uint8_t fresh[]={7,8};uint8_t out[64];size_t size=sizeof(out);
- assert(pdkpass_cache_write_blob("pdk_season","current",fresh,sizeof(fresh))==ESP_OK);
- assert(pdkpass_cache_init()==ESP_OK&&clears==5); // Same image reboot keeps data.
+ seed();uint8_t before[2][6][64];memcpy(before,disk,sizeof(before));
+ assert(pdkpass_cache_init()==ESP_OK&&s_ready&&clears==0&&meta_opens==0);
+ assert(!memcmp(before,disk,sizeof(before)));
+ // Repeated startup and an obsolete image marker must never invalidate data.
+ sizes[1][5]=32;memset(disk[1][5],99,32);
+ assert(pdkpass_cache_init()==ESP_OK&&clears==0&&meta_opens==0);
+ uint8_t out[64];size_t size=sizeof(out);
  assert(pdkpass_cache_read_blob("pdk_season","current",out,&size)==ESP_OK);
- assert(size==2&&!memcmp(out,fresh,2));
- sizes[0][1]=1;disk[0][1][0]=99; // A legacy default cache must never be imported.
+ assert(size==1&&out[0]==20);
+ sizes[1][1]=0;
  size=sizeof(out);assert(pdkpass_cache_read_blob("pdk_results","season",out,&size)==ESP_ERR_NVS_NOT_FOUND);
- assert(default_reads==0);
- image.app_elf_sha256[0]=2;assert(pdkpass_cache_init()==ESP_OK);
- size=sizeof(out);assert(pdkpass_cache_read_blob("pdk_season","current",out,&size)==ESP_ERR_NVS_NOT_FOUND);
- assert(!sizes[0][1]&&disk[1][5][0]==2);assert_preserved();
+ assert(default_reads==0); // Old default-NVS results are never imported.
+ const uint8_t fresh[]={7,8};
+ assert(pdkpass_cache_write_blob("pdk_season","current",fresh,sizeof(fresh))==ESP_OK);
+ assert(pdkpass_cache_init()==ESP_OK&&clears==0&&meta_opens==0);
+ size=sizeof(out);assert(pdkpass_cache_read_blob("pdk_season","current",out,&size)==ESP_OK);
+ assert(size==2&&!memcmp(out,fresh,2));
 
- // Missing/corrupt owner marker clears data; storage failures never enable
- // old reads, stamp completion early, or erase credentials/whole partitions.
- for(int stage=0;stage<5;stage++) {
-  seed();image.app_elf_sha256[0]=3;
-  fail_init=stage==0;fail_open=stage==1;fail_erase=stage==2;
-  fail_commit=stage==3;fail_marker_set=stage==4;
-  assert(pdkpass_cache_init()!=ESP_OK&&!s_ready&&!sizes[1][5]);
-  size=sizeof(out);assert(pdkpass_cache_read_blob("pdk_season","current",out,&size)==ESP_ERR_INVALID_STATE);
-  assert(pdkpass_cache_write_blob("pdk_season","current",fresh,2)==ESP_ERR_INVALID_STATE);
-  unsigned before=clears;pdkpass_cache_forget_namespace("pdk_season");assert(clears==before);
-  assert_preserved();
-  fail_init=fail_open=fail_erase=fail_commit=fail_marker_set=false;
-  assert(pdkpass_cache_init()==ESP_OK&&s_ready);
-  assert(!sizes[1][0]&&!sizes[1][1]&&!sizes[0][0]&&!sizes[0][1]&&!sizes[0][2]);
-  assert_preserved();
+ fail_init=true;assert(pdkpass_cache_init()!=ESP_OK&&!s_ready&&clears==0);
+ size=sizeof(out);assert(pdkpass_cache_read_blob("pdk_season","current",out,&size)==ESP_ERR_INVALID_STATE);
+ assert(pdkpass_cache_write_blob("pdk_season","current",fresh,2)==ESP_ERR_INVALID_STATE);
+ pdkpass_cache_forget_namespace("pdk_season");assert(clears==0);
+ fail_init=false;assert(pdkpass_cache_init()==ESP_OK);
+ size=sizeof(out);assert(pdkpass_cache_read_blob("pdk_season","current",out,&size)==ESP_OK&&size==2);
+ for(int stage=0;stage<3;stage++) {
+  fail_open=stage==0;fail_set=stage==1;fail_commit=stage==2;
+  const uint8_t bad[]={88};
+  assert(pdkpass_cache_write_blob("pdk_season","current",bad,1)!=ESP_OK);
+  assert(sizes[1][0]==2&&!memcmp(disk[1][0],fresh,2));
  }
- // Interrupt cleanup at each namespace commit, including the final marker.
- const int handles[]={10,0,11,1,2,15};
- for(unsigned i=0;i<sizeof(handles)/sizeof(handles[0]);i++) {
-  seed();memset(disk[1][5],1,32);sizes[1][5]=32;
-  memset(image.app_elf_sha256,2,32);fail_commit_handle=handles[i];
-  assert(pdkpass_cache_init()!=ESP_OK&&!s_ready);
-  assert(disk[1][5][0]==1); // Do not stamp a partially cleaned image as current.
-  assert_preserved();fail_commit_handle=-1;
-  assert(pdkpass_cache_init()==ESP_OK&&disk[1][5][0]==2);
-  assert(!sizes[1][0]&&!sizes[1][1]&&!sizes[0][0]&&!sizes[0][1]&&!sizes[0][2]);
-  assert_preserved();
- }
- seed();sizes[1][5]=64;assert(pdkpass_cache_init()==ESP_OK&&sizes[1][5]==32);
- assert_preserved();
- puts("Cache ownership: fresh image reset, same-image persistence, no legacy import, failed cleanup retry and retained settings: PASS");
+ fail_open=fail_set=fail_commit=false;
+ pdkpass_cache_forget_namespace("pdk_season");assert(!sizes[1][0]&&sizes[0][0]==1);
+ assert(clears==1&&meta_opens==0&&default_reads==0);assert_preserved();
+ assert(sizes[0][2]==1&&sizes[1][5]==32); // Sync dates and obsolete marker retained.
+ puts("Cache startup: no erase, retained data, ignored image marker, no legacy import and commit failure isolation: PASS");
 }
 '''
         compile_run(code)
