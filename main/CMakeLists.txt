@@ -33,5 +33,5 @@ idf_component_register(
     EMBED_TXTFILES "pdkpass_setup_page.html" "pdkpass_setup_status.html"
     REQUIRES bsp esp_event esp_http_client esp_http_server esp_hw_support
              esp_netif esp_wifi json lwip mbedtls
-             nvs_flash esp_timer esp_pm heap
+             nvs_flash esp_timer esp_pm heap esp_app_format
 )

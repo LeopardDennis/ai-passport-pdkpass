@@ -6,6 +6,11 @@
 
 ## Unreleased
 
+- Stop inheriting downloaded calendar, driver/team points and results across
+  firmware images. Clear their private/legacy namespaces and sync dates before
+  starting services, commit the image marker last, and keep same-image reboot
+  caches, Wi-Fi and reminder settings. Remove default-NVS cache fallback.
+
 - Finish queued manual results refreshes when an automatic fetch saves the same
   session, avoiding a duplicate download. Publish manual completion before
   notifying the results page so the footer stops showing `SYNCING`.
@@ -20,8 +25,8 @@
   within a manual refresh deadline. Accept identical driver records while
   rejecting conflicts; distinguish invalid JSON from rejected data in logs.
 - Store season, standings, results and reminder blobs in a dedicated 64 KB NVS
-  partition at `0x310000`, with per-key legacy reads and commit-before-cleanup
-  migration to avoid filling the 24 KB system/credential NVS partition.
+  partition at `0x310000` to avoid filling the 24 KB system/credential NVS
+  partition.
 
 - Add pixel-font glyphs for accented E and U in driver surnames, including
   lowercase API variants, so Hülkenberg and Pérez render from existing caches.

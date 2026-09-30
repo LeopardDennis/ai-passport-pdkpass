@@ -218,8 +218,8 @@ void app_main(void)
     }
     esp_err_t cache_err = pdkpass_cache_init();
     if (cache_err != ESP_OK)
-        ESP_LOGW(TAG, "Data cache init failed without erase: %s", esp_err_to_name(cache_err));
-    pdkpass_sync_status_init(on_data_status);
+        ESP_LOGW(TAG, "Data cache unavailable: %s", esp_err_to_name(cache_err));
+    if (cache_err == ESP_OK) pdkpass_sync_status_init(on_data_status);
     if (pdkpass_reminder_init(wake_reminder_worker) != ESP_OK)
         ESP_LOGW(TAG, "Session reminders unavailable");
 

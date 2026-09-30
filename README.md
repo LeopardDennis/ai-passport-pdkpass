@@ -221,9 +221,11 @@ The first-use calendar is an offline snapshot captured on 31 August 2026 from th
 Displayed session times are converted to China Standard Time (UTC+8).
 Driver standings have no bundled default points: without a downloaded cache,
 the page shows `CONNECT TO UPDATE` and `DRIVER DATA PENDING`. Successful syncs
-are saved for offline use. Upgrades discard the recognizable old `31 AUG`
-default standings from legacy caches while preserving their calendar and other
-downloaded standings.
+are saved for offline use across reboots of the same firmware image. Installing
+a different image clears downloaded calendar, driver/team standings, results
+and their sync dates before services start, then downloads fresh data. Old
+default-NVS caches are not imported. Wi-Fi, clock and reminder settings remain
+intact.
 
 After the first successful connection, PDKPASS downloads and stores the Grand
 Prix calendar for the current Beijing-time year and the latest published
