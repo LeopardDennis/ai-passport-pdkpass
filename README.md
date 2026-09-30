@@ -90,8 +90,10 @@ and saving credentials closes setup immediately; time sync runs separately.
 Hold OK to cancel retry/setup. Screen dimming and sleep continue normally.
 
 To add a network, reopen Wi-Fi setup. Saving the same Wi-Fi name updates its password; a sixth
-name replaces the least recently connected network. The single network saved by
-older firmware is imported automatically. No phone app is required.
+name replaces the least recently connected network. Only the current versioned
+network list is loaded; older single-network credentials are not imported. No
+phone app is required. Writing the merged firmware from `0x0` in the browser
+flasher overwrites NVS, so Wi-Fi must be configured again after that installation.
 
 The top status changes through `SETUP`, `WIFI...`, `TIME...`, and `WIFI OK`.
 `WIFI OK` indicates connectivity, not that calendar or results data is current.
@@ -278,8 +280,7 @@ refresh reuses one same-origin HTTPS client and releases TLS before cache saves
 or when the refresh ends. PDKPASS audio allocates TX/DAC only, keeping recording
 available to other BSP consumers through the full-duplex initializer.
 
-Storage erasure has a dedicated C module for legacy credential cleanup. Private
-store, parser, standings, portal and network-page implementation groups live in
+Private store, parser, standings, portal and network-page implementation groups live in
 `.inc` files included by their owning service; their workers and locks retain
 one owner without adding tasks or shared mutable interfaces.
 

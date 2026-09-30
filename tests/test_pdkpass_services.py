@@ -80,34 +80,6 @@ bool pdkpass_season_race_get(size_t i, pdkpass_race_t *race) {
 
 class Services(unittest.TestCase):
 
-    def test_scoped_storage_erase_failures_and_missing_keys(self):
-        code = r"""
-#include <assert.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <string.h>
-#include "esp_err.h"
-#define NVS_READWRITE 1
-#define ESP_ERR_NVS_NOT_FOUND 7
-typedef int nvs_handle_t;
-static unsigned erases,commits,closes;
-static int open_error,erase_error,commit_error;
-static int nvs_open(const char *ns,int mode,nvs_handle_t *h) {assert(!strcmp(ns,"pdkpass_net")&&mode==NVS_READWRITE);*h=1;return open_error;}
-static int nvs_erase_key(nvs_handle_t h,const char *key) {assert(h==1&&(!strcmp(key,"ssid")||!strcmp(key,"password")));erases++;return erase_error;}
-static int nvs_commit(nvs_handle_t h) {assert(h==1);commits++;return commit_error;}
-static void nvs_close(nvs_handle_t h) {assert(h==1);closes++;}
-""" + function(production_source(ROOT / 'main/pdkpass_storage.c'), 'esp_err_t pdkpass_storage_erase(') + r"""
-int main(void) {
- const char *const keys[]={"ssid","password"};
- open_error=2;assert(pdkpass_storage_erase("pdkpass_net",keys,2)==2&&!closes&&!erases);
- open_error=0;erase_error=3;assert(pdkpass_storage_erase("pdkpass_net",keys,2)==3&&closes==1&&!commits);
- erase_error=ESP_ERR_NVS_NOT_FOUND;assert(pdkpass_storage_erase("pdkpass_net",keys,2)==ESP_OK&&closes==2&&commits==1);
- erase_error=0;commit_error=4;assert(pdkpass_storage_erase("pdkpass_net",keys,2)==4&&closes==3&&commits==2);
- puts("Scoped erase touches only named application keys and reports storage failures: PASS");
-}
-"""
-        compile_run(code)
-
     def test_manual_ui_refreshes_completion_after_dark_pause(self):
         source = production_source(ROOT / 'main/pdkpass_ui.c')
         code = PRELUDE + r'''
@@ -3280,7 +3252,7 @@ int main(void) {
 '''
         compile_run(code)
 
-    def test_wifi_profile_persistence_and_legacy_import(self):
+    def test_wifi_profile_persistence_without_legacy_import(self):
         source = production_source(ROOT / 'main/pdkpass_network.c')
         code = PRELUDE + r'''
 #include "pdkpass_wifi_profiles.h"
@@ -3291,53 +3263,55 @@ int main(void) {
 typedef int nvs_handle_t;
 static pdkpass_wifi_profiles_t s_profiles={.version=1}, persisted, pending;
 static char s_working_ssid[33], s_working_password[65];
-static bool have_blob, fail_commit,fail_cleanup;
-static unsigned erased;
-static const char *TAG="test";
-static int pdkpass_storage_erase(const char *ns,const char *const *keys,size_t count) {
- assert(have_blob&&!fail_commit&&!strcmp(ns,NVS_NAMESPACE)&&count==2);
- assert(!strcmp(keys[0],"ssid")&&!strcmp(keys[1],"password"));
- erased++;return fail_cleanup?ESP_FAIL:ESP_OK;
-}
+static bool have_blob, fail_commit, fail_open, short_blob;
+static unsigned closes;
 static int nvs_open(const char *name,int mode,nvs_handle_t *handle) {
- (void)name;(void)mode;*handle=1;return ESP_OK;
+ assert(!strcmp(name,NVS_NAMESPACE));(void)mode;*handle=1;
+ return fail_open?ESP_FAIL:ESP_OK;
 }
-static void nvs_close(nvs_handle_t handle) {(void)handle;}
+static void nvs_close(nvs_handle_t handle) {assert(handle==1);closes++;}
 static int nvs_get_blob(nvs_handle_t handle,const char *key,void *out,size_t *size) {
- (void)handle;(void)key;if(!have_blob)return ESP_FAIL;
+ assert(handle==1&&!strcmp(key,"profiles"));if(!have_blob)return ESP_FAIL;
  assert(*size>=sizeof(persisted));memcpy(out,&persisted,sizeof(persisted));
- *size=sizeof(persisted);return ESP_OK;
-}
-static int nvs_get_str(nvs_handle_t handle,const char *key,char *out,size_t *size) {
- (void)handle;const char *value=strcmp(key,"ssid")==0?"Legacy":"test-only";
- assert(*size>strlen(value));strcpy(out,value);*size=strlen(value)+1;return ESP_OK;
+ *size=sizeof(persisted)-(short_blob?1:0);return ESP_OK;
 }
 static int nvs_set_blob(nvs_handle_t handle,const char *key,const void *data,size_t size) {
- (void)handle;(void)key;assert(size==sizeof(pending));memcpy(&pending,data,size);return ESP_OK;
+ assert(handle==1&&!strcmp(key,"profiles")&&size==sizeof(pending));
+ memcpy(&pending,data,size);return ESP_OK;
 }
 static int nvs_commit(nvs_handle_t handle) {
- (void)handle;if(fail_commit)return ESP_FAIL;persisted=pending;have_blob=true;return ESP_OK;
+ assert(handle==1);if(fail_commit)return ESP_FAIL;
+ persisted=pending;have_blob=true;return ESP_OK;
 }
 '''
         code += function(source, 'static bool load_credentials(')
         code += function(source, 'static esp_err_t save_credentials(')
         code += r'''
 int main(void) {
- assert(load_credentials());assert(s_profiles.count==1);
- assert(strcmp(s_profiles.entries[0].ssid,"Legacy")==0);
- assert(save_credentials(s_working_ssid,s_working_password)==ESP_OK);
- assert(have_blob);assert(save_credentials("Second","test-only")==ESP_OK);
+ strcpy(s_working_ssid,"stale");strcpy(s_working_password,"stale");
+ s_profiles.count=1;fail_open=true;
+ assert(!load_credentials()&&s_profiles.version==1&&!s_profiles.count&&!closes);
+ assert(!s_working_ssid[0]&&!s_working_password[0]);
+ fail_open=false;assert(!load_credentials()&&!s_profiles.count&&closes==1);
+ assert(save_credentials("First","test-only")==ESP_OK&&have_blob);
+ assert(save_credentials("Second","test-only")==ESP_OK);
  pdkpass_wifi_profiles_t before=s_profiles;
  fail_commit=true;assert(save_credentials("Third","test-only")==ESP_FAIL);
  assert(memcmp(&before,&s_profiles,sizeof(before))==0);
  memset(&s_profiles,0,sizeof(s_profiles));assert(load_credentials());
- assert(s_profiles.count==2);assert(strcmp(s_working_ssid,"Second")==0);
- assert(erased==2);fail_commit=false;fail_cleanup=true;
- assert(save_credentials("Third","test-only")==ESP_OK&&s_profiles.count==3&&erased==3);
- persisted.count=0;assert(!load_credentials()&&!s_working_ssid[0]&&!s_working_password[0]);
- persisted.count=6;assert(load_credentials());assert(s_profiles.count==1);
- assert(strcmp(s_working_ssid,"Legacy")==0);
- puts("Wi-Fi legacy migration, reload and failed commit preservation: PASS");
+ assert(s_profiles.count==2&&strcmp(s_working_ssid,"Second")==0);
+ persisted.count=0;assert(!load_credentials()&&!s_profiles.count);
+ assert(!s_working_ssid[0]&&!s_working_password[0]);
+ persisted.count=6;assert(!load_credentials()&&s_profiles.version==1&&!s_profiles.count);
+ persisted=before;persisted.version=2;
+ assert(!load_credentials()&&s_profiles.version==1&&!s_profiles.count);
+ persisted=before;short_blob=true;
+ assert(!load_credentials()&&s_profiles.version==1&&!s_profiles.count);
+ assert(!s_working_ssid[0]&&!s_working_password[0]);
+ short_blob=false;fail_commit=false;
+ assert(save_credentials("New","test-only")==ESP_OK&&s_profiles.count==1);
+ assert(load_credentials()&&strcmp(s_working_ssid,"New")==0);
+ puts("Wi-Fi profiles reload, invalid data reset and failed commit preservation: PASS");
 }
 '''
         compile_run(code, ['main/pdkpass_wifi_profiles.c'])

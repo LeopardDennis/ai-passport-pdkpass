@@ -1,7 +1,6 @@
 #include "pdkpass_network.h"
 #include "pdkpass_http.h"
 #include "pdkpass_sync_policy.h"
-#include "pdkpass_storage.h"
 #include "pdkpass_power.h"
 
 #include "pdkpass_wifi_form.h"
@@ -154,33 +153,25 @@ static void publish_state(pdkpass_network_state_t state)
 
 static bool load_credentials(void)
 {
-    nvs_handle_t handle;
-    size_t ssid_size = sizeof(s_working_ssid);
-    size_t password_size = sizeof(s_working_password);
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return false;
-    size_t blob_size = sizeof(s_profiles);
-    esp_err_t blob_err = nvs_get_blob(handle, "profiles", &s_profiles, &blob_size);
-    if (blob_err == ESP_OK && blob_size == sizeof(s_profiles) &&
-        pdkpass_wifi_profiles_valid(&s_profiles)) {
-        nvs_close(handle);
-        if (!s_profiles.count) { memset(s_working_ssid, 0, sizeof(s_working_ssid));
-            memset(s_working_password, 0, sizeof(s_working_password)); return false; }
-        memcpy(s_working_ssid, s_profiles.entries[0].ssid, sizeof(s_working_ssid));
-        memcpy(s_working_password, s_profiles.entries[0].password, sizeof(s_working_password));
-        return true;
-    }
-    // Old firmware stored one SSID/password pair. Import without erasing it;
-    // the first successful connection commits the versioned multi-network blob.
     memset(&s_profiles, 0, sizeof(s_profiles));
     s_profiles.version = 1;
-    esp_err_t err = nvs_get_str(handle, "ssid", s_working_ssid, &ssid_size);
-    if (err == ESP_OK) {
-        err = nvs_get_str(handle, "password", s_working_password,
-                          &password_size);
-    }
+    memset(s_working_ssid, 0, sizeof(s_working_ssid));
+    memset(s_working_password, 0, sizeof(s_working_password));
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return false;
+    size_t blob_size = sizeof(s_profiles);
+    esp_err_t err = nvs_get_blob(handle, "profiles", &s_profiles, &blob_size);
     nvs_close(handle);
-    return err == ESP_OK && pdkpass_wifi_profiles_remember(
-        &s_profiles, s_working_ssid, s_working_password);
+    if (err != ESP_OK || blob_size != sizeof(s_profiles) ||
+        !pdkpass_wifi_profiles_valid(&s_profiles)) {
+        memset(&s_profiles, 0, sizeof(s_profiles));
+        s_profiles.version = 1;
+        return false;
+    }
+    if (!s_profiles.count) return false;
+    memcpy(s_working_ssid, s_profiles.entries[0].ssid, sizeof(s_working_ssid));
+    memcpy(s_working_password, s_profiles.entries[0].password, sizeof(s_working_password));
+    return true;
 }
 
 static esp_err_t save_credentials(const char *ssid, const char *password)
@@ -195,12 +186,7 @@ static esp_err_t save_credentials(const char *ssid, const char *password)
     err = nvs_set_blob(handle, "profiles", &next, sizeof(next));
     if (err == ESP_OK) err = nvs_commit(handle);
     nvs_close(handle);
-    if (err == ESP_OK) {
-        s_profiles = next;
-        const char *const legacy[] = {"ssid", "password"};
-        esp_err_t cleanup = pdkpass_storage_erase(NVS_NAMESPACE, legacy, 2);
-        if (cleanup != ESP_OK) ESP_LOGW(TAG, "Legacy credentials cleanup failed: %s", esp_err_to_name(cleanup));
-    }
+    if (err == ESP_OK) s_profiles = next;
     return err;
 }
 
@@ -782,7 +768,7 @@ static void network_task(void *arg)
                     continue;
                 }
             } else {
-                // Also persists the legacy import; NVS skips unchanged blobs.
+                // Persist the last successful network order; NVS skips unchanged blobs.
                 err = save_credentials(s_working_ssid, s_working_password);
                 if (err != ESP_OK) ESP_LOGW(TAG, "Wi-Fi order not saved: %s", esp_err_to_name(err));
                 stop_http_server();

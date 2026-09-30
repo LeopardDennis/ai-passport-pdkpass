@@ -10,7 +10,8 @@
 - Reuse one same-origin HTTPS client within a serialized refresh, releasing it
   on error, origin changes, before cache writes and at transaction end.
 - Use playback-only I2S/DAC audio for PDKPASS cues, without an RX channel.
-- Remove legacy Wi-Fi keys only after the profiles blob commits successfully.
+- Remove legacy single-network Wi-Fi import and its key-cleanup module. Load
+  only the current profiles blob; missing or invalid profiles require setup.
 - Show the actual remaining manual-sync cooldown and reject invalid numeric
   identifiers, duplicate sessions/podium entries and mismatched meetings.
 

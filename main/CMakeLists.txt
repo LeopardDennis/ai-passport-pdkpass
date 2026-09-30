@@ -5,7 +5,6 @@ idf_component_register(
          "pdkpass_data.c"
          "pdkpass_calendar.c"
          "pdkpass_model.c"
-         "pdkpass_storage.c"
          "pdkpass_power.c"
          "pdkpass_network.c"
          "pdkpass_http.c"
