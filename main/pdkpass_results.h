@@ -54,6 +54,8 @@ void pdkpass_results_request_race(size_t race_index);
 // Retain other sessions and valid cached data when requests fail. A 60-second
 // cooldown bounds repeat presses. Offline requests reconnect saved Wi-Fi in
 // worker context; the 120-second deadline covers connecting, queueing and HTTP.
+// A fresh automatic result saved for this same session completes a queued
+// manual refresh without downloading it again; old cached results do not.
 pdkpass_manual_state_t pdkpass_results_force_session(size_t race_index,
     pdkpass_session_kind_t session);
 bool pdkpass_results_manual_status(size_t *race_index,

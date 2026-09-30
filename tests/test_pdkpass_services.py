@@ -2833,7 +2833,8 @@ static bool pdkpass_http_expired(void) {return expired;}
 static int discoveries, fetches, saves, callbacks, cues;
 static void vTaskDelay(unsigned ticks) {(void)ticks;}
 static void callback(size_t race,bool first) {
- assert(race==1);callbacks++;if(first)cues++;
+ assert(race==1);assert(s_force_status.state!=PDKPASS_MANUAL_RUNNING);
+ callbacks++;if(first)cues++;
 }
 static void (*s_callback)(size_t,bool)=callback;
 static bool discover_sessions(size_t race,race_cache_t *cache,int64_t now) {
@@ -2895,6 +2896,103 @@ int main(void) {
 }
 '''
         compile_run(code)
+
+    def test_background_result_completes_matching_queued_manual_refresh(self):
+        source = production_source(ROOT / 'main/pdkpass_results.c')
+        types = source[source.index('typedef struct {'):source.index('static const char *TAG')]
+        defines = '\n'.join(x for x in source.splitlines() if x.startswith('#define RESULTS_'))
+        code = PRELUDE + defines + '\n' + types + r'''
+#define portMAX_DELAY UINT32_MAX
+static race_cache_t s_cache[PDKPASS_MAX_RACES];
+static bool s_cache_dirty, s_force_pending, fetch_ok=true, save_fail;
+static size_t s_force_race, requested_race=1;
+static unsigned requested_session=PDKPASS_SESSION_FP1;
+static pdkpass_manual_status_t s_force_status;
+static int64_t clock_us=100;
+static int fetches, callbacks;
+static pdkpass_manual_state_t observed_state;
+static bool observed_hold;
+static int64_t esp_timer_get_time(void) {return clock_us;}
+static bool discovery_due(const race_cache_t *cache,int64_t now) {
+ (void)cache;(void)now;return false;
+}
+static bool discover_sessions(size_t race,race_cache_t *cache,int64_t now) {
+ (void)race;(void)cache;(void)now;assert(false);return false;
+}
+static int64_t retry_interval_seconds(size_t race,int64_t now) {
+ (void)race;(void)now;return 600;
+}
+static void queue_manual(void) {
+ s_force_pending=true;s_force_race=requested_race;
+ s_force_status=(pdkpass_manual_status_t){.state=PDKPASS_MANUAL_RUNNING,
+  .session=requested_session,.generation=2,.deadline_us=1000};
+ pdkpass_sync_hold(PDKPASS_SYNC_RESULTS,true);
+}
+static bool fetch_result(session_cache_t *session) {
+ fetches++;queue_manual(); // OK is pressed while the automatic HTTP is active.
+ if(!fetch_ok)return false;
+ session->ready=1;strcpy(session->podium_codes[0],"NEW");return true;
+}
+static int save_cache_with_retry(void) {
+ s_cache_dirty=save_fail;return save_fail?ESP_FAIL:ESP_OK;
+}
+void pdkpass_sync_mark_success(pdkpass_sync_status_t status,int64_t utc) {
+ assert(status==PDKPASS_SYNC_STATUS_RESULTS);(void)utc;
+}
+static void callback(size_t race,bool first) {
+ assert(race==1);(void)first;callbacks++;
+ observed_state=s_force_status.state;observed_hold=sync_held[PDKPASS_SYNC_RESULTS];
+}
+static void (*s_callback)(size_t,bool)=callback;
+static void reset(void) {
+ memset(s_cache,0,sizeof(s_cache));s_cache_dirty=false;s_force_pending=false;
+ memset(&s_force_status,0,sizeof(s_force_status));
+ s_cache[1].sessions[0]=(session_cache_t){.present=1,.session_key=11,.end_utc=6000};
+ fetch_ok=true;save_fail=false;requested_race=1;requested_session=PDKPASS_SESSION_FP1;
+ clock_us=100;fetches=callbacks=0;sync_held[PDKPASS_SYNC_RESULTS]=false;
+}
+'''
+        for signature in ['static void finish_manual_race(',
+                          'static void finish_pending_manual_result(',
+                          'static process_outcome_t process_race(',
+                          'static bool take_manual_race(']:
+            code += function(source, signature)
+        code += r'''
+int main(void) {
+ s_lock=1;size_t next;
+ reset();process_race(1,10000);
+ assert(s_cache[1].sessions[0].ready&&fetches==1&&callbacks==1);
+ assert(s_force_status.state==PDKPASS_MANUAL_UPDATED&&s_force_status.generation==3);
+ assert(observed_state==PDKPASS_MANUAL_UPDATED&&!observed_hold);
+ assert(!take_manual_race(&next)&&!sync_held[PDKPASS_SYNC_RESULTS]);
+
+ reset();requested_session=PDKPASS_SESSION_FP2;process_race(1,10000);
+ assert(s_force_status.state==PDKPASS_MANUAL_RUNNING&&observed_hold);
+ assert(take_manual_race(&next)&&next==1); // A different session still needs HTTP.
+ reset();requested_race=0;process_race(1,10000);
+ assert(s_force_status.state==PDKPASS_MANUAL_RUNNING&&observed_hold);
+ assert(take_manual_race(&next)&&next==0); // A different round stays queued.
+
+ reset();save_fail=true;process_race(1,10000);
+ assert(s_cache_dirty&&s_force_status.state==PDKPASS_MANUAL_RUNNING&&observed_hold);
+ assert(take_manual_race(&next)); // An unsaved result cannot complete the request.
+ reset();fetch_ok=false;process_race(1,10000);
+ assert(!s_cache[1].sessions[0].ready&&s_force_status.state==PDKPASS_MANUAL_RUNNING);
+ assert(sync_held[PDKPASS_SYNC_RESULTS]&&take_manual_race(&next));
+
+ reset();clock_us=1001;process_race(1,10000);
+ assert(s_force_status.state==PDKPASS_MANUAL_TIMED_OUT);
+ assert(observed_state==PDKPASS_MANUAL_TIMED_OUT&&!observed_hold);
+ assert(!take_manual_race(&next)); // Preserve the original deadline.
+
+ reset();s_cache[1].sessions[0].ready=1;queue_manual();process_race(1,10000);
+ assert(fetches==0&&s_force_status.state==PDKPASS_MANUAL_RUNNING);
+ assert(sync_held[PDKPASS_SYNC_RESULTS]&&take_manual_race(&next));
+ // Existing cached results still require a manual check for corrections.
+ puts("Automatic result: coalesced matching manual request, deadline and failure ownership: PASS");
+}
+'''
+        compile_run(code, ['main/pdkpass_results_core.c'])
 
     def test_manual_points_refreshes_both_tables_without_calendar(self):
         source = production_source(ROOT / 'main/pdkpass_season.c')
@@ -2978,7 +3076,9 @@ static void xEventGroupSetBits(int events,int bits) {(void)events;(void)bits;wak
 void pdkpass_sync_plan(pdkpass_sync_service_t service,uint32_t delay) {
  assert(service==PDKPASS_SYNC_RESULTS && delay==0);sync_plan_calls++;
 }
-static bool s_cache_dirty;
+static bool s_cache_dirty, s_force_pending;
+static size_t s_force_race = SIZE_MAX;
+static pdkpass_manual_status_t s_force_status;
 static int64_t s_cache_retry_at_us;
 #define portMAX_DELAY UINT32_MAX
 static int64_t esp_timer_get_time(void) {return (int64_t)fake_now*1000000;}
@@ -3007,7 +3107,9 @@ void pdkpass_sync_mark_success(pdkpass_sync_status_t service,int64_t utc) {
                           'static bool discovery_due(', 'static bool cache_complete(',
                           'static bool race_is_eligible(', 'static bool race_needs_work(',
                           'static void expedite_requested_race(',
-                          'static size_t select_race(', 'static process_outcome_t process_race(',
+                          'static size_t select_race(', 'static void finish_manual_race(',
+                          'static void finish_pending_manual_result(',
+                          'static process_outcome_t process_race(',
                           'static TickType_t next_scheduled_wait(',
                           'void pdkpass_results_request_race(']:
             code += function(source, signature)

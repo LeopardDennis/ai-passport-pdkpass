@@ -6,6 +6,10 @@
 
 ## Unreleased
 
+- Finish queued manual results refreshes when an automatic fetch saves the same
+  session, avoiding a duplicate download. Publish manual completion before
+  notifying the results page so the footer stops showing `SYNCING`.
+
 - Place `WI-FI SETUP` above `RETRY WI-FI` in the network menu.
 
 - Show `COMPLETED` on home when the selected round has no next session.

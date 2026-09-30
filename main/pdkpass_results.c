@@ -267,6 +267,36 @@ static size_t select_race(int64_t now_utc)
     return SIZE_MAX;
 }
 
+static void finish_manual_race(size_t race_index, pdkpass_manual_state_t state)
+{
+    // Worker only; terminal status must not be dropped on lock contention.
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_force_race == race_index && s_force_status.state == PDKPASS_MANUAL_RUNNING) {
+        s_force_status.state = pdkpass_manual_visible_status(
+            s_force_status, esp_timer_get_time()).state == PDKPASS_MANUAL_TIMED_OUT
+                ? PDKPASS_MANUAL_TIMED_OUT : state;
+        s_force_status.generation++;
+        pdkpass_sync_hold(PDKPASS_SYNC_RESULTS, false);
+    }
+    xSemaphoreGive(s_lock);
+}
+
+static void finish_pending_manual_result(size_t race_index, unsigned session)
+{
+    // An automatic fetch can finish the very session whose manual refresh was
+    // queued while HTTP was active. Only newly fetched, persisted results use
+    // this path; existing cached podiums still need a check for corrections.
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool matching = s_force_pending && s_force_race == race_index &&
+                    s_force_status.state == PDKPASS_MANUAL_RUNNING &&
+                    s_force_status.session == session;
+    if (matching) s_force_pending = false;
+    xSemaphoreGive(s_lock);
+    // The single results worker owns completion; RUNNING blocks a new request
+    // until finish_manual_race publishes the terminal state. HTTP stays held.
+    if (matching) finish_manual_race(race_index, PDKPASS_MANUAL_UPDATED);
+}
+
 static process_outcome_t process_race(size_t race_index, int64_t now_utc)
 {
     pdkpass_race_t race;
@@ -286,7 +316,7 @@ static process_outcome_t process_race(size_t race_index, int64_t now_utc)
     xSemaphoreGive(s_lock);
 
     bool changed = false;
-    bool fetched = false;
+    unsigned fetched_session = PDKPASS_SESSION_COUNT;
     if (discovery_due(&cache, now_utc)) {
         race_cache_t before_discovery = cache;
         bool discovered = discover_sessions(race_index, &cache, now_utc);
@@ -307,7 +337,7 @@ static process_outcome_t process_race(size_t race_index, int64_t now_utc)
             now_utc - session->last_attempt_utc < retry_interval) continue;
         session->last_attempt_utc = now_utc;
         if (fetch_result(session)) {
-            fetched = true;
+            fetched_session = (unsigned)i;
             changed = true;
             outcome = PROCESS_PROGRESS;
         } else {
@@ -326,25 +356,13 @@ static process_outcome_t process_race(size_t race_index, int64_t now_utc)
     if (s_cache_dirty) {
         save_cache_with_retry();
     }
-    bool new_result = fetched && !s_cache_dirty;
-    if (new_result)
+    bool new_result = fetched_session < PDKPASS_SESSION_COUNT && !s_cache_dirty;
+    if (new_result) {
         pdkpass_sync_mark_success(PDKPASS_SYNC_STATUS_RESULTS, (int64_t)time(NULL));
+        finish_pending_manual_result(race_index, fetched_session);
+    }
     if (changed && s_callback) s_callback(race_index, new_result);
     return outcome;
-}
-
-static void finish_manual_race(size_t race_index, pdkpass_manual_state_t state)
-{
-    // Worker only; terminal status must not be dropped on lock contention.
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    if (s_force_race == race_index && s_force_status.state == PDKPASS_MANUAL_RUNNING) {
-        s_force_status.state = pdkpass_manual_visible_status(
-            s_force_status, esp_timer_get_time()).state == PDKPASS_MANUAL_TIMED_OUT
-                ? PDKPASS_MANUAL_TIMED_OUT : state;
-        s_force_status.generation++;
-        pdkpass_sync_hold(PDKPASS_SYNC_RESULTS, false);
-    }
-    xSemaphoreGive(s_lock);
 }
 
 static bool take_manual_race(size_t *race_index)
@@ -457,15 +475,6 @@ static void process_manual_race(size_t race_index, int64_t now_utc)
             s_cache_dirty = true;
             if (save_cache_with_retry() != ESP_OK) failed = true;
         }
-        if (s_callback) {
-            if (first_results && !s_cache_dirty) {
-                // Each newly cached session keeps its own completion cue.
-                for (unsigned i = 0; i < first_results; i++) {
-                    s_callback(race_index, true);
-                    if (i + 1U < first_results) vTaskDelay(pdMS_TO_TICKS(120));
-                }
-            } else s_callback(race_index, false);
-        }
     }
     pdkpass_manual_state_t state = !due ?
         (failed ? PDKPASS_MANUAL_FAILED : PDKPASS_MANUAL_NOT_READY) :
@@ -475,6 +484,16 @@ static void process_manual_race(size_t race_index, int64_t now_utc)
         !s_cache_dirty && !pdkpass_http_expired())
         pdkpass_sync_mark_success(PDKPASS_SYNC_STATUS_RESULTS, (int64_t)time(NULL));
     finish_manual_race(race_index, state);
+    // Publish completion before waking the UI with the new podium.
+    if (changed && s_callback) {
+        if (first_results && !s_cache_dirty) {
+            // Each newly cached session keeps its own completion cue.
+            for (unsigned i = 0; i < first_results; i++) {
+                s_callback(race_index, true);
+                if (i + 1U < first_results) vTaskDelay(pdMS_TO_TICKS(120));
+            }
+        } else s_callback(race_index, false);
+    }
 }
 
 static TickType_t next_scheduled_wait(int64_t now_utc)
