@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Place `WI-FI SETUP` above `RETRY WI-FI` in the network menu.
+
 - Show `COMPLETED` on home when the selected round has no next session.
 
 - Reconnect saved Wi-Fi for manual standings/results refreshes, retaining queued

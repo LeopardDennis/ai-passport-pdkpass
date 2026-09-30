@@ -1853,7 +1853,7 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     if ((s_state.page == PDKPASS_PAGE_NETWORK && input == PDKPASS_INPUT_OK &&
          s_state.network_selection < 2U) ||
         (s_state.page == PDKPASS_PAGE_NETWORK_CONFIRM && input == PDKPASS_INPUT_OK)) {
-        bool setup = s_state.network_selection == 1U;
+        bool setup = s_state.network_selection == 0U;
         bool connected = s_network_state == PDKPASS_NETWORK_ONLINE ||
                          s_network_state == PDKPASS_NETWORK_SYNCING ||
                          s_network_state == PDKPASS_NETWORK_TIME_ERROR;

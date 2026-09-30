@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- 网络菜单中将 `WI-FI SETUP` 放到 `RETRY WI-FI` 上方。
+
 - 所选分站没有下一场赛段时，首页提示改为 `COMPLETED`。
 
 - 手动刷新积分和成绩时自动连接保存的 Wi-Fi，在原有超时内保留排队任务，

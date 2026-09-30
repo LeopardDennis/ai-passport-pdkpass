@@ -290,8 +290,7 @@ int main(void)
         assert(s_flush_pixels > 0 && s_flush_pixels < 240U * 320U / 2U);
         simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK); // restore first item
         check_memory();
-        simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
-        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // manual setup
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // first item: manual setup
         assert(find_label(lv_screen_active(), "SCAN TO CONNECT"));
         assert(find_label(lv_screen_active(), "OK:INFO  HOLD:BACK"));
         assert(!find_label(lv_screen_active(), "CONNECT PHONE TO"));
@@ -307,8 +306,8 @@ int main(void)
         assert(!find_label(lv_screen_active(), "SCAN TO CONNECT"));
         assert(find_label(lv_screen_active(), "WI-FI SETUP"));
         check_memory();
-        simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK);
-        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // retry saved only
+        simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // second item: retry saved only
         check_memory();
         simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // cancel retry
         simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // home

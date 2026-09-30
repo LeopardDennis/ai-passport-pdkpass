@@ -113,7 +113,7 @@ static void render_network_menu(void)
         make_center_label(s_content, line, 0, 2 + (int)i * 14, INNER_W,
                           &lv_font_unscii_8, UI_PAPER);
     }
-    const char *titles[] = {"RETRY WI-FI", "WI-FI SETUP",
+    const char *titles[] = {"WI-FI SETUP", "RETRY WI-FI",
         pdkpass_reminder_enabled() ? "ALERTS: ON" : "ALERTS: OFF", "BACK"};
     for (unsigned i = 0; i < 4U; i++) {
         bool selected = s_state.network_selection == i;

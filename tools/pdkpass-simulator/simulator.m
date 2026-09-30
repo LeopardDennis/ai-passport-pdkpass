@@ -960,7 +960,7 @@ int main(int argc, const char *argv[])
                     ? PDKPASS_NETWORK_ONLINE : PDKPASS_NETWORK_OFFLINE);
                 simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
                 if (strcmp(networkView, "menu") != 0) {
-                    if (strcmp(networkView, "retry") != 0)
+                    if (strcmp(networkView, "retry") == 0)
                         simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
                     simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
                     if (strcmp(networkView, "setup-info") == 0)
