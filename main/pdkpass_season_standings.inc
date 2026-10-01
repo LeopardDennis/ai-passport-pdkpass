@@ -164,7 +164,10 @@ static bool jolpica_standings_date(unsigned year, unsigned round, int64_t now_ut
     return true;
 }
 
-static bool fetch_standings(int64_t now_utc, pdkpass_season_snapshot_t *candidate)
+static bool fetch_driver_standings(int64_t now_utc, unsigned year,
+                                     const char previous_date[12],
+                                     pdkpass_driver_t drivers[PDKPASS_MAX_DRIVERS],
+                                     uint8_t *driver_count, char as_of[12])
 {
     char url[160];
     pdkpass_driver_t parsed[PDKPASS_MAX_DRIVERS] = {0};
@@ -175,12 +178,12 @@ static bool fetch_standings(int64_t now_utc, pdkpass_season_snapshot_t *candidat
             // a newly published round from shifting the pagination midway.
             snprintf(url, sizeof(url),
                 "https://api.jolpi.ca/ergast/f1/%u/%u/driverstandings/?limit=4&offset=%u",
-                candidate->year, round, count);
+                year, round, count);
             vTaskDelay(pdMS_TO_TICKS(300));
         } else {
             snprintf(url, sizeof(url),
                 "https://api.jolpi.ca/ergast/f1/%u/driverstandings/?limit=4&offset=0",
-                candidate->year);
+                year);
         }
         cJSON *root = jolpica_get(url);
         const cJSON *mr = cJSON_GetObjectItemCaseSensitive(root, "MRData");
@@ -188,12 +191,12 @@ static bool fetch_standings(int64_t now_utc, pdkpass_season_snapshot_t *candidat
         const cJSON *lists = cJSON_GetObjectItemCaseSensitive(table, "StandingsLists");
         const cJSON *list = cJSON_GetArrayItem(lists, 0);
         const cJSON *rows = cJSON_GetObjectItemCaseSensitive(list, "DriverStandings");
-        unsigned page_total, offset, limit, year, page_round;
+        unsigned page_total, offset, limit, response_year, page_round;
         bool valid = cJSON_IsArray(lists) && cJSON_GetArraySize(lists) == 1 &&
             jolpica_uint(mr, "total", PDKPASS_MAX_DRIVERS, &page_total) && page_total &&
             jolpica_uint(mr, "offset", PDKPASS_MAX_DRIVERS, &offset) && offset == count &&
             jolpica_uint(mr, "limit", 4, &limit) && limit == 4 &&
-            jolpica_uint(list, "season", 2100, &year) && year == candidate->year &&
+            jolpica_uint(list, "season", 2100, &response_year) && response_year == year &&
             jolpica_uint(list, "round", PDKPASS_MAX_RACES, &page_round) && page_round &&
             cJSON_IsArray(rows);
         if (valid && count == 0) { total = page_total; round = page_round; }
@@ -208,14 +211,22 @@ static bool fetch_standings(int64_t now_utc, pdkpass_season_snapshot_t *candidat
         count += expected;
     } while (count < total);
 
-    char as_of[12];
-    if (!jolpica_standings_date(candidate->year, round, now_utc,
-                                candidate->standings_as_of, as_of)) return false;
-    candidate->driver_count = (uint8_t)total;
-    memset(candidate->drivers, 0, sizeof(candidate->drivers));
-    memcpy(candidate->drivers, parsed, total * sizeof(parsed[0]));
-    copy_text(candidate->standings_as_of, sizeof(candidate->standings_as_of), as_of);
+    char source_date[12] = {0};
+    if (!jolpica_standings_date(year, round, now_utc,
+                                previous_date, source_date)) return false;
+    *driver_count = (uint8_t)total;
+    memset(drivers, 0, PDKPASS_MAX_DRIVERS * sizeof(*drivers));
+    memcpy(drivers, parsed, total * sizeof(parsed[0]));
+    memcpy(as_of, source_date, sizeof(source_date));
     return true;
+}
+
+
+static bool fetch_standings(int64_t now_utc, pdkpass_season_snapshot_t *candidate)
+{
+    return fetch_driver_standings(now_utc, candidate->year,
+                                   candidate->standings_as_of, candidate->drivers,
+                                   &candidate->driver_count, candidate->standings_as_of);
 }
 
 static bool jolpica_team_item(const cJSON *item, pdkpass_team_t *teams, size_t count)

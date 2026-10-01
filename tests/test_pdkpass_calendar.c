@@ -18,6 +18,21 @@ int main(void)
             pdkpass_track_find(season.races[i].circuit);
         assert(track && track->accent == pdkpass_races[i].accent);
     }
+    assert(season.races[15].round == 16 && season.races[15].meeting_key == 1308);
+    assert(strcmp(season.races[15].country, "MALAYSIA") == 0);
+    assert(strcmp(season.races[15].circuit, "SEPANG") == 0);
+    assert(strcmp(season.races[15].api_country, "Bahrain") == 0);
+    char gp_title[32];
+    pdkpass_race_t original = season.races[15];
+    pdkpass_race_gp_title(2026, &season.races[15], gp_title, sizeof(gp_title));
+    assert(strcmp(gp_title, "BAHRAIN GP") == 0);
+    assert(memcmp(&original, &season.races[15], sizeof(original)) == 0);
+    pdkpass_race_gp_title(2027, &season.races[15], gp_title, sizeof(gp_title));
+    assert(strcmp(gp_title, "MALAYSIA GP") == 0); // Year-specific relocation.
+    pdkpass_race_gp_title(2026, NULL, gp_title, sizeof(gp_title));
+    assert(gp_title[0] == '\0');
+    pdkpass_race_gp_title(2026, &original, gp_title, 1);
+    assert(gp_title[0] == '\0');
     assert(pdkpass_calendar_load(2027, &season));
     assert(season.year == 2027 && season.race_count == 24 && season.driver_count == 0);
     assert(strcmp(season.standings_as_of, "PENDING") == 0);
@@ -37,6 +52,11 @@ int main(void)
     }
     assert(sprints == 10);
     assert(strcmp(season.races[0].circuit, "SAKHIR") == 0);
+    assert(strcmp(season.races[0].country, "BAHRAIN") == 0);
+    pdkpass_race_gp_title(2027, &season.races[0], gp_title, sizeof(gp_title));
+    assert(strcmp(gp_title, "BAHRAIN GP") == 0);
+    pdkpass_race_gp_title(2027, &season.races[8], gp_title, sizeof(gp_title));
+    assert(strcmp(gp_title, "PORTUGAL GP") == 0);
     assert(strcmp(season.races[8].circuit, "PORTIMAO") == 0);
     assert(strcmp(season.races[16].circuit, "ISTANBUL") == 0);
     assert(strcmp(season.races[23].circuit, "YAS MARINA") == 0);

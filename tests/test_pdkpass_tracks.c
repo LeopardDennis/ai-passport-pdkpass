@@ -66,7 +66,10 @@ int main(void)
     assert(pdkpass_track_find("Portimão") == pdkpass_track_find("PORTIMAO"));
     assert(pdkpass_track_find("Autódromo Internacional do Algarve")->length_m == 4653);
     assert(pdkpass_track_find("Intercity Istanbul Park")->length_m == 5338);
+    assert(pdkpass_track_find("Kuala Lumpur") == pdkpass_track_find("SEPANG"));
     assert(pdkpass_track_find("Bahrain International Circuit")->length_m == 5412);
+    assert(pdkpass_track_find("Bahrain") == pdkpass_track_find("SAKHIR"));
+    assert(pdkpass_track_find("Bahrain") != pdkpass_track_find("Kuala Lumpur"));
     assert(pdkpass_track_find("Jeddah Corniche Circuit")->length_m == 6175);
 
     // The two formerly single-color palettes need visible accent panels on

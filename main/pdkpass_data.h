@@ -44,6 +44,10 @@ typedef struct {
 
 extern const pdkpass_race_t pdkpass_races[];
 extern const size_t pdkpass_race_count;
+// Event naming can differ from the physical venue (2026 Bahrain GP at Sepang).
+// Format a display title without modifying country, circuit or API identity.
+void pdkpass_race_gp_title(unsigned year, const pdkpass_race_t *race,
+                           char *output, size_t capacity);
 // Repair only the legacy 2026 R13-R23 cache, preserving its updated race fields.
 // Returns the resulting count; other seasons/calendar shapes remain untouched.
 size_t pdkpass_restore_legacy_calendar(unsigned year, pdkpass_race_t *races,

@@ -26,9 +26,14 @@ These are coordinate data, not downloaded map artwork.
 | [jeddah.geojson](circuits/jeddah.geojson) | [sa-2021.geojson](https://github.com/bacinger/f1-circuits/blob/master/circuits/sa-2021.geojson) |
 
 `tools/check_circuit_assets.py` projects longitude using mean-latitude cosine,
-inverts latitude for screen coordinates, resamples the closed line into 48
-equal-distance segments and fits it proportionally inside 192 × 61 with a
-three-pixel margin. It checks the 49 embedded byte-coordinate pairs per circuit
-in `main/pdkpass_tracks.c`. Firmware loads neither GeoJSON nor network geometry.
-The existing UI performs its own proportional fit to the visible card.
+inverts latitude for screen coordinates, and fits outlines proportionally inside
+192 × 61 with a three-pixel margin. Portimao, Istanbul and Jeddah use 48
+equal-distance segments. Sakhir is rotated counterclockwise by 90 degrees and
+simplified to 48 segments by removing points with the least distance from their
+neighboring segment, retaining hairpins instead of spending points on straights.
+The checker verifies its source-to-outline error is at most one display pixel.
+All outlines keep 49 closed byte-coordinate pairs in `main/pdkpass_tracks.c`.
+The UI draws these coordinates directly; Sakhir uses a two-pixel stroke to keep
+parallel sections separate, and other tracks retain four pixels. Firmware loads
+neither GeoJSON nor network geometry.
 Source filenames describe circuit identity/history, not supported season years.

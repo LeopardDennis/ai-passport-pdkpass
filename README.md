@@ -221,10 +221,19 @@ The first-use calendar is an offline snapshot captured on 31 August 2026 from th
 Displayed session times are converted to China Standard Time (UTC+8).
 Driver standings have no bundled default points: without a downloaded cache,
 the page shows `CONNECT TO UPDATE` and `DRIVER DATA PENDING`. Successful syncs
-are saved for offline use across reboots and firmware upgrades. Startup does
-not clear valid downloaded calendar, driver/team standings, results or sync
-dates. Old default-NVS data caches are not imported. Wi-Fi, clock and reminder
-settings remain intact.
+are saved for offline use across power cycles of the same firmware image.
+Before loading caches, startup checks the application's ELF SHA-256 fingerprint.
+A different image (upgrade or downgrade), or a missing/invalid owner marker,
+erases both application NVS partitions before any service starts: Wi-Fi
+profiles, saved time, sync dates, calendar, driver/team standings, results,
+reminder schedules, ALERTS and any other saved application settings reset to
+defaults. Wi-Fi must be configured again. The bundled offline calendar remains
+available until fresh downloads succeed. Rebooting or reflashing the identical
+image retains its data and settings when the installer preserves NVS. Old
+default-NVS caches are not imported. Factory device identity and permanent
+Recovery live in separate protected partitions and are retained. Ordinary
+flashing writes selected flash ranges, not the whole chip; this first-boot
+reset provides a fresh application installation without deleting factory data.
 
 After the first successful connection, PDKPASS downloads and stores the Grand
 Prix calendar for the current Beijing-time year and the latest published
@@ -242,7 +251,7 @@ times show `TIME TBD`, with no invented times, laps, drivers or standings.
 Until session metadata arrives, automatic round selection uses midnight after
 the last published date in the venue's time zone, not a claimed race-end time.
 Downloaded session end times replace this date-only boundary. Istanbul remains
-subject to FIA circuit homologation. Existing circuit colors remain unchanged.
+subject to FIA circuit homologation. Both seasons use the shared circuit palette.
 OpenF1 calendar/results arrays are processed item by item. Jolpica standings
 are downloaded in pages of four drivers with a 4 KB response cap and paced
 requests. All pages must agree on the season, round and total; incomplete or
@@ -254,6 +263,14 @@ remain available offline. After a long powered-off period, reconnect to refresh
 them. Championship points and their driver/team metadata come exclusively from
 [Jolpica](https://github.com/jolpica/jolpica-f1/blob/main/docs/endpoints/driverStandings.md).
 Calendar and session results continue to use [OpenF1](https://openf1.org/docs/).
+The relocated 2026 R16 displays `MALAYSIA / SEPANG`, following its physical
+venue on the [official event page](https://www.formula1.com/en/racing/2026/bahrain).
+Its track-page event title remains `BAHRAIN GP`, as the
+[organizer confirms](https://www.bahraingp.com/blog/news/bahrains-motorsport-experience-culture-and-heritage-take-centre-stage-at-sepang-international-circuit/);
+the event title and venue labels represent different facts.
+OpenF1 retains Bahrain country metadata and names the circuit Kuala Lumpur;
+map that venue to Sepang while keeping meeting 1308 and provider query labels
+for session lookup. Actual Bahrain/Sakhir meetings keep their original venue.
 An OpenF1 calendar failure does not block same-season Jolpica updates; each
 provider has independent rate-limit backoff. Standings publish only after the
 complete snapshot is validated and saved. Drivers with multiple constructors
@@ -261,11 +278,19 @@ in the season show `MULTIPLE TEAMS`, since their order does not identify the
 current team.
 
 Hold DOWN on home to open `TEAM POINTS`; hold UP for driver standings.
-UP/DOWN scroll through rankings; hold OK to return home. Short OK refreshes both
-driver and team standings without reloading the calendar. Existing tables stay
-visible during the request; the footer reports the outcome. Repeated manual
-requests have a 60-second cooldown. Each accepted refresh has a 120-second
+UP/DOWN scroll through rankings; hold OK to return home. Short OK refreshes only
+the current page: driver standings on the driver page, constructor standings on
+`TEAM POINTS`. It does not fetch the calendar or the other table. Each page has
+its own outcome notice and 60-second cooldown. A running manual points request
+must finish cleanup before either page can accept another; background automatic
+sync continues updating both tables. Existing rankings stay visible during sync. Each accepted refresh has a 120-second
 total deadline, including shared HTTP waits; expiration shows `SYNC TIMEOUT`.
+Manual points report `UPDATED`, `NO NEW DATA`, `SYNC FAILED` or `SYNC TIMEOUT`
+for the selected complete table. Pre-response transport failures retry once on
+a fresh connection, with the same request/operation deadlines and API pacing.
+Received headers/body, rate limits, TLS allocation/certificate errors and invalid
+data do not directly retry. Persistent failures report `SYNC FAILED` and keep
+the last complete table.
 The home DOWN hold no longer opens the calendar list; short UP/DOWN still browse races.
 Team points come directly from Jolpica constructor standings, including provider
 adjustments, rather than a sum of driver scores. They refresh automatically with
@@ -280,6 +305,14 @@ Repeated manual sync shows the actual cooldown in seconds. Each serialized
 refresh reuses one same-origin HTTPS client and releases TLS before cache saves
 or when the refresh ends. PDKPASS audio allocates TX/DAC only, keeping recording
 available to other BSP consumers through the full-duplex initializer.
+
+Calendar GETs retain only their construction array; the publication snapshot
+is allocated after TLS is released. The season worker reads its current snapshot
+without another full copy. Manual driver-points GETs retain only a compact roster
+and assemble a persisted season after TLS cleanup. HTTP transport/allocation
+failures log numeric available-heap and largest-free-block counters before client
+cleanup. Incoming TLS records remain 16 KB and certificate validation stays enabled;
+physical-device peak headroom and long-term stability still require verification.
 
 Private store, parser, standings, portal and network-page implementation groups live in
 `.inc` files included by their owning service; their workers and locks retain
@@ -378,6 +411,13 @@ to Jolpica's corresponding round date (converted to Beijing time), not the
 download date. Published Sprint points may precede that round's scheduled race. Current
 weekends take priority over historical backfill. API availability and rate limits
 can delay publication beyond these local retry intervals.
+
+Each HTTP request has a 30-second network deadline, covering handshake,
+response-header waits and body reception. A shorter remaining manual-operation
+deadline takes precedence; API pacing/cooldown waits remain within the original
+120-second manual-operation limit. Timeout releases the client and preserves
+cached data for scheduled retry. Failure logs use static resource labels with
+automatic/manual origin and elapsed time, without URLs or query values.
 
 HTTP, JSON parsing and allocation failures retain compact error reports with
 stage, status and error code. Logs contain no request URLs, response bodies,

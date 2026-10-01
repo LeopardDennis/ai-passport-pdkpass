@@ -29,7 +29,10 @@ MIT 许可原文保存在 [circuits/LICENSE.txt](circuits/LICENSE.txt)。
 | [jeddah.geojson](circuits/jeddah.geojson) | [sa-2021.geojson](https://github.com/bacinger/f1-circuits/blob/master/circuits/sa-2021.geojson) |
 
 `tools/check_circuit_assets.py` 按平均纬度余弦投影经度、翻转纬度为屏幕坐标，
-将闭合线等距采样成 48 段，等比放入 192 × 61 坐标区并保留三像素边距；
-校验 `main/pdkpass_tracks.c` 中每条赛道的 49 对字节坐标。
-固件无需读取 GeoJSON 或在线下载几何；现有 UI 会再等比适配到赛道卡片。
+等比放入 192 × 61 坐标区并保留三像素边距。波尔蒂芒、伊斯坦布尔和吉达
+等距采样为 48 段。萨基尔逆时针旋转 90 度，每次删除距相邻线段最近的点，
+简化为 48 段，保留发夹弯而不在长直道上浪费点数；校验来源坐标到轮廓的
+误差不超过一个显示像素。`main/pdkpass_tracks.c` 中每条赛道仍是 49 对闭合
+字节坐标。UI 直接绘制这些坐标，萨基尔使用两像素线宽以分开相邻路段，
+其他赛道保留四像素线宽。固件无需读取 GeoJSON 或在线下载几何。
 上游文件名中的数字描述赛道历史，不限制可用于哪个赛季。

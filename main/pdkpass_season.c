@@ -96,9 +96,10 @@ static bool s_online;
 static bool s_time_valid;
 static int64_t s_last_attempt_utc;
 static bool s_points_force_pending;
-static pdkpass_manual_status_t s_points_force_status;
-static TickType_t s_points_force_last_tick;
-static bool s_points_force_has_last_tick;
+static pdkpass_points_target_t s_points_force_target;
+static pdkpass_manual_status_t s_points_force_status[PDKPASS_POINTS_TARGET_COUNT];
+static TickType_t s_points_force_last_tick[PDKPASS_POINTS_TARGET_COUNT];
+static bool s_points_force_has_last_tick[PDKPASS_POINTS_TARGET_COUNT];
 
 _Static_assert(sizeof(season_cache_t) <= 6144,
                "Season snapshot no longer fits the NVS budget");
@@ -177,6 +178,10 @@ static void apply_track_details(pdkpass_race_t *race, const char *name)
     copy_text(race->circuit, sizeof(race->circuit), track->name);
     race->circuit_length_m = track->length_m;
     race->accent = track->accent;
+    // The relocated Bahrain GP keeps Bahrain in OpenF1 country metadata.
+    // Display its physical venue; api_country and meeting_key stay untouched.
+    if (strcmp(track->id, "sepang") == 0)
+        copy_text(race->country, sizeof(race->country), "MALAYSIA");
 }
 
 static void initialize_fallback(void)
@@ -359,8 +364,9 @@ static void preserve_track_details(pdkpass_season_snapshot_t *candidate,
 
 static bool build_candidate(unsigned year,
                             const pdkpass_season_snapshot_t *current,
-                            pdkpass_season_snapshot_t *candidate)
+                            pdkpass_season_snapshot_t **output)
 {
+    *output = NULL;
     char url[128];
     race_build_t *build = calloc(PDKPASS_MAX_RACES, sizeof(*build));
     if (!build) {
@@ -396,7 +402,16 @@ static bool build_candidate(unsigned year,
         free(build);
         return false;
     }
-    memset(candidate, 0, sizeof(*candidate));
+    // No complete season copy overlaps the calendar GETs. Release TLS before
+    // allocating the publication snapshot; the next provider needs a new client.
+    pdkpass_http_release();
+    pdkpass_season_snapshot_t *candidate = calloc(1, sizeof(*candidate));
+    if (!candidate) {
+        pdkpass_http_report_data_failure("season-snapshot-alloc", ESP_ERR_NO_MEM,
+                                         sizeof(*candidate));
+        free(build);
+        return false;
+    }
     candidate->year = (uint16_t)year;
     candidate->race_count = (uint8_t)context.count;
     if (year == current->year) {
@@ -409,7 +424,9 @@ static bool build_candidate(unsigned year,
     for (size_t i = 0; i < context.count; i++) candidate->races[i] = build[i].race;
     free(build);
     preserve_track_details(candidate, current);
-    return snapshot_valid(candidate);
+    if (!snapshot_valid(candidate)) { free(candidate); return false; }
+    *output = candidate;
+    return true;
 }
 
 static bool network_ready(void)
@@ -437,23 +454,23 @@ static int64_t next_sync_deadline(int64_t now_utc)
 
 static bool synchronize(int64_t now_utc)
 {
-    pdkpass_season_snapshot_t *current = malloc(sizeof(*current));
-    pdkpass_season_snapshot_t *candidate = malloc(sizeof(*candidate));
-    if (!current || !candidate) {
-        pdkpass_http_report_data_failure("season-snapshot-alloc", ESP_ERR_NO_MEM,
-                                         sizeof(*current) + sizeof(*candidate));
-        free(current);
-        free(candidate);
-        return false;
-    }
-    if (!pdkpass_season_snapshot(current)) {
-        free(current);
-        free(candidate);
-        return false;
-    }
+    // Only season_task writes s_season after startup; its calendar, points and
+    // year-transition operations are serialized. Readers copy under s_lock.
+    // A const reference avoids duplicating the whole calendar during TLS work.
+    const pdkpass_season_snapshot_t *current = &s_season;
+    pdkpass_season_snapshot_t *candidate = NULL;
     unsigned target_year = pdkpass_beijing_year(now_utc);
-    bool calendar_ok = build_candidate(target_year, current, candidate);
-    if (!calendar_ok) *candidate = *current;
+    bool calendar_ok = build_candidate(target_year, current, &candidate);
+    if (!calendar_ok) {
+        pdkpass_http_release();
+        candidate = malloc(sizeof(*candidate));
+        if (!candidate) {
+            pdkpass_http_report_data_failure("season-snapshot-alloc", ESP_ERR_NO_MEM,
+                                             sizeof(*candidate));
+            return false;
+        }
+        *candidate = *current;
+    }
     // Standings have their own source. A failed OpenF1 calendar request must
     // never prevent same-season Jolpica updates or discard the cached calendar.
     bool standings_ok = candidate->year == target_year &&
@@ -484,28 +501,46 @@ static bool synchronize(int64_t now_utc)
         pdkpass_sync_mark_success(PDKPASS_SYNC_STATUS_CALENDAR, (int64_t)time(NULL));
     if (standings_ok)
         pdkpass_sync_mark_success(PDKPASS_SYNC_STATUS_DRIVERS, (int64_t)time(NULL));
-    free(current);
     free(candidate);
     bool teams_ok = synchronize_teams(target_year, now_utc);
     return success && teams_ok;
 }
 
-static pdkpass_manual_state_t synchronize_manual_points(int64_t now_utc)
+static pdkpass_manual_state_t synchronize_manual_drivers(int64_t now_utc)
 {
     unsigned year = pdkpass_beijing_year(now_utc);
-    pdkpass_season_snapshot_t *candidate = malloc(sizeof(*candidate));
-    bool drivers_ok = candidate && pdkpass_season_snapshot(candidate) &&
-                      candidate->year == year;
+    // A points GET needs only a roster and source date, not another calendar.
+    pdkpass_driver_t *drivers = calloc(PDKPASS_MAX_DRIVERS, sizeof(*drivers));
+    uint8_t count = 0;
+    char previous_date[12] = {0}, as_of[12] = {0};
+    bool drivers_ok = drivers && xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) == pdTRUE;
+    if (drivers_ok) {
+        drivers_ok = s_season.year == year;
+        memcpy(previous_date, s_season.standings_as_of, sizeof(previous_date));
+        xSemaphoreGive(s_lock);
+    }
     bool drivers_changed = false;
     if (drivers_ok) {
-        drivers_ok = fetch_standings(now_utc, candidate) && !pdkpass_http_expired();
+        drivers_ok = fetch_driver_standings(now_utc, year, previous_date,
+                                             drivers, &count, as_of) && !pdkpass_http_expired();
         bool changed = false;
         if (drivers_ok && xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) == pdTRUE) {
-            changed = memcmp(&s_season, candidate, sizeof(*candidate)) != 0;
+            changed = s_season.driver_count != count ||
+                      memcmp(s_season.drivers, drivers, sizeof(s_season.drivers)) != 0 ||
+                      memcmp(s_season.standings_as_of, as_of, sizeof(as_of)) != 0;
             xSemaphoreGive(s_lock);
         } else drivers_ok = false;
         if (drivers_ok && changed) {
-            drivers_ok = save_cache(candidate) == ESP_OK;
+            // Assemble/persist a full snapshot only after the network phase.
+            pdkpass_http_release();
+            pdkpass_season_snapshot_t *candidate = malloc(sizeof(*candidate));
+            drivers_ok = candidate && pdkpass_season_snapshot(candidate);
+            if (drivers_ok) {
+                candidate->driver_count = count;
+                memcpy(candidate->drivers, drivers, sizeof(candidate->drivers));
+                memcpy(candidate->standings_as_of, as_of, sizeof(as_of));
+                drivers_ok = save_cache(candidate) == ESP_OK;
+            }
             if (drivers_ok && xSemaphoreTake(s_lock, pdMS_TO_TICKS(2000)) == pdTRUE) {
                 s_season = *candidate;
                 s_has_cached_data = true;
@@ -513,12 +548,20 @@ static pdkpass_manual_state_t synchronize_manual_points(int64_t now_utc)
                 drivers_changed = true;
                 if (s_callback) s_callback();
             } else drivers_ok = false;
+            free(candidate);
         }
     }
     if (drivers_ok && !pdkpass_http_expired())
         pdkpass_sync_mark_success(PDKPASS_SYNC_STATUS_DRIVERS, (int64_t)time(NULL));
-    free(candidate);
+    free(drivers);
+    if (pdkpass_http_expired()) return PDKPASS_MANUAL_TIMED_OUT;
+    if (!drivers_ok) return PDKPASS_MANUAL_FAILED;
+    return drivers_changed ? PDKPASS_MANUAL_UPDATED : PDKPASS_MANUAL_UNCHANGED;
+}
 
+static pdkpass_manual_state_t synchronize_manual_teams(int64_t now_utc)
+{
+    unsigned year = pdkpass_beijing_year(now_utc);
     pdkpass_team_snapshot_t teams_before;
     pdkpass_team_snapshot_t teams_after;
     bool teams_ok = pdkpass_season_team_snapshot(&teams_before) &&
@@ -540,10 +583,15 @@ static pdkpass_manual_state_t synchronize_manual_points(int64_t now_utc)
     if (teams_ok && !pdkpass_http_expired())
         pdkpass_sync_mark_success(PDKPASS_SYNC_STATUS_TEAMS, (int64_t)time(NULL));
     if (pdkpass_http_expired()) return PDKPASS_MANUAL_TIMED_OUT;
-    if (!drivers_ok && !teams_ok) return PDKPASS_MANUAL_FAILED;
-    if (!drivers_ok || !teams_ok) return PDKPASS_MANUAL_PARTIAL;
-    return drivers_changed || teams_changed ? PDKPASS_MANUAL_UPDATED :
-                                         PDKPASS_MANUAL_UNCHANGED;
+    if (!teams_ok) return PDKPASS_MANUAL_FAILED;
+    return teams_changed ? PDKPASS_MANUAL_UPDATED : PDKPASS_MANUAL_UNCHANGED;
+}
+
+static pdkpass_manual_state_t synchronize_manual_points(int64_t now_utc)
+{
+    // The worker owns this target until finish_points_force releases its hold.
+    return s_points_force_target == PDKPASS_POINTS_DRIVERS
+        ? synchronize_manual_drivers(now_utc) : synchronize_manual_teams(now_utc);
 }
 
 static bool take_points_force(void)
@@ -567,11 +615,12 @@ static void finish_points_force(pdkpass_manual_state_t state)
 {
     // Worker only; terminal status must not be dropped on lock contention.
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    if (s_points_force_status.state == PDKPASS_MANUAL_RUNNING) {
-        s_points_force_status.state = pdkpass_manual_visible_status(
-            s_points_force_status, esp_timer_get_time()).state == PDKPASS_MANUAL_TIMED_OUT
+    pdkpass_manual_status_t *status = &s_points_force_status[s_points_force_target];
+    if (status->state == PDKPASS_MANUAL_RUNNING) {
+        status->state = pdkpass_manual_visible_status(
+            *status, esp_timer_get_time()).state == PDKPASS_MANUAL_TIMED_OUT
                 ? PDKPASS_MANUAL_TIMED_OUT : state;
-        s_points_force_status.generation++;
+        status->generation++;
         pdkpass_sync_hold(PDKPASS_SYNC_SEASON, false);
     }
     xSemaphoreGive(s_lock);
@@ -580,7 +629,7 @@ static void finish_points_force(pdkpass_manual_state_t state)
 static int64_t manual_deadline(void)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    int64_t deadline = s_points_force_status.deadline_us;
+    int64_t deadline = s_points_force_status[s_points_force_target].deadline_us;
     xSemaphoreGive(s_lock);
     return deadline;
 }
@@ -738,25 +787,27 @@ void pdkpass_season_set_network(bool online, bool time_valid)
     if (wake) xEventGroupSetBits(s_events, EVENT_WAKE);
 }
 
-pdkpass_manual_state_t pdkpass_season_force_points(void)
+pdkpass_manual_state_t pdkpass_season_force_points(pdkpass_points_target_t target)
 {
+    if ((unsigned)target >= PDKPASS_POINTS_TARGET_COUNT) return PDKPASS_MANUAL_FAILED;
     if (!s_lock || !s_events || xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE)
         return PDKPASS_MANUAL_BUSY;
     TickType_t now = xTaskGetTickCount();
     pdkpass_manual_state_t result = PDKPASS_MANUAL_RUNNING;
-    if (s_points_force_status.state == PDKPASS_MANUAL_RUNNING)
+    if (s_points_force_status[s_points_force_target].state == PDKPASS_MANUAL_RUNNING)
         result = PDKPASS_MANUAL_BUSY;
-    else if (s_points_force_has_last_tick &&
-             now - s_points_force_last_tick < pdMS_TO_TICKS(POINTS_FORCE_COOLDOWN_MS))
+    else if (s_points_force_has_last_tick[target] &&
+             now - s_points_force_last_tick[target] < pdMS_TO_TICKS(POINTS_FORCE_COOLDOWN_MS))
         result = PDKPASS_MANUAL_COOLDOWN;
     else {
-        s_points_force_has_last_tick = true;
-        s_points_force_last_tick = now;
+        s_points_force_has_last_tick[target] = true;
+        s_points_force_last_tick[target] = now;
+        s_points_force_target = target;
         s_points_force_pending = true;
-        s_points_force_status.cooldown_until_us = esp_timer_get_time() + 60000000LL;
-        s_points_force_status.deadline_us = esp_timer_get_time() + PDKPASS_MANUAL_TIMEOUT_US;
-        s_points_force_status.state = PDKPASS_MANUAL_RUNNING;
-        s_points_force_status.generation++;
+        s_points_force_status[target].cooldown_until_us = esp_timer_get_time() + 60000000LL;
+        s_points_force_status[target].deadline_us = esp_timer_get_time() + PDKPASS_MANUAL_TIMEOUT_US;
+        s_points_force_status[target].state = PDKPASS_MANUAL_RUNNING;
+        s_points_force_status[target].generation++;
         pdkpass_sync_hold(PDKPASS_SYNC_SEASON, true);
     }
     xSemaphoreGive(s_lock);
@@ -766,11 +817,13 @@ pdkpass_manual_state_t pdkpass_season_force_points(void)
     return result;
 }
 
-bool pdkpass_season_manual_status(pdkpass_manual_status_t *status)
+bool pdkpass_season_manual_status(pdkpass_points_target_t target,
+                                  pdkpass_manual_status_t *status)
 {
-    if (!status || !s_lock || xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE)
+    if ((unsigned)target >= PDKPASS_POINTS_TARGET_COUNT || !status || !s_lock ||
+        xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE)
         return false;
-    *status = pdkpass_manual_visible_status(s_points_force_status, esp_timer_get_time());
+    *status = pdkpass_manual_visible_status(s_points_force_status[target], esp_timer_get_time());
     xSemaphoreGive(s_lock);
     return true;
 }

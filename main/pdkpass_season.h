@@ -46,11 +46,19 @@ esp_err_t pdkpass_season_start(pdkpass_season_callback_t callback);
 // year. A transition to usable connectivity wakes the synchronizer.
 void pdkpass_season_set_network(bool online, bool time_valid);
 
-// Refresh both driver and constructor standings without fetching the calendar.
+typedef enum {
+    PDKPASS_POINTS_DRIVERS,
+    PDKPASS_POINTS_TEAMS,
+    PDKPASS_POINTS_TARGET_COUNT,
+} pdkpass_points_target_t;
+
+// Refresh only the selected table without fetching the calendar or other table.
+// Each table has its own status/cooldown; one worker owns an accepted operation.
 // Offline requests reconnect saved Wi-Fi in worker context; the 120-second
 // deadline covers connection, queueing and HTTP. Hold radio until cleanup.
-pdkpass_manual_state_t pdkpass_season_force_points(void);
-bool pdkpass_season_manual_status(pdkpass_manual_status_t *status);
+pdkpass_manual_state_t pdkpass_season_force_points(pdkpass_points_target_t target);
+bool pdkpass_season_manual_status(pdkpass_points_target_t target,
+                                  pdkpass_manual_status_t *status);
 
 bool pdkpass_season_snapshot(pdkpass_season_snapshot_t *snapshot);
 // True only when the active season has a persisted snapshot, not a bundled calendar.

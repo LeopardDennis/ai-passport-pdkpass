@@ -3,6 +3,9 @@
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
+#include "mbedtls/net_sockets.h"
+#include "mbedtls/ssl.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -38,6 +41,8 @@ static unsigned http_origin(const char *url)
     return 0;
 }
 
+#define HTTP_REQUEST_TIMEOUT_US (30LL * 1000000LL)
+
 static const char *TAG = "pdk_http";
 typedef struct {
     char *data;
@@ -48,6 +53,8 @@ typedef struct {
     void *context;
     unsigned retry_seconds;
     const char *failure_stage;
+    int64_t deadline_us;
+    bool headers_received;
 } response_t;
 
 static void report_failure(const char *stage, int status, esp_err_t err,
@@ -55,6 +62,54 @@ static void report_failure(const char *stage, int status, esp_err_t err,
 {
     ESP_LOGW(TAG, "GET stage=%s status=%d err=%s bytes=%u",
              stage, status, esp_err_to_name(err), (unsigned)bytes);
+}
+
+// Static resource labels keep URLs, queries and response bodies out of logs.
+static const char *http_resource(const char *url)
+{
+    if (http_origin(url) == 1) {
+        static const char *const names[] = {"meetings", "sessions", "session_result", "drivers"};
+        const char *path = strstr(url, "/v1/");
+        if (path) {
+            path += 4;
+            for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+                size_t length = strlen(names[i]);
+                if (strncmp(path, names[i], length) == 0 &&
+                    (path[length] == '\0' || path[length] == '?' || path[length] == '/'))
+                    return names[i];
+            }
+        }
+    } else if (http_origin(url) == 2) {
+        if (strstr(url, "/driverstandings/")) return "driverstandings";
+        if (strstr(url, "/constructorstandings/")) return "constructorstandings";
+        return "round";
+    }
+    return "other";
+}
+
+static void report_request_failure(const char *url, int64_t started_us,
+                                   const char *stage, int status, esp_err_t err,
+                                   size_t bytes)
+{
+    unsigned origin = http_origin(url);
+    ESP_LOGW(TAG, "GET endpoint=%s origin=%s mode=%s elapsed_ms=%lu",
+             http_resource(url), origin == 1 ? "openf1" : origin == 2 ? "jolpica" : "other",
+             s_deadline_us > 0 ? "manual" : "automatic",
+             (unsigned long)((esp_timer_get_time() - started_us) / 1000));
+    report_failure(stage, status, err, bytes);
+}
+
+static bool response_expired(const response_t *response)
+{
+    return pdkpass_http_expired() ||
+           (response->deadline_us > 0 && esp_timer_get_time() >= response->deadline_us);
+}
+
+static int response_timeout_ms(const response_t *response)
+{
+    int64_t remaining_ms = (response->deadline_us - esp_timer_get_time() + 999) / 1000;
+    if (remaining_ms < 1) remaining_ms = 1;
+    return remaining_ms < 15000 ? (int)remaining_ms : 15000;
 }
 
 void pdkpass_http_report_data_failure(const char *stage, esp_err_t err,
@@ -121,14 +176,19 @@ static esp_err_t http_event(esp_http_client_event_t *event)
     response_t *r = event->user_data;
     if (!r) return ESP_OK;
     if ((event->event_id == HTTP_EVENT_ON_HEADER || event->event_id == HTTP_EVENT_ON_DATA) &&
-        pdkpass_http_expired()) {
-        r->failure_stage = "operation-timeout";
+        response_expired(r)) {
+        r->failure_stage = pdkpass_http_expired() ? "operation-timeout" : "request-timeout";
         r->error = ESP_ERR_TIMEOUT;
         // IDF ignores ON_DATA callback return values. Close the transport from
         // its owning task to stop a response that keeps trickling data.
         esp_http_client_close(event->client);
         return r->error;
     }
+    if (event->event_id == HTTP_EVENT_ON_HEADER) r->headers_received = true;
+    // IDF can read multiple headers/body chunks inside one perform() call.
+    // Tighten the next blocking read as each callback consumes the budget.
+    if (event->event_id == HTTP_EVENT_ON_HEADER || event->event_id == HTTP_EVENT_ON_DATA)
+        esp_http_client_set_timeout_ms(event->client, response_timeout_ms(r));
     if (event->event_id == HTTP_EVENT_ON_HEADER && event->header_key &&
         event->header_value &&
         strcasecmp(event->header_key, "Retry-After") == 0) {
@@ -174,7 +234,7 @@ static esp_err_t http_event(esp_http_client_event_t *event)
     return ESP_OK;
 }
 
-static bool wait_for_request(unsigned origin, int64_t retry_at)
+static bool wait_for_request(unsigned origin, int64_t retry_at, int64_t request_deadline_us)
 {
     int64_t now = esp_timer_get_time();
     // Automatic refreshes defer server cooldown to their scheduler. Manual
@@ -183,14 +243,18 @@ static bool wait_for_request(unsigned origin, int64_t retry_at)
     if (!s_deadline_us && now < retry_at) return false;
     int64_t ready = retry_at;
     if (origin && s_request_at_us[origin] > ready) ready = s_request_at_us[origin];
-    if (pdkpass_http_expired() || (s_deadline_us > 0 && ready >= s_deadline_us)) return false;
+    int64_t deadline = s_deadline_us;
+    if (request_deadline_us > 0 && (deadline == 0 || request_deadline_us < deadline))
+        deadline = request_deadline_us;
+    if (pdkpass_http_expired() || (deadline > 0 && (now >= deadline || ready >= deadline)))
+        return false;
     while (now < ready) {
         int64_t remaining_ms = (ready - now + 999) / 1000;
         if (remaining_ms > 1000) remaining_ms = 1000;
         TickType_t ticks = pdMS_TO_TICKS(remaining_ms);
         vTaskDelay(ticks ? ticks : 1);
-        if (pdkpass_http_expired()) return false;
         now = esp_timer_get_time();
+        if (pdkpass_http_expired() || (deadline > 0 && now >= deadline)) return false;
     }
     if (origin) s_request_at_us[origin] = now + (origin == 1 ? 2100000LL : 7300000LL);
     return true;
@@ -198,89 +262,130 @@ static bool wait_for_request(unsigned origin, int64_t retry_at)
 
 static esp_err_t perform(const char *url, response_t *r)
 {
+    int64_t started_us = esp_timer_get_time();
     int64_t *retry_at = strncmp(url, "https://api.jolpi.ca/", sizeof("https://api.jolpi.ca/") - 1U) == 0
                             ? &s_jolpica_retry_at_us : &s_retry_at_us;
     unsigned origin = http_origin(url);
-    if (!wait_for_request(origin, *retry_at)) {
-        report_failure(pdkpass_http_expired() ? "operation-timeout" : "request-wait",
-                       0, ESP_ERR_TIMEOUT, 0);
+    if (!wait_for_request(origin, *retry_at, 0)) {
+        report_request_failure(url, started_us,
+                               pdkpass_http_expired() ? "operation-timeout" : "request-wait",
+                               0, ESP_ERR_TIMEOUT, 0);
         return ESP_ERR_TIMEOUT;
     }
-    esp_http_client_config_t config = {
-        .url = url, .event_handler = http_event, .user_data = r,
-        .crt_bundle_attach = esp_crt_bundle_attach, .timeout_ms = 15000,
-        .buffer_size = 1024, .user_agent = "PDKPASS/1.1",
-        .is_async = s_deadline_us > 0,
-        .keep_alive_enable = true,
-    };
-    bool reusable = s_transaction_active && origin != 0;
-    if (s_client && (!reusable || origin != s_client_origin)) pdkpass_http_release();
-    esp_http_client_handle_t client = s_client;
-    if (client) {
-        esp_err_t setup = esp_http_client_set_url(client, url);
-        if (setup == ESP_OK) setup = esp_http_client_set_user_data(client, r);
-        if (setup != ESP_OK) { pdkpass_http_release(); return setup; }
-        esp_http_client_set_timeout_ms(client, 15000);
-    } else {
-        client = esp_http_client_init(&config);
-        if (client && reusable) { s_client = client; s_client_origin = origin; }
-    }
-    if (!client) {
-        report_failure("client-init", 0, ESP_ERR_NO_MEM, 0);
-        return ESP_ERR_NO_MEM;
-    }
-    esp_http_client_set_header(client, "Accept", "application/json");
-    esp_err_t transport_err;
-    do {
-        if (pdkpass_http_expired()) {
-            r->failure_stage = "operation-timeout";
-            transport_err = ESP_ERR_TIMEOUT;
-            break;
+    // Bound handshake, header waits and trickling bodies even for automatic
+    // GETs. Pacing/cooldown waits retain the manual transaction's original limit.
+    r->deadline_us = esp_timer_get_time() + HTTP_REQUEST_TIMEOUT_US;
+    if (s_deadline_us > 0 && s_deadline_us < r->deadline_us)
+        r->deadline_us = s_deadline_us;
+    for (unsigned attempt = 0; attempt < 2; attempt++) {
+        if (attempt && !wait_for_request(origin, *retry_at, r->deadline_us)) {
+            report_request_failure(url, started_us,
+                                   pdkpass_http_expired() ? "operation-timeout" :
+                                   response_expired(r) ? "request-timeout" : "request-wait",
+                                   0, ESP_ERR_TIMEOUT, 0);
+            return ESP_ERR_TIMEOUT;
         }
-        if (s_deadline_us > 0) {
-            int64_t remaining_ms = (s_deadline_us - esp_timer_get_time() + 999) / 1000;
-            if (remaining_ms < 1) remaining_ms = 1;
-            esp_http_client_set_timeout_ms(client, remaining_ms < 15000 ? (int)remaining_ms : 15000);
+        const unsigned memory_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+        size_t start_free = heap_caps_get_free_size(memory_caps);
+        size_t start_largest = heap_caps_get_largest_free_block(memory_caps);
+        esp_http_client_config_t config = {
+            .url = url, .event_handler = http_event, .user_data = r,
+            .crt_bundle_attach = esp_crt_bundle_attach, .timeout_ms = 15000,
+            .buffer_size = 1024, .user_agent = "PDKPASS/1.1",
+            .is_async = s_deadline_us > 0,
+            .keep_alive_enable = true,
+        };
+        bool reusable = s_transaction_active && origin != 0;
+        if (s_client && (!reusable || origin != s_client_origin)) pdkpass_http_release();
+        esp_http_client_handle_t client = s_client;
+        if (client) {
+            esp_err_t setup = esp_http_client_set_url(client, url);
+            if (setup == ESP_OK) setup = esp_http_client_set_user_data(client, r);
+            if (setup != ESP_OK) { pdkpass_http_release(); return setup; }
+            esp_http_client_set_timeout_ms(client, 15000);
+        } else {
+            client = esp_http_client_init(&config);
+            if (client && reusable) { s_client = client; s_client_origin = origin; }
         }
-        transport_err = esp_http_client_perform(client);
-        if (transport_err == ESP_ERR_HTTP_EAGAIN && r->error == ESP_OK)
-            vTaskDelay(1);
-    } while (transport_err == ESP_ERR_HTTP_EAGAIN && r->error == ESP_OK);
-    if (pdkpass_http_expired()) {
-        r->failure_stage = "operation-timeout";
-        r->error = ESP_ERR_TIMEOUT;
-    }
-    int status = esp_http_client_get_status_code(client);
-    esp_err_t err = r->error != ESP_OK ? r->error : transport_err;
-    if (err == ESP_OK && (status != 200 || r->length == 0)) err = ESP_ERR_INVALID_RESPONSE;
-    if (err == ESP_OK && r->stream && !pdkpass_json_stream_done(r->stream))
-        err = ESP_ERR_INVALID_RESPONSE;
-    // Callback contexts are stack-owned. Cleanup may emit DISCONNECTED later.
-    esp_http_client_set_user_data(client, NULL);
-    if (client == s_client) {
-        if (err != ESP_OK) pdkpass_http_release();
-    } else esp_http_client_cleanup(client);
-    if (status == 429 || status == 503) {
-        unsigned seconds = r->retry_seconds ? r->retry_seconds : 60;
-        *retry_at = esp_timer_get_time() + (int64_t)seconds * 1000000LL;
-    }
-    if (err != ESP_OK) {
-        const char *stage = r->failure_stage ? r->failure_stage
-                            : transport_err != ESP_OK ? "transport"
-                            : status != 200 ? "http-status"
-                            : r->length == 0 ? "empty-body" : "stream-end";
-        // Identify the API resource without logging query parameters, which
-        // may contain device- or user-specific values in future callers.
-        const char *endpoint = strstr(url, "/v1/");
-        if (endpoint) {
-            endpoint += 4;
-            size_t length = strcspn(endpoint, "?");
-            if (length > 0 && length < 32)
-                ESP_LOGW(TAG, "GET endpoint=%.*s", (int)length, endpoint);
+        if (!client) {
+            report_request_failure(url, started_us, "client-init", 0, ESP_ERR_NO_MEM, 0);
+            return ESP_ERR_NO_MEM;
         }
-        report_failure(stage, status, err, r->length);
+        esp_http_client_set_header(client, "Accept", "application/json");
+        esp_err_t transport_err;
+        do {
+            if (response_expired(r)) {
+                r->failure_stage = pdkpass_http_expired() ? "operation-timeout" : "request-timeout";
+                transport_err = ESP_ERR_TIMEOUT;
+                break;
+            }
+            esp_http_client_set_timeout_ms(client, response_timeout_ms(r));
+            transport_err = esp_http_client_perform(client);
+            if (transport_err == ESP_ERR_HTTP_EAGAIN && r->error == ESP_OK)
+                vTaskDelay(1);
+        } while (transport_err == ESP_ERR_HTTP_EAGAIN && r->error == ESP_OK);
+        if (response_expired(r)) {
+            r->failure_stage = pdkpass_http_expired() ? "operation-timeout" : "request-timeout";
+            r->error = ESP_ERR_TIMEOUT;
+        }
+        int status = esp_http_client_get_status_code(client);
+        esp_err_t err = r->error != ESP_OK ? r->error : transport_err;
+        if (err == ESP_OK && (status != 200 || r->length == 0)) err = ESP_ERR_INVALID_RESPONSE;
+        if (err == ESP_OK && r->stream && !pdkpass_json_stream_done(r->stream))
+            err = ESP_ERR_INVALID_RESPONSE;
+        int tls_code = 0, tls_flags = 0;
+        esp_err_t tls_error = ESP_OK;
+        if (transport_err != ESP_OK)
+            tls_error = esp_http_client_get_and_clear_last_tls_error(client, &tls_code, &tls_flags);
+        // esp-tls stores the magnitude of read/write errors; handshake paths
+        // can store a signed mbedTLS code. Classify both representations alike.
+        if (tls_code > 0) tls_code = -tls_code;
+        bool reconnect = attempt == 0 && r->error == ESP_OK && !response_expired(r) &&
+                         r->length == 0 && !r->headers_received && status <= 0 &&
+                         (transport_err == ESP_ERR_HTTP_CONNECT ||
+                          transport_err == ESP_ERR_HTTP_WRITE_DATA ||
+                          transport_err == ESP_ERR_HTTP_FETCH_HEADER ||
+                          transport_err == ESP_ERR_HTTP_CONNECTION_CLOSED) &&
+                         tls_flags == 0 &&
+                         ((tls_code == 0 && tls_error == ESP_OK) || tls_code == MBEDTLS_ERR_NET_RECV_FAILED ||
+                          tls_code == MBEDTLS_ERR_NET_SEND_FAILED ||
+                          tls_code == MBEDTLS_ERR_NET_CONN_RESET ||
+                          tls_code == MBEDTLS_ERR_SSL_CONN_EOF);
+        // Sample before releasing TLS; post-cleanup free memory hides its footprint.
+        // Numeric counters only: no addresses, URLs, credentials or body content.
+        if (transport_err != ESP_OK || err == ESP_ERR_NO_MEM)
+            ESP_LOGW(TAG, "GET memory start_free=%u start_largest=%u failure_free=%u failure_largest=%u",
+                     (unsigned)start_free, (unsigned)start_largest,
+                     (unsigned)heap_caps_get_free_size(memory_caps),
+                     (unsigned)heap_caps_get_largest_free_block(memory_caps));
+        // Callback contexts are stack-owned. Cleanup may emit DISCONNECTED later.
+        esp_http_client_set_user_data(client, NULL);
+        if (client == s_client) {
+            if (err != ESP_OK) pdkpass_http_release();
+        } else esp_http_client_cleanup(client);
+        if (status == 429 || status == 503) {
+            unsigned seconds = r->retry_seconds ? r->retry_seconds : 60;
+            *retry_at = esp_timer_get_time() + (int64_t)seconds * 1000000LL;
+        }
+        if (err != ESP_OK) {
+            const char *stage = r->failure_stage ? r->failure_stage
+                                : transport_err != ESP_OK ? "transport"
+                                : status != 200 ? "http-status"
+                                : r->length == 0 ? "empty-body" : "stream-end";
+            report_request_failure(url, started_us, stage, status, err, r->length);
+        }
+        if (!reconnect) {
+            if (err == ESP_OK && attempt)
+                ESP_LOGW(TAG, "GET recovered endpoint=%s origin=%s attempt=2",
+                         http_resource(url), origin == 1 ? "openf1" : origin == 2 ? "jolpica" : "other");
+            return err;
+        }
+        ESP_LOGW(TAG, "GET reconnect endpoint=%s origin=%s attempt=2",
+                 http_resource(url), origin == 1 ? "openf1" : origin == 2 ? "jolpica" : "other");
+        // No body/header callbacks have touched the consumer. The same GET can be
+        // replayed once, on a fresh client, with the original remaining budget.
     }
-    return err;
+    return ESP_FAIL; // Both attempts return a result above.
 }
 
 esp_err_t pdkpass_http_get(const char *url, size_t limit, char **json)

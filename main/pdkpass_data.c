@@ -1,5 +1,6 @@
 #include "pdkpass_data.h"
 #include <string.h>
+#include <stdio.h>
 
 // Offline snapshot captured on 2026-08-31 from the official Formula 1 calendar
 // and driver standings. Times below are converted to China Standard Time (UTC+8).
@@ -23,17 +24,29 @@ const pdkpass_race_t pdkpass_races[] = {
     { 0, 1788714000, 0xFFD928, 5793, 13, 53, "ITALY", "MONZA", "04-06 SEP", "FP1   04 SEP 18:30", "QUALI 05 SEP 22:00", "RACE  06 SEP 21:00", "Italy" },
     { 0, 1789318800, 0xEDB45C, 5416, 14, 57, "SPAIN", "MADRING", "11-13 SEP", "FP1   11 SEP 19:30", "QUALI 12 SEP 22:00", "RACE  13 SEP 21:00", "Spain" },
     { 0, 1790434800, 0x3FC6A8, 6003, 15, 51, "AZERBAIJAN", "BAKU", "24-26 SEP", "FP1   24 SEP 16:30", "QUALI 25 SEP 20:00", "RACE  26 SEP 19:00", "Azerbaijan" },
-    { 0, 1791111600, 0x39B575, 5543, 16, 56, "MALAYSIA", "SEPANG", "02-04 OCT", "FP1   02 OCT 12:30", "QUALI 03 OCT 16:00", "RACE  04 OCT 15:00", "Malaysia" },
+    // OpenF1 meeting 1308: Bahrain GP in Malaysia; retain provider query identity.
+    { 1308, 1791111600, 0x39B575, 5543, 16, 56, "MALAYSIA", "SEPANG", "02-04 OCT", "FP1   02 OCT 12:30", "QUALI 03 OCT 16:00", "RACE  04 OCT 15:00", "Bahrain" },
     { 0, 1791734400, 0xB550E0, 4927, 17, 62, "SINGAPORE", "MARINA BAY", "09-11 OCT", "FP1   09 OCT 16:30", "SPR Q 09 OCT 20:30", "RACE  11 OCT 20:00", "Singapore" },
     { 0, 1792972800, 0x0057B8, 5513, 18, 56, "USA", "COTA", "23-25 OCT", "FP1   24 OCT 01:30", "QUALI 25 OCT 05:00", "RACE  26 OCT 04:00", "United%20States" },
     { 0, 1793577600, 0x86C29C, 4304, 19, 71, "MEXICO", "MEXICO CITY", "30 OCT-01 NOV", "FP1   31 OCT 02:30", "QUALI 01 NOV 05:00", "RACE  02 NOV 04:00", "Mexico" },
     { 0, 1794171600, 0xFFCC29, 4309, 20, 71, "BRAZIL", "INTERLAGOS", "06-08 NOV", "FP1   06 NOV 23:30", "QUALI 08 NOV 02:00", "RACE  09 NOV 01:00", "Brazil" },
     { 0, 1795334400, 0xFF4AB5, 6201, 21, 50, "LAS VEGAS", "LAS VEGAS", "19-21 NOV", "FP1   20 NOV 08:30", "QUALI 21 NOV 12:00", "RACE  22 NOV 12:00", "United%20States" },
     { 0, 1795982400, 0xC4909A, 5419, 22, 57, "QATAR", "LUSAIL", "27-29 NOV", "FP1   27 NOV 21:30", "QUALI 29 NOV 02:00", "RACE  30 NOV 00:00", "Qatar" },
-    { 0, 1796576400, 0x00A9A5, 5281, 23, 58, "ABU DHABI", "YAS MARINA", "04-06 DEC", "FP1   04 DEC 17:30", "QUALI 05 DEC 22:00", "RACE  06 DEC 21:00", "United%20Arab%20Emirates" },
+    { 0, 1796576400, 0x91E0D6, 5281, 23, 58, "ABU DHABI", "YAS MARINA", "04-06 DEC", "FP1   04 DEC 17:30", "QUALI 05 DEC 22:00", "RACE  06 DEC 21:00", "United%20Arab%20Emirates" },
 };
 
 const size_t pdkpass_race_count = sizeof(pdkpass_races) / sizeof(pdkpass_races[0]);
+
+void pdkpass_race_gp_title(unsigned year, const pdkpass_race_t *race,
+                           char *output, size_t capacity)
+{
+    if (!output || capacity == 0U) return;
+    if (!race) { output[0] = '\0'; return; }
+    // Bahrain's 2026 event retains its name after moving to Malaysia/Sepang.
+    const char *name = year == 2026U && race->meeting_key == 1308
+        ? "BAHRAIN" : race->country;
+    snprintf(output, capacity, "%s GP", name);
+}
 
 size_t pdkpass_restore_legacy_calendar(unsigned year, pdkpass_race_t *races,
                                        size_t count, size_t capacity)

@@ -6,9 +6,54 @@
 
 ## Unreleased
 
-- Remove automatic cache clearing on firmware changes. Startup preserves valid
-  downloaded calendar, driver/team points, results and sync dates across both
-  reboots and upgrades. Keep default-NVS data-cache fallback disabled.
+- Brighten Yas Marina with a muted violet background (#76538F) and ice teal
+  accent (#91E0D6), improving card and highlight visibility while distinguishing
+  the palette from Monza and Monaco. Apply the shared circuit palette to bundled,
+  downloaded and cached calendars in both seasons; preserve readable text colors.
+
+- Improve the Sakhir GP outline on the track card: use a landscape rotation,
+  preserve corners within the existing 48-segment budget, and use a two-pixel
+  stroke so parallel straights and hairpins remain readable. Keep the original
+  licensed GP coordinates and verify shape error within one display pixel.
+
+- Display the relocated 2026 R16 as MALAYSIA / SEPANG. Resolve OpenF1's
+  Kuala Lumpur circuit alias and normalize Sepang's physical country without
+  changing provider query identity. Retain BAHRAIN GP as the track-page event
+  title, distinct from the MALAYSIA venue. Seed meeting 1308 for offline-calendar
+  session lookup; cached aliases normalize on load. Preserve real Sakhir/Bahrain.
+
+- Refresh only driver standings when short OK is pressed on the driver page,
+  and only constructor standings on TEAM POINTS. Keep outcomes and 60-second
+  cooldowns independent; serialize accepted manual requests through cleanup.
+  Background automatic sync still refreshes both tables. A manual points failure
+  reports failure for the selected table instead of a combined partial update.
+
+- Retry a GET once on a fresh connection after a pre-response transport failure.
+  Keep API pacing, the original 30-second request deadline and the 120-second
+  manual deadline. Do not replay received headers/body, rate-limited responses,
+  TLS allocation/certificate failures or invalid data; persistent failures retain
+  failure reporting and complete cached tables.
+
+- Reduce TLS peak RAM use by removing the extra current-season copy, delaying
+  calendar publication snapshots until GETs finish, and fetching manual driver
+  points into a compact roster. Release TLS before assembling persisted updates;
+  preserve complete caches on failures and log numeric heap/largest-block
+  counters only when HTTP transport or allocation fails. Keep standard 16 KB
+  incoming TLS records and certificate verification.
+
+- Bound every HTTP network request to 30 seconds, including repeated header
+  waits and trickling bodies; retain the 120-second manual-operation deadline
+  and cooldown pacing. Release failed TLS clients, preserve caches, and log
+  only static API resource labels, automatic/manual origin and elapsed time.
+
+- Bind downloaded data to the firmware ELF SHA-256 fingerprint. A different
+  image, including a downgrade, or a missing/invalid owner marker erases both
+  application NVS partitions before services start. Reset Wi-Fi, saved time,
+  ALERTS and all other settings together with calendar, points, results and
+  reminders. Same-image power cycles retain data and settings. Keep factory
+  identity and permanent Recovery protected; stamp ownership only after both
+  resets succeed, and stop startup/retry next boot on failure. Keep default-NVS
+  data-cache fallback disabled.
 
 - Finish queued manual results refreshes when an automatic fetch saves the same
   session, avoiding a duplicate download. Publish manual completion before

@@ -5,7 +5,6 @@
 #include "bsp_display.h"
 #include "bsp_pins.h"
 #include "esp_log.h"
-#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -211,15 +210,13 @@ void app_main(void)
     esp_err_t power_err = pdkpass_power_init();
     if (power_err != ESP_OK) ESP_LOGW(TAG, "Power management unavailable: %s", esp_err_to_name(power_err));
 
-    esp_err_t nvs_err = nvs_flash_init();
-    if (nvs_err != ESP_OK) {
-        ESP_LOGE(TAG, "NVS init failed without erase: %s",
-                 esp_err_to_name(nvs_err));
-    }
     esp_err_t cache_err = pdkpass_cache_init();
-    if (cache_err != ESP_OK)
-        ESP_LOGW(TAG, "Data cache unavailable: %s", esp_err_to_name(cache_err));
-    if (cache_err == ESP_OK) pdkpass_sync_status_init(on_data_status);
+    if (cache_err != ESP_OK) {
+        ESP_LOGE(TAG, "Application storage initialization/reset failed: %s",
+                 esp_err_to_name(cache_err));
+        return; // No service may load old Wi-Fi/settings after a failed reset.
+    }
+    pdkpass_sync_status_init(on_data_status);
     if (pdkpass_reminder_init(wake_reminder_worker) != ESP_OK)
         ESP_LOGW(TAG, "Session reminders unavailable");
 

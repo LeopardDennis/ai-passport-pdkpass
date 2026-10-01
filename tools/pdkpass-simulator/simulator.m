@@ -542,13 +542,14 @@ bool pdkpass_results_manual_status(size_t *race_index, pdkpass_manual_status_t *
     *status = (pdkpass_manual_status_t){.state = PDKPASS_MANUAL_IDLE};
     return true;
 }
-pdkpass_manual_state_t pdkpass_season_force_points(void)
+pdkpass_manual_state_t pdkpass_season_force_points(pdkpass_points_target_t target)
 {
+    (void)target;
     return s_simulator_online ? PDKPASS_MANUAL_NOT_READY : PDKPASS_MANUAL_OFFLINE;
 }
-bool pdkpass_season_manual_status(pdkpass_manual_status_t *status)
+bool pdkpass_season_manual_status(pdkpass_points_target_t target, pdkpass_manual_status_t *status)
 {
-    if (!status) return false;
+    if ((unsigned)target >= PDKPASS_POINTS_TARGET_COUNT || !status) return false;
     s_points_status_reads++;
     *status = (pdkpass_manual_status_t){.state = PDKPASS_MANUAL_IDLE};
     return true;

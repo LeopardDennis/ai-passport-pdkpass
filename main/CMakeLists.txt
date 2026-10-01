@@ -31,6 +31,7 @@ idf_component_register(
          "pdkpass_wifi_profiles.c"
     INCLUDE_DIRS "."
     EMBED_TXTFILES "pdkpass_setup_page.html" "pdkpass_setup_status.html"
+    PRIV_REQUIRES esp_app_format
     REQUIRES bsp esp_event esp_http_client esp_http_server esp_hw_support
              esp_netif esp_wifi json lwip mbedtls
              nvs_flash esp_timer esp_pm heap
