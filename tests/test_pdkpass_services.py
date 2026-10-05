@@ -3900,6 +3900,7 @@ int main(void) {
 #define STATION_EVENTS (EVENT_CONNECTED | EVENT_DISCONNECTED | EVENT_ASSOCIATED | EVENT_AUTH_ERROR | EVENT_AP_MISSING | EVENT_SECURITY_ERROR)
 #define pdFALSE 0
 #define SAVED_RETRY_INTERVAL_US 60000000LL
+#define BACKGROUND_RETRY_INTERVAL_US 300000000LL
 #define SAVED_CONNECT_TIMEOUT_US 15000000LL
 #define portMAX_DELAY UINT32_MAX
 #define WIFI_MODE_STA 1
@@ -3917,6 +3918,8 @@ static pdkpass_network_state_t s_published_state;
 static int64_t s_candidate_deadline, s_sync_deadline, now_us;
 static int64_t s_idle_check;
 static bool s_auto_parked, sync_idle, http_available=true;
+static bool s_background_retry_active;
+static int64_t s_background_retry_at;
 bool pdkpass_sync_idle(void) {return sync_idle;}
 static bool pdkpass_http_try_begin(void) {return http_available;}
 static void pdkpass_http_end(void) {}
@@ -3939,7 +3942,8 @@ static int scan_calls, offline_count;
 static int go_offline(void) {
  offline_count++;s_in_setup=false;s_saved_deadline=0;s_has_ip=false;s_testing_candidate=false;return ESP_OK;
 }
-static int scan_saved(void) {scan_calls++;s_saved_attempt=0;return connect_saved();}
+static int scan_failures;
+static int scan_saved(void) {scan_calls++;s_saved_attempt=0;if(scan_failures>0){scan_failures--;return go_offline();}return connect_saved();}
 static int prepare_failures, prepare_calls;
 static int prepare_network(void) {prepare_calls++;if(prepare_failures>0){prepare_failures--;return ESP_FAIL;}return connect_saved();}
 static void vTaskDelete(void *task) {(void)task;}
@@ -3968,6 +3972,7 @@ static void publish_state(pdkpass_network_state_t state) {
 '''
         code += function(source, 'static int64_t setup_deadline(')
         code += function(source, 'static esp_err_t connect_saved(')
+        code += function(source, 'static void plan_background_retry(')
         code += function(source, 'static TickType_t network_wait_ticks(')
         code += function(source, 'static void network_task(')
         code += r'''
@@ -4072,6 +4077,49 @@ int main(void) {
  before_scan=scan_calls;
  if(setjmp(finished)==0) network_task(NULL);
  assert(scan_calls==before_scan);
+ // A missed saved network on scheduled wake must retry with the display dark.
+ // Two failed attempts park the radio between checks; no UI/network command
+ // is needed for the third scan to reconnect and release waiting services.
+ s_saved_attempt=4;s_has_ip=false;s_in_setup=false;s_auto_parked=true;
+ s_background_retry_active=false;s_background_retry_at=0;scan_failures=2;
+ s_idle_check=s_sync_deadline=s_saved_deadline=0;
+ before_scan=scan_calls;cursor=0;event_count=5;
+ script[0]=EVENT_SYNC;times[0]=172800000000LL; // two days of powered standby
+ script[1]=EVENT_POLICY;times[1]=172801000000LL; // unrelated event cannot renew deadline
+ script[2]=0;times[2]=173100000000LL;
+ script[3]=0;times[3]=173400000000LL;
+ script[4]=EVENT_CONNECTED;times[4]=173400000001LL;
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(scan_calls==before_scan+3&&s_has_ip);
+ assert(!s_background_retry_active&&!s_background_retry_at);
+ // Losing a previously synchronized working connection has the same recovery.
+ s_saved_attempt=4;s_has_ip=true;s_in_setup=false;s_auto_parked=false;
+ s_saved_deadline=0;s_idle_check=0;scan_failures=1;
+ before_scan=scan_calls;cursor=0;event_count=3;
+ script[0]=EVENT_DISCONNECTED;times[0]=700000000;
+ script[1]=0;times[1]=1000000000;
+ script[2]=EVENT_CONNECTED;times[2]=1000000001;
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(scan_calls==before_scan+2&&s_has_ip&&!s_background_retry_at);
+ // Explicit cancellation clears both the power-saving wake and pending retry.
+ s_saved_attempt=4;s_has_ip=false;s_auto_parked=false;
+ s_saved_deadline=s_idle_check=0;s_background_retry_active=true;
+ s_background_retry_at=1300000000;
+ assert(network_wait_ticks(1000000000)==300000);
+ cursor=0;event_count=3;before_scan=scan_calls;
+ script[0]=EVENT_CANCEL;times[0]=1000000001;
+ script[1]=EVENT_SYNC;times[1]=1000000002;
+ script[2]=0;times[2]=1300000000;
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(scan_calls==before_scan&&!s_background_retry_active&&!s_background_retry_at);
+ // Entering setup also cancels the pending background retry.
+ s_saved_attempt=4;s_has_ip=false;s_auto_parked=false;
+ s_background_retry_active=true;s_background_retry_at=1400000000;
+ cursor=0;event_count=2;before_scan=scan_calls;
+ script[0]=EVENT_SETUP;times[0]=1300000001;
+ script[1]=EVENT_CANCEL;times[1]=1300000002;
+ if(setjmp(finished)==0) network_task(NULL);
+ assert(scan_calls==before_scan&&!s_background_retry_active&&!s_background_retry_at);
  // An active HTTP transaction must prevent radio shutdown.
  s_saved_attempt=0;http_available=false;s_has_ip=false;now_us=0;
  cursor=0;event_count=2;script[0]=EVENT_CONNECTED;times[0]=1;
@@ -4218,7 +4266,7 @@ int main(void) {
         compile_run(code, ['main/pdkpass_sync_policy.c'])
 
 
-    def test_firmware_ownership_resets_all_application_storage(self):
+    def test_upgrades_preserve_storage_and_isolate_partition_recovery(self):
         source = production_source(ROOT / 'main/pdkpass_cache.c')
         code = r'''
 #include <assert.h>
@@ -4247,7 +4295,7 @@ static const char *const names[]={"pdk_season","pdk_results","pdk_sync","pdk_rem
 static uint8_t disk[3][7][64],staged[3][7][64],recovery[32];
 static size_t sizes[3][7],staged_sizes[3][7];
 static unsigned step,fail_step,erases[2];
-static int init_error,marker_error;
+static int init_error,init_error_store,marker_error;
 static bool partial_erase;
 static int operation(void) {return ++step==fail_step?ESP_FAIL:ESP_OK;}
 static int partition_index(const char *name) {
@@ -4260,7 +4308,7 @@ static int namespace_index(const char *name) {
 }
 static int nvs_flash_init_partition(const char *partition) {
  int store=partition_index(partition);int err=operation();if(err!=ESP_OK)return err;
- if(store==1&&init_error){err=init_error;init_error=0;return err;}
+ if(store==init_error_store&&init_error){err=init_error;init_error=0;return err;}
  return ESP_OK;
 }
 static int nvs_flash_erase_partition(const char *partition) {
@@ -4308,62 +4356,61 @@ static void seed(void) {
  }
  memset(disk[1][5],1,32);sizes[1][5]=32;memset(recovery,77,sizeof(recovery));
  image.app_elf_sha256[0]=2;step=fail_step=0;erases[0]=erases[1]=0;
- init_error=marker_error=0;partial_erase=false;
+ init_error=marker_error=0;init_error_store=1;partial_erase=false;
 }
 static void assert_protected(void) {
  for(int i=0;i<7;i++)assert(sizes[2][i]==1&&disk[2][i][0]==20+i);
  for(unsigned i=0;i<sizeof(recovery);i++)assert(recovery[i]==77);
 }
-static void assert_reset(void) {
- for(int store=0;store<2;store++)for(int i=0;i<7;i++)
-  if(store==1&&i==5)assert(sizes[store][i]==32&&!memcmp(disk[store][i],image.app_elf_sha256,32));
-  else assert(!sizes[store][i]);
- assert_protected();
-}
 '''
-        for sig in ['static esp_err_t clear_data_namespace(', 'esp_err_t pdkpass_cache_init(',
+        for sig in ['static esp_err_t init_partition(', 'static esp_err_t clear_data_namespace(', 'esp_err_t pdkpass_cache_init(',
                     'esp_err_t pdkpass_cache_read_blob(', 'esp_err_t pdkpass_cache_write_blob(',
                     'void pdkpass_cache_forget_namespace(']:
             code += function(source, sig)
         code += r'''
 int main(void) {
- seed();assert(pdkpass_cache_init()==ESP_OK&&s_ready);assert_reset();
- assert(erases[0]==1&&erases[1]==1); // Clears every key, including future settings.
- const uint8_t fresh[]={7,8};uint8_t out[64];size_t size=sizeof(out);
+ uint8_t before[3][7][64],out[64];size_t size;
+ seed();memcpy(before,disk,sizeof(before));
+ assert(pdkpass_cache_init()==ESP_OK&&s_ready);assert(!memcmp(before,disk,sizeof(before)));
+ assert(!erases[0]&&!erases[1]); // A different legacy owner does not erase any data.
+ image.app_elf_sha256[0]=1;
+ assert(pdkpass_cache_init()==ESP_OK);assert(!memcmp(before,disk,sizeof(before)));
+ sizes[1][5]=0;assert(pdkpass_cache_init()==ESP_OK&&!erases[0]&&!erases[1]);
+ sizes[1][5]=64;marker_error=ESP_FAIL;
+ assert(pdkpass_cache_init()==ESP_OK&&!erases[0]&&!erases[1]); // Marker never read.
+ const uint8_t fresh[]={7,8};
  assert(pdkpass_cache_write_blob("pdk_season","current",fresh,2)==ESP_OK);
- sizes[0][4]=1;disk[0][4][0]=99;sizes[1][3]=1;disk[1][3][0]=0; // new Wi-Fi and ALERTS OFF
- uint8_t before[3][7][64];memcpy(before,disk,sizeof(before));
- assert(pdkpass_cache_init()==ESP_OK&&s_ready&&erases[0]==1&&erases[1]==1);
- assert(!memcmp(before,disk,sizeof(before))); // same-image restart/reflash retains ALL application data
- assert(pdkpass_cache_read_blob("pdk_season","current",out,&size)==ESP_OK&&size==2&&!memcmp(out,fresh,2));
- sizes[0][1]=1;disk[0][1][0]=88;
- size=sizeof(out);assert(pdkpass_cache_read_blob("pdk_results","current",out,&size)==ESP_ERR_NVS_NOT_FOUND);
- image.app_elf_sha256[0]=1;assert(pdkpass_cache_init()==ESP_OK);assert_reset(); // downgrade also resets
-
- // Every failure blocks application cache access; the marker commits only after both erases/init succeed.
- for(unsigned failure=1;failure<=10;failure++) {
-  seed();fail_step=failure;assert(pdkpass_cache_init()!=ESP_OK&&!s_ready);
-  assert(sizes[1][5]!=32||memcmp(disk[1][5],image.app_elf_sha256,32));
-  size=sizeof(out);assert(pdkpass_cache_read_blob("pdk_season","current",out,&size)==ESP_ERR_INVALID_STATE);
-  assert(pdkpass_cache_write_blob("pdk_season","current",fresh,2)==ESP_ERR_INVALID_STATE);
-  unsigned erased=erases[0]+erases[1];pdkpass_cache_forget_namespace("pdk_season");
-  assert(erases[0]+erases[1]==erased);assert_protected();
-  fail_step=0;assert(pdkpass_cache_init()==ESP_OK&&s_ready);assert_reset();
- }
- seed();partial_erase=true;assert(pdkpass_cache_init()==ESP_FAIL&&!s_ready);
- assert(pdkpass_cache_init()==ESP_OK);assert_reset(); // reset interrupted after first partition
+ assert(pdkpass_cache_init()==ESP_OK);
+ size=sizeof(out);assert(pdkpass_cache_read_blob("pdk_season","current",out,&size)==ESP_OK);
+ assert(size==2&&!memcmp(out,fresh,2));assert_protected();
+ pdkpass_cache_forget_namespace("pdk_season");
+ size=sizeof(out);assert(pdkpass_cache_read_blob("pdk_season","current",out,&size)==ESP_ERR_NVS_NOT_FOUND);
+ assert(sizes[1][1]==1&&sizes[1][3]==1&&sizes[0][4]==1); // Results, reminders, Wi-Fi intact.
  for(int error=ESP_ERR_NVS_NO_FREE_PAGES;error<=ESP_ERR_NVS_NEW_VERSION_FOUND;error++) {
-  seed();init_error=error;assert(pdkpass_cache_init()==ESP_OK);assert_reset();
+  seed();memcpy(before,disk,sizeof(before));init_error=error;
+  assert(pdkpass_cache_init()==ESP_OK&&s_ready&&erases[0]==0&&erases[1]==1);
+  assert(!memcmp(before[0],disk[0],sizeof(disk[0])));assert_protected();
  }
- seed();sizes[1][5]=0;assert(pdkpass_cache_init()==ESP_OK);assert_reset();
- seed();sizes[1][5]=1;assert(pdkpass_cache_init()==ESP_OK);assert_reset();
- seed();sizes[1][5]=64;assert(pdkpass_cache_init()==ESP_OK);assert_reset();
- seed();marker_error=ESP_ERR_NVS_TYPE_MISMATCH;assert(pdkpass_cache_init()==ESP_OK);assert_reset();
- seed();marker_error=ESP_FAIL;assert(pdkpass_cache_init()==ESP_FAIL&&!s_ready&&!erases[0]&&!erases[1]);
- seed();memcpy(disk[1][5],image.app_elf_sha256,32);fail_step=4;
- assert(pdkpass_cache_init()==ESP_FAIL&&!s_ready&&!erases[0]&&!erases[1]); // default init failure on same-image boot
- assert_protected();
- puts("All application storage: changed-image reset, same-image persistence, missing/corrupt owner, failures/retry and protected factory regions: PASS");
+ for(int error=ESP_ERR_NVS_NO_FREE_PAGES;error<=ESP_ERR_NVS_NEW_VERSION_FOUND;error++) {
+  seed();memcpy(before,disk,sizeof(before));init_error=error;init_error_store=0;
+  assert(pdkpass_cache_init()==ESP_OK&&s_ready&&erases[0]==1&&erases[1]==0);
+  assert(!memcmp(before[1],disk[1],sizeof(disk[1])));assert_protected();
+ }
+ for(unsigned failure=1;failure<=2;failure++) {
+  seed();memcpy(before,disk,sizeof(before));fail_step=failure;
+  assert(pdkpass_cache_init()!=ESP_OK&&!s_ready&&!erases[0]&&!erases[1]);
+  assert(!memcmp(before,disk,sizeof(before)));size=sizeof(out);
+  assert(pdkpass_cache_read_blob("pdk_season","current",out,&size)==ESP_ERR_INVALID_STATE);
+  assert(pdkpass_cache_write_blob("pdk_season","current",fresh,2)==ESP_ERR_INVALID_STATE);
+  fail_step=0;assert(pdkpass_cache_init()==ESP_OK);assert(!memcmp(before,disk,sizeof(before)));
+ }
+ seed();init_error=ESP_ERR_NVS_NO_FREE_PAGES;fail_step=3;
+ assert(pdkpass_cache_init()==ESP_FAIL&&!s_ready&&!erases[0]&&!erases[1]);
+ fail_step=0;assert(pdkpass_cache_init()==ESP_OK);assert_protected();
+ seed();init_error=ESP_ERR_NVS_NEW_VERSION_FOUND;partial_erase=true;
+ assert(pdkpass_cache_init()==ESP_FAIL&&!s_ready&&!erases[0]&&erases[1]==1);
+ assert(pdkpass_cache_init()==ESP_OK&&s_ready);assert(sizes[0][4]==1);assert_protected();
+ puts("Upgrade/restart data retention, legacy markers, isolated NVS recovery and protected factory regions: PASS");
 }
 '''
         compile_run(code)

@@ -87,6 +87,7 @@ run_static_checks() {
         -o "${test_dir}/test_pdkpass_reminder_core"
     "${test_dir}/test_pdkpass_reminder_core"
     python3 tests/test_pdkpass_services.py
+    python3 tests/test_bsp_button.py
     python3 tests/test_verify_firmware.py
     rm -rf "${test_dir}"
     echo "Host tests: PASS"
@@ -108,6 +109,7 @@ run_firmware_checks() (
     SDKCONFIG_DEFAULTS="${defaults_file}" \
         idf.py -B "${validation_build_dir}" \
         -D "SDKCONFIG=${validation_build_dir}/sdkconfig" build
+    PDKPASS_REQUIRE_BUTTON_COMPONENT=1 python3 tests/test_bsp_button.py
     grep -qx 'CONFIG_LOG_DEFAULT_LEVEL=2' "${validation_build_dir}/sdkconfig"
     grep -qx 'CONFIG_LOG_MAXIMUM_LEVEL=2' "${validation_build_dir}/sdkconfig"
     grep -qx 'CONFIG_BOOTLOADER_LOG_LEVEL=2' "${validation_build_dir}/sdkconfig"

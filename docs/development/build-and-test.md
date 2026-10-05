@@ -21,24 +21,23 @@ The new partition starts after the factory application's fixed 3 MB range and
 ends before protected `cardid`. It is initialized at runtime, with no packaged
 cache payload. Install the matching partition table when moving from firmware
 that predates this partition; an app-only update with an old table cannot use it.
-Cache initialization compares `esp_app_get_description()->app_elf_sha256` with
-the private `pdk_meta:image` owner marker before starting any data service.
-An identical image keeps valid caches across power cycles and NVS-preserving
-reflashes. A changed image, including a downgrade, or a missing/invalid marker
-erases and reinitializes the complete `nvs` (24 KB) and `pdk_cache` (64 KB)
-partitions. This resets Wi-Fi profiles and any driver NVS state, saved time,
-sync dates, downloaded data, reminder schedules, ALERTS and unknown/future
-application settings. The owner marker commits only after both resets succeed.
-A failed/interrupted reset blocks cache access and stops application startup
-before any service/settings/network load; the next boot retries. Known
-private-NVS format errors also trigger this reset. Same-image default-NVS
-initialization failures stop startup without erasing otherwise valid caches.
-The bundled calendar remains available. Factory `cardid` and permanent
-`recovery` are never erased, so this is an application reset, not a whole-chip
-erase. Invalid results may still explicitly discard their private namespace.
-Wi-Fi needs setup after installing a different image. Use an NVS-preserving
-install when testing same-image data persistence; raw merged writes may
-overwrite default NVS independently of the startup policy.
+Cache initialization preserves compatible data/settings in both partitions
+across upgrades, downgrades and restarts; it no longer reads or writes the legacy
+`pdk_meta:image` fingerprint. Service snapshot validation and per-namespace
+invalidation remain in place. `ESP_ERR_NVS_NO_FREE_PAGES` or
+`ESP_ERR_NVS_NEW_VERSION_FOUND` recovers only the affected partition. Other
+initialization failures block cache access and stop startup without erasing data.
+Factory `cardid` and permanent `recovery` are never erased.
+Use an NVS-preserving installation to retain Wi-Fi/settings and cached data:
+mini-program application updates retain these regions, whereas writing a raw
+merged image at 0x0 may overwrite default NVS independently of startup policy.
+An application-only USB update must target 0x10000 with the matching partition
+table already installed and without whole-chip erase.
+
+The BSP button host test runs the resolved, pinned `espressif/button` source with
+fake peripherals. A fresh checkout without Managed Components skips this test
+in `--static`; the firmware gate requires and reruns it after dependency
+resolution, so complete validation always exercises the actual gesture engine.
 
 ```bash
 source <path-to-esp-idf-v5.5.3>/export.sh

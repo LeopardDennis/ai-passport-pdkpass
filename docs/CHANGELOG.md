@@ -6,6 +6,12 @@
 
 ## Unreleased
 
+- Resume scheduled background sync after a failed automatic Wi-Fi reconnect or
+  loss of a previously synchronized link. Retry a bounded saved-network scan
+  every five minutes with the radio off between attempts, independently of
+  display/key activity. Setup and explicit cancellation stop the retry; cold-boot
+  connection failures retain their manual-retry behavior.
+
 - Brighten Yas Marina with a muted violet background (#76538F) and ice teal
   accent (#91E0D6), improving card and highlight visibility while distinguishing
   the palette from Monza and Monaco. Apply the shared circuit palette to bundled,
@@ -46,14 +52,18 @@
   and cooldown pacing. Release failed TLS clients, preserve caches, and log
   only static API resource labels, automatic/manual origin and elapsed time.
 
-- Bind downloaded data to the firmware ELF SHA-256 fingerprint. A different
-  image, including a downgrade, or a missing/invalid owner marker erases both
-  application NVS partitions before services start. Reset Wi-Fi, saved time,
-  ALERTS and all other settings together with calendar, points, results and
-  reminders. Same-image power cycles retain data and settings. Keep factory
-  identity and permanent Recovery protected; stamp ownership only after both
-  resets succeed, and stop startup/retry next boot on failure. Keep default-NVS
-  data-cache fallback disabled.
+- Retain compatible downloaded calendars, driver/team points, results, reminder
+  schedules, ALERTS and other settings, saved time and Wi-Fi credentials across
+  firmware upgrades and restarts. Ignore the legacy firmware owner marker;
+  recover known unreadable NVS formats only in the affected partition.
+  Keep protected factory regions and per-snapshot validation unchanged.
+
+- Stop button polling and release the ADC after all keys and pending gestures
+  are idle. Use the shared GPIO0 low-level interrupt/light-sleep wake to resume
+  the existing 20 ms gesture state machine. Preserve click/double/long events,
+  startup-held keys and serialized diagnostic reads; fall back to polling if
+  wake setup fails. Add host coverage using the actual button component.
+  Device wake reliability and battery savings remain unverified.
 
 - Finish queued manual results refreshes when an automatic fetch saves the same
   session, avoiding a duplicate download. Publish manual completion before

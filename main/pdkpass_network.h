@@ -40,7 +40,8 @@ typedef enum {
     PDKPASS_NETWORK_RETRY,
     PDKPASS_NETWORK_OPEN_SETUP,
     PDKPASS_NETWORK_CANCEL,
-    // Internal: reconnect only after an intentional power-saving disconnect.
+    // Internal: resume scheduled work after a power-saving disconnect; failed
+    // automatic attempts retain a bounded background retry.
     PDKPASS_NETWORK_SYNC,
     PDKPASS_NETWORK_POLICY,
 } pdkpass_network_command_t;

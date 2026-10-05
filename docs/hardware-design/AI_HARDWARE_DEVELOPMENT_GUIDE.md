@@ -119,12 +119,20 @@ GPIO0 has an external 10 kΩ pull-up to 3.3 V. UP, DOWN, and OK connect it to gr
 
 | State | Nominal voltage | Current window |
 | --- | ---: | ---: |
-| UP | about 0 mV | `[0, 150)` mV |
-| DOWN | about 300 mV | `[150, 447)` mV |
-| OK | about 595 mV | `[447, 1900)` mV |
+| UP | about 0 mV | `[0, 150]` mV |
+| DOWN | about 300 mV | `[150, 447]` mV |
+| OK | about 595 mV | `[447, 1900]` mV |
 | Released | about 3300 mV | outside all windows |
 
-Do not replace the external resistor with the inaccurate internal pull-up. The BSP creates one ADC1 oneshot unit and shares it with all button devices and voltage reads. Attenuation is `ADC_ATTEN_DB_12`. Callbacks originate in the button component task and must not block or perform heavy UI work.
+Do not replace the external resistor with the inaccurate internal pull-up. The BSP owns at most one ADC1 oneshot unit, shared by three custom logical
+drivers and voltage reads under a mutex. It deletes that unit and stops the
+component timer after keys and gesture processing become idle. GPIO0 low-level
+interrupt/light-sleep wake resumes polling; the ISR only signals the component,
+and ADC restoration runs in task context. Nominal pressed levels are below the
+C3 VIL maximum (0.25 x VDD); GPIO mode leaves both internal pulls disabled.
+Wake setup failure retains polling. Calibration creation failure stops button
+initialization so voltage errors cannot synthesize presses. Attenuation is
+`ADC_ATTEN_DB_12`. Verify all three wake keys on hardware across battery levels. Callbacks originate in the button component task and must not block or perform heavy UI work.
 
 Calibrate thresholds using multiple boards, charge levels, and reasonable temperatures; leave margin between measured distributions rather than relying only on divider theory.
 

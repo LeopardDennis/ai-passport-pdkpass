@@ -114,6 +114,11 @@ its recorded race end, then the dashboard advances to the following round. The
 bundled offline fallback uses a four-hour window from the scheduled race start.
 After the final round it displays `SEASON COMPLETE`.
 
+Automatic reconnects after power-saving Wi-Fi shutdown, and recovery of a
+previously synchronized link, retry every five minutes if saved networks are
+unavailable. The radio stays off between bounded attempts; the display may
+remain asleep. Setup or explicit cancellation stops the pending retry.
+
 ## Session reminders
 
 Reminders default to on. In `NETWORK`, select `ALERTS: ON/OFF` and press OK to
@@ -154,8 +159,11 @@ latest state immediately after a successful key or reminder wake. The first key
 press wakes the display without navigating.
 If you browse other rounds on the home screen, the displayed round returns to
 the current weekend when the screen turns off after 90 seconds of inactivity.
-ADC keys are still scanned every 20 ms, rather than relying on unverified GPIO
-wake thresholds. No deep sleep is used.
+Released keys stop the 20 ms scan timer and release the ADC unit. A low level
+on the shared GPIO0 ladder wakes the button timer; ADC decoding and the existing
+click/double/long state machine resume in task context. No internal pull-up or
+deep sleep is used. Unavailable GPIO wake falls back to continuous polling;
+three-key wake reliability and the actual battery benefit need device testing.
 The battery worker reads the fuel gauge once a minute while the display is lit.
 It stops polling while the display is off and reads once immediately after a
 key wakes the screen; unchanged readings do not redraw the battery icon.
@@ -221,19 +229,17 @@ The first-use calendar is an offline snapshot captured on 31 August 2026 from th
 Displayed session times are converted to China Standard Time (UTC+8).
 Driver standings have no bundled default points: without a downloaded cache,
 the page shows `CONNECT TO UPDATE` and `DRIVER DATA PENDING`. Successful syncs
-are saved for offline use across power cycles of the same firmware image.
-Before loading caches, startup checks the application's ELF SHA-256 fingerprint.
-A different image (upgrade or downgrade), or a missing/invalid owner marker,
-erases both application NVS partitions before any service starts: Wi-Fi
-profiles, saved time, sync dates, calendar, driver/team standings, results,
-reminder schedules, ALERTS and any other saved application settings reset to
-defaults. Wi-Fi must be configured again. The bundled offline calendar remains
-available until fresh downloads succeed. Rebooting or reflashing the identical
-image retains its data and settings when the installer preserves NVS. Old
-default-NVS caches are not imported. Factory device identity and permanent
-Recovery live in separate protected partitions and are retained. Ordinary
-flashing writes selected flash ranges, not the whole chip; this first-boot
-reset provides a fresh application installation without deleting factory data.
+are saved for offline use across power cycles and firmware upgrades.
+Startup retains compatible calendars, driver/team standings, results, reminder
+schedules, ALERTS and other settings, saved time and Wi-Fi profiles/passwords.
+The former firmware-fingerprint marker is ignored. Services still validate
+snapshot formats and seasons; incompatible data can be discarded independently.
+Only known unreadable NVS-format errors reset the affected application partition;
+other initialization failures stop startup without erasing valid storage.
+Factory identity and permanent Recovery remain protected. Use an installation
+method that preserves NVS: flashing a raw full merged image can overwrite the
+Wi-Fi/settings partition independently of this startup policy. Old default-NVS
+data caches are not imported; the bundled calendar remains available.
 
 After the first successful connection, PDKPASS downloads and stores the Grand
 Prix calendar for the current Beijing-time year and the latest published

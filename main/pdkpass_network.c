@@ -29,6 +29,7 @@
 #define NETWORK_TASK_STACK 4096
 #define NETWORK_TASK_PRIORITY 4
 #define SAVED_CONNECT_TIMEOUT_US 15000000LL
+#define BACKGROUND_RETRY_INTERVAL_US 300000000LL
 #define FORM_BODY_LIMIT 320
 #define SETUP_SCAN_RECORD_LIMIT 32
 #define VALID_TIME_MIN 1767225600LL
@@ -101,6 +102,9 @@ static int64_t s_candidate_deadline;
 static int64_t s_sync_deadline;
 static int64_t s_idle_check;
 static bool s_auto_parked;
+// Failed scheduled reconnects remain eligible without a key/display wake.
+static bool s_background_retry_active;
+static int64_t s_background_retry_at;
 static char s_attempt_ssid[33];
 static char s_attempt_password[65];
 
@@ -619,12 +623,23 @@ static esp_err_t prepare_network(void)
     return ESP_OK;
 }
 
+// Network-worker-owned retry; preserve each deadline across unrelated events.
+// A full attempt remains bounded, and radio-off intervals retain light sleep.
+static void plan_background_retry(void)
+{
+    if (!s_background_retry_active || !s_profiles.count || s_has_ip ||
+        s_in_setup || s_saved_deadline || s_background_retry_at) return;
+    s_background_retry_at = esp_timer_get_time() + BACKGROUND_RETRY_INTERVAL_US;
+    ESP_LOGW(TAG, "Background Wi-Fi retry scheduled in 300 s");
+}
+
 // Sleep until the next active deadline; Wi-Fi, form and SNTP events wake us
 // immediately. An idle, synchronized connection needs no periodic polling.
 static TickType_t network_wait_ticks(int64_t now_us)
 {
     const int64_t deadlines[] = {
         s_saved_deadline,
+        s_background_retry_at,
         s_testing_candidate ? s_candidate_deadline : 0,
         s_has_ip ? s_sync_deadline : 0,
         s_in_setup ? now_us + 1000000LL : 0,
@@ -672,11 +687,15 @@ static void network_task(void *arg)
 
         if (bits & EVENT_CANCEL) {
             s_auto_parked = false;
+            s_background_retry_active = false;
+            s_background_retry_at = 0;
             if (s_in_setup || !s_has_ip) go_offline();
             continue;
         }
         if (bits & EVENT_SETUP) {
             s_auto_parked = false;
+            s_background_retry_active = false;
+            s_background_retry_at = 0;
             if (!s_in_setup) {
                 go_offline();
                 s_setup_error = "";
@@ -689,13 +708,25 @@ static void network_task(void *arg)
         }
         if (bits & EVENT_RETRY) {
             s_auto_parked = false;
+            s_background_retry_active = false;
+            s_background_retry_at = 0;
             if (!s_has_ip && !s_in_setup && !s_saved_deadline) scan_saved();
             else publish_state(s_published_state);
             continue;
         }
         if ((bits & EVENT_SYNC) && s_auto_parked && !s_in_setup && !s_has_ip) {
             s_auto_parked = false;
+            s_background_retry_active = true;
             scan_saved();
+            plan_background_retry();
+            continue;
+        }
+        if (s_background_retry_at &&
+            esp_timer_get_time() >= s_background_retry_at &&
+            !s_has_ip && !s_in_setup && !s_saved_deadline) {
+            s_background_retry_at = 0;
+            scan_saved();
+            plan_background_retry();
             continue;
         }
         if (s_in_setup) {
@@ -735,6 +766,8 @@ static void network_task(void *arg)
                 finish_candidate();
                 publish_state(PDKPASS_NETWORK_SETUP);
             } else if (s_have_working_credentials && (!s_in_setup || s_saved_deadline)) {
+                if (!s_saved_deadline && s_time_synced_boot && !s_in_setup)
+                    s_background_retry_active = true;
                 // A dropped working link restarts at the most recent network;
                 // a failed connection advances through the bounded attempt list.
                 if (s_saved_deadline) {
@@ -753,6 +786,8 @@ static void network_task(void *arg)
             if (!s_testing_candidate && (!s_saved_deadline ||
                 strncmp((const char *)ap.ssid, s_working_ssid, 32) != 0)) continue;
             s_has_ip = true;
+            s_background_retry_active = false;
+            s_background_retry_at = 0;
             s_idle_check = esp_timer_get_time() + 30000000LL;
             s_saved_deadline = 0;
             s_saved_attempt = 0;
@@ -786,6 +821,7 @@ static void network_task(void *arg)
             s_sync_deadline = 0;
             if (s_has_ip && !s_in_setup && s_time_synced_boot) publish_state(PDKPASS_NETWORK_ONLINE);
         }
+        plan_background_retry();
         int64_t now_us = esp_timer_get_time();
         if (s_saved_deadline && now_us >= s_saved_deadline) {
             err = disconnect_station();
@@ -829,6 +865,7 @@ static void network_task(void *arg)
                 pdkpass_http_end();
             }
         }
+        plan_background_retry();
     }
 }
 
