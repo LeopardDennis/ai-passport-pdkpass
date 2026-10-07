@@ -1195,11 +1195,16 @@ static void render_results(void)
     const pdkpass_race_t *race = &s_season.races[s_state.selected_race];
     ui_pixel_screen_set_round_title(s_screen, race->country, race->round);
     pdkpass_state_set_sessions(&s_state, race_session_mask(s_state.selected_race));
-    content_reset(0x17202A, 0x263743);
+    pdkpass_theme_t theme = theme_for_race(race);
+    uint32_t ink = readable_text_color(theme.top);
+    uint32_t notice_ink = has_text_contrast(theme.top, UI_YELLOW) &&
+                          has_text_contrast(theme.bottom, UI_YELLOW) ? UI_YELLOW : ink;
+    ui_pixel_screen_set_theme(s_screen, theme.top, theme.bottom);
+    content_reset(theme.top, theme.bottom);
     if (s_state.selected_session >= PDKPASS_SESSION_COUNT) {
         set_status("SESSIONS", race->accent);
-        make_medium_label(s_content, "NO SESSIONS", 0, 42, INNER_W, UI_YELLOW);
-        make_medium_label(s_content, "CHECK SCHEDULE", 0, 95, INNER_W, UI_PAPER);
+        make_medium_label(s_content, "NO SESSIONS", 0, 42, INNER_W, notice_ink);
+        make_medium_label(s_content, "CHECK SCHEDULE", 0, 95, INNER_W, ink);
         set_hint("UP/DN OK:SYNC HOLD:BACK");
         return;
     }
@@ -1241,10 +1246,10 @@ static void render_results(void)
             // Persisted session metadata omits end times until rediscovery.
             detail = "CHECKING SESSION TIME";
         }
-        make_medium_label(s_content, state, 0, 42, INNER_W, UI_YELLOW);
-        make_medium_label(s_content, detail, 0, 95, INNER_W, UI_PAPER);
+        make_medium_label(s_content, state, 0, 42, INNER_W, notice_ink);
+        make_medium_label(s_content, detail, 0, 95, INNER_W, ink);
         make_center_label(s_content, note, 0, 139,
-                          INNER_W, &lv_font_unscii_8, UI_PAPER);
+                          INNER_W, &lv_font_unscii_8, ink);
     } else {
         for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
             const pdkpass_podium_driver_t *driver = &result.podium[i];
@@ -1352,10 +1357,11 @@ static void render(void)
         lv_obj_delete(s_reminder_layer);
         s_reminder_layer = NULL;
     }
-    // The home, calendar and detail pages choose their own circuit theme.
+    // The home, calendar, detail and results pages choose their own circuit theme.
     // Resetting them to sky first invalidates the whole screen twice.
     bool circuit_theme = s_state.page == PDKPASS_PAGE_CALENDAR ||
                          s_state.page == PDKPASS_PAGE_RACE_DETAIL ||
+                         s_state.page == PDKPASS_PAGE_RESULTS ||
                          (s_state.page == PDKPASS_PAGE_HOME &&
                           s_network_state != PDKPASS_NETWORK_SETUP &&
                           (!s_state.season_complete || s_state.home_browsing));

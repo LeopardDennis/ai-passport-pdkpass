@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Use the selected circuit theme for the results-page background and side rails, matching the track page. Retain team-colored podium cards and the race-accent session bar; adapt pending-result text contrast to the circuit background.
+
 - Resume scheduled background sync after a failed automatic Wi-Fi reconnect or
   loss of a previously synchronized link. Retry a bounded saved-network scan
   every five minutes with the radio off between attempts, independently of
