@@ -29,6 +29,66 @@ void pdkpass_state_set_sessions(pdkpass_state_t *state, uint32_t mask)
                                                state->selected_session, false);
 }
 
+size_t pdkpass_state_detail_index(const pdkpass_state_t *state)
+{
+    for (size_t i = 0; i < state->detail_count; i++)
+        if (state->detail_sessions[i] == state->detail_selected_session) return i;
+    return state->detail_count;
+}
+
+void pdkpass_state_set_detail_sessions(pdkpass_state_t *state, uint32_t mask,
+    const pdkpass_detail_session_t sessions[PDKPASS_SESSION_COUNT],
+    bool choose_default, bool time_valid, int64_t now_utc)
+{
+    state->detail_count = 0;
+    for (unsigned kind = 0; kind < PDKPASS_SESSION_COUNT; kind++)
+        if (mask & (1U << kind))
+            state->detail_sessions[state->detail_count++] = (pdkpass_session_kind_t)kind;
+    // Only compare known times. Missing times retain their conventional slots
+    // rather than inventing a date or a duration to sort them.
+    for (size_t i = 0; i < state->detail_count; i++) {
+        for (size_t j = i + 1; j < state->detail_count; j++) {
+            pdkpass_session_kind_t a = state->detail_sessions[i];
+            pdkpass_session_kind_t b = state->detail_sessions[j];
+            if (sessions[a].start_utc > 0 && sessions[b].start_utc > 0 &&
+                sessions[a].start_utc > sessions[b].start_utc) {
+                state->detail_sessions[i] = b;
+                state->detail_sessions[j] = a;
+            }
+        }
+    }
+    if (!choose_default && pdkpass_state_detail_index(state) < state->detail_count)
+        return;
+
+    pdkpass_session_kind_t completed = PDKPASS_SESSION_COUNT;
+    pdkpass_session_kind_t upcoming = PDKPASS_SESSION_COUNT;
+    pdkpass_session_kind_t fallback = PDKPASS_SESSION_COUNT;
+    for (size_t i = 0; i < state->detail_count; i++) {
+        pdkpass_session_kind_t kind = state->detail_sessions[i];
+        const pdkpass_detail_session_t *session = &sessions[kind];
+        if (session->cancelled) continue;
+        if (fallback == PDKPASS_SESSION_COUNT) fallback = kind;
+        bool ended = time_valid && session->end_utc > 0 && session->end_utc <= now_utc;
+        if (ended || session->result_ready) {
+            // Prefer actual end times. Legacy result caches can prove completion
+            // without preserving an end time; use their schedule order then.
+            if (completed == PDKPASS_SESSION_COUNT || session->end_utc == 0 ||
+                sessions[completed].end_utc == 0 ||
+                session->end_utc >= sessions[completed].end_utc)
+                completed = kind;
+        } else if (time_valid && session->start_utc >= now_utc &&
+                   session->start_utc > 0 &&
+                   (upcoming == PDKPASS_SESSION_COUNT ||
+                    session->start_utc < sessions[upcoming].start_utc)) {
+            upcoming = kind;
+        }
+    }
+    state->detail_selected_session = completed != PDKPASS_SESSION_COUNT ? completed :
+        upcoming != PDKPASS_SESSION_COUNT ? upcoming : fallback;
+    if (state->detail_selected_session == PDKPASS_SESSION_COUNT && state->detail_count)
+        state->detail_selected_session = state->detail_sessions[0];
+}
+
 void pdkpass_state_init(pdkpass_state_t *state)
 {
     state->page = PDKPASS_PAGE_HOME;
@@ -38,6 +98,10 @@ void pdkpass_state_init(pdkpass_state_t *state)
     state->selected_team = 0;
     state->selected_session = PDKPASS_SESSION_FP1;
     state->session_mask = (1U << PDKPASS_SESSION_COUNT) - 1U;
+    state->detail_count = 0;
+    state->detail_selected_session = PDKPASS_SESSION_COUNT;
+    for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++)
+        state->detail_sessions[i] = PDKPASS_SESSION_COUNT;
     state->home_race = 0;
     state->home_browsing = false;
     state->season_complete = false;
@@ -136,12 +200,14 @@ void pdkpass_state_handle(pdkpass_state_t *state, pdkpass_input_t input,
         break;
 
     case PDKPASS_PAGE_RACE_DETAIL:
-        if (input == PDKPASS_INPUT_UP) {
-            state->selected_race = wrap_previous(state->selected_race, race_count);
-        } else if (input == PDKPASS_INPUT_DOWN) {
-            state->selected_race = wrap_next(state->selected_race, race_count);
-        } else if (input == PDKPASS_INPUT_OK) {
-            state->selected_session = PDKPASS_SESSION_FP1;
+        if (input == PDKPASS_INPUT_UP || input == PDKPASS_INPUT_DOWN) {
+            size_t index = pdkpass_state_detail_index(state);
+            if (input == PDKPASS_INPUT_UP && index > 0 && index < state->detail_count)
+                state->detail_selected_session = state->detail_sessions[index - 1];
+            if (input == PDKPASS_INPUT_DOWN && index + 1 < state->detail_count)
+                state->detail_selected_session = state->detail_sessions[index + 1];
+        } else if (input == PDKPASS_INPUT_OK && state->detail_count) {
+            state->selected_session = state->detail_selected_session;
             state->page = PDKPASS_PAGE_RESULTS;
         } else if (input == PDKPASS_INPUT_BACK) {
             state->page = state->detail_origin;

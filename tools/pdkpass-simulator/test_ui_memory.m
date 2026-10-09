@@ -1,10 +1,25 @@
 // Exercise production widgets and transformed text within the firmware pool.
 #define main simulator_application_main
+#define pdkpass_reminder_round_schedule simulator_unused_round_schedule
 #include "simulator.m"
+#undef pdkpass_reminder_round_schedule
 #undef main
 #include <assert.h>
+#include "ui_pixel.h"
+#include "pdkpass_season_core.h"
 #include "src/misc/lv_text_private.h"
 static unsigned dark_timer_fired;
+static bool s_test_schedule_active;
+static pdkpass_reminder_entry_t s_test_schedule[PDKPASS_SESSION_COUNT];
+
+bool pdkpass_reminder_round_schedule(unsigned year, int32_t meeting_key,
+    pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT])
+{
+    if (!s_test_schedule_active || year != 2026 ||
+        meeting_key != pdkpass_races[0].meeting_key) return false;
+    memcpy(entries, s_test_schedule, sizeof(s_test_schedule));
+    return true;
+}
 static void dark_timer(lv_timer_t *timer) { (void)timer; dark_timer_fired++; }
 
 static void check_body_text(lv_obj_t *obj)
@@ -57,6 +72,126 @@ static void check_memory(void)
     assert(memory.total_size > memory.max_used + 2048);
 }
 
+static void check_selected_detail(const char *text, int row)
+{
+    simulator_refresh();
+    lv_obj_t *label = find_label(lv_screen_active(), text);
+    assert(label);
+    lv_obj_t *card = lv_obj_get_parent(label);
+    assert(lv_color_eq(lv_obj_get_style_bg_color(card, 0), lv_color_hex(UI_YELLOW)));
+    assert(lv_obj_get_y(card) == 109 + row * 22);
+    assert(lv_obj_get_width(card) == 208 && lv_obj_get_height(card) == 21);
+    lv_point_t size;
+    lv_text_get_size(&size, text, &lv_font_unscii_8, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    assert(size.x <= lv_obj_get_width(label));
+    check_memory();
+}
+
+static void save_detail_preview(const char *name)
+{
+    const char *directory = getenv("PDKPASS_TEST_SCREENSHOT_DIR");
+    if (!directory) return;
+    NSString *path = [@(directory) stringByAppendingPathComponent:@(name)];
+    assert(save_framebuffer_png(path));
+}
+
+static void test_track_paging(void)
+{
+    const pdkpass_session_kind_t normal[] = {PDKPASS_SESSION_FP1, PDKPASS_SESSION_FP2,
+        PDKPASS_SESSION_FP3, PDKPASS_SESSION_QUALIFYING, PDKPASS_SESSION_RACE};
+    const char *names[] = {"FP1", "FP2", "FP3", "QUALI", "RACE"};
+    char lines[5][PDKPASS_SESSION_LINE_LEN];
+    int64_t now = (int64_t)time(NULL);
+    s_test_schedule_active = true;
+    memset(s_results, 0, sizeof(s_results));
+    for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++)
+        s_results[0][i].status = PDKPASS_RESULT_NOT_HELD;
+    for (unsigned i = 0; i < 5; i++) {
+        pdkpass_session_kind_t kind = normal[i];
+        s_test_schedule[kind].start_utc = now - 600 + (int64_t)i * 300;
+        s_test_schedule[kind].session_key = (int32_t)i + 1;
+        s_results[0][kind].status = PDKPASS_RESULT_SCHEDULED;
+        s_results[0][kind].session_end_utc = s_test_schedule[kind].start_utc + 100;
+        pdkpass_format_beijing_session(names[i], s_test_schedule[kind].start_utc,
+                                       lines[i], sizeof(lines[i]));
+    }
+    simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+    assert(find_label(lv_screen_active(), "UP/DN OK:VIEW HOLD:BACK"));
+    check_selected_detail(lines[1], 1); // latest finished FP2, no downloaded result
+    save_detail_preview("track-sessions-page-1.png");
+    simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+    assert(find_label(lv_screen_active(), "FP2")); // default OK must not reset to FP1
+    assert(find_label(lv_screen_active(), "RESULT PENDING"));
+    simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
+    check_selected_detail(lines[1], 1);
+    uint16_t top[SIMULATOR_WIDTH * 198];
+    memcpy(top, s_framebuffer, sizeof(top));
+    s_last_requested_race = SIZE_MAX;
+    simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+    check_selected_detail(lines[2], 2);
+    simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+    assert(find_label(lv_screen_active(), "UP/DN OK:VIEW HOLD:BACK"));
+    check_selected_detail(lines[3], 0);
+    assert(!find_label(lv_screen_active(), lines[0]));
+    assert(!find_label(lv_screen_active(), lines[1]));
+    assert(!find_label(lv_screen_active(), lines[2]));
+    assert(find_label(lv_screen_active(), lines[4]));
+    assert(memcmp(top, s_framebuffer, sizeof(top)) == 0); // map and metadata untouched
+    assert(s_last_requested_race == SIZE_MAX); // pagination does not request data
+    save_detail_preview("track-sessions-page-2.png");
+    simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+    simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK); // bounded at last row
+    check_selected_detail(lines[4], 1);
+    simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK);
+    simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+    assert(find_label(lv_screen_active(), "QUALIFYING"));
+    assert(find_label(lv_screen_active(), "RESULT PENDING"));
+    simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+    assert(find_label(lv_screen_active(), "RACE"));
+    simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
+    check_selected_detail(lines[3], 0); // results browsing preserves original detail selection
+    s_results[0][PDKPASS_SESSION_RACE].status = PDKPASS_RESULT_READY;
+    s_results[0][PDKPASS_SESSION_RACE].session_end_utc = now - 1;
+    pdkpass_ui_results_update(0);
+    check_selected_detail(lines[3], 0); // background completion does not steal focus
+    simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
+    simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+    check_selected_detail(lines[4], 1); // reopen chooses new latest completion/page
+    simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+    assert(find_label(lv_screen_active(), "RACE"));
+    simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
+    simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
+    // Cached schedules alone override a bundled normal-weekend format on both
+    // pages, even with alerts off and no result/discovery cache available.
+    memset(s_results, 0, sizeof(s_results));
+    memset(s_test_schedule, 0, sizeof(s_test_schedule));
+    const pdkpass_session_kind_t sprint[] = {PDKPASS_SESSION_FP1,
+        PDKPASS_SESSION_SPRINT_QUALIFYING, PDKPASS_SESSION_SPRINT,
+        PDKPASS_SESSION_QUALIFYING, PDKPASS_SESSION_RACE};
+    for (unsigned i = 0; i < 5; i++) {
+        s_test_schedule[sprint[i]].session_key = (int32_t)i + 1;
+        s_test_schedule[sprint[i]].start_utc = now + 100 + i * 300;
+    }
+    s_reminders_enabled = false;
+    simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+    simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+    char sprint_line[PDKPASS_SESSION_LINE_LEN];
+    pdkpass_format_beijing_session("SPR Q",
+        s_test_schedule[PDKPASS_SESSION_SPRINT_QUALIFYING].start_utc,
+        sprint_line, sizeof(sprint_line));
+    check_selected_detail(sprint_line, 1);
+    simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+    assert(find_label(lv_screen_active(), "SPRINT QUALI"));
+    simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
+    check_selected_detail(sprint_line, 1);
+    simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
+    s_reminders_enabled = true;
+    s_test_schedule_active = false;
+    memset(s_test_schedule, 0, sizeof(s_test_schedule));
+    memset(s_results, 0, sizeof(s_results));
+    s_last_requested_race = SIZE_MAX;
+}
+
 int main(void)
 {
     @autoreleasepool {
@@ -71,6 +206,7 @@ int main(void)
         s_home_race_index = 0; // Australia's medium-length name exercises fitted scaling.
         simulator_initialize();
         s_simulator_online = NO; // Keep seeded page fixtures independent of HTTP.
+        test_track_paging();
         lv_obj_t *australia = find_label(lv_screen_active(), "AUSTRALIA");
         assert(australia);
         assert(lv_obj_get_style_transform_scale_x(australia, 0) > 256);
@@ -209,10 +345,12 @@ int main(void)
         simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK);
         assert(find_label(lv_screen_active(), "RACE"));
         simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
-        simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK); // detail R1 -> R2
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // detail -> home
+        simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK); // home R1 -> R2
         for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++)
             s_results[1][i].status = PDKPASS_RESULT_UNKNOWN;
-        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // home -> detail
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // detail -> results
         const pdkpass_session_kind_t sprint[] = {
             PDKPASS_SESSION_FP1, PDKPASS_SESSION_SPRINT_QUALIFYING,
             PDKPASS_SESSION_SPRINT, PDKPASS_SESSION_QUALIFYING, PDKPASS_SESSION_RACE,
@@ -245,11 +383,13 @@ int main(void)
         check_memory();
         simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
         assert(!find_label(lv_screen_active(), "NO SESSION")); // no absent detail rows
-        simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK); // detail R2 -> R1
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // detail -> home
+        simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK); // home R2 -> R1
         for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++)
             s_results[0][i].status = PDKPASS_RESULT_NOT_HELD;
         sample->status = PDKPASS_RESULT_READY;
-        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // home -> detail
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // detail -> results
         assert(find_label(lv_screen_active(), "MAX VERSTAPPEN"));
         s_simulator_online = YES;
         simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // results -> detail

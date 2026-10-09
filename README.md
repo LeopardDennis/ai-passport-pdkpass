@@ -56,7 +56,7 @@ supported weekend session.
 | Retry | — | — | Back after failure | Cancel |
 | Setup QR / details | — | — | Show details / return to QR | Close hotspot |
 | Driver / team standings | Scroll rankings | — | Refresh both points tables | Home |
-| Race details | Previous / next race | — | Session results | Back |
+| Race details | Previous / next session; automatic paging | — | Selected session results | Back |
 | Session results | Previous / next session | — | Refresh this round | Race details |
 
 ## No app required
@@ -186,6 +186,29 @@ saved-network attempts, first-boot clock-sync timeout (60 seconds), or manual
 cancellation stay offline until manual retry/setup or reboot. Hotspot expiry
 rules remain unchanged. USB-connected measurements do not represent battery
 standby; actual current, ADC response and wake reliability require device tests.
+
+## Track-page schedule
+
+The track page keeps its map, distance/lap cards and three-row layout. Up/down
+moves the yellow selection through every session scheduled for that weekend,
+automatically paging at the third row; the first/last session does not wrap.
+The footer keeps the button hints without a page counter. Change rounds from the home page.
+
+Opening a round selects its most recently completed session and its page,
+using known end times even when results have not arrived. Cached results also
+prove completion when an older cache lacks end times. If nothing has finished,
+select the next known start; without enough clock/schedule information, select
+the first available session without guessing completion. Cancelled sessions
+remain visible but are skipped by the default selection when alternatives exist.
+Press OK to view the selected session's results; pending results stay on that
+session. Returning restores the track-page selection and page. Background updates
+do not move a selection that is still present.
+
+Known start times are shown in Beijing time and chronological order. Missing
+times keep their conventional weekend position and show `TIME TBD`; cancelled
+sessions show `CANCELLED`. Cached schedules work offline and independently of
+the alerts switch. Paging does not request more data. The existing result-page
+up/down navigation remains available.
 
 ## Session results
 
