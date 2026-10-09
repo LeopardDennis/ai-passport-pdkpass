@@ -1613,7 +1613,8 @@ static void reminder_timeout(lv_timer_t *timer)
 
 void pdkpass_ui_reminder_show(const pdkpass_reminder_entry_t *alert)
 {
-    if (!s_screen || !alert) return;
+    // A due reminder may have waited for the LVGL lock while ALERTS changed.
+    if (!s_screen || !alert || !pdkpass_reminder_enabled()) return;
     if (!s_reminder_visible) {
         s_reminder_was_dark = s_idle_stage == 2;
         s_reminder_previous_activity = s_last_activity;

@@ -1072,7 +1072,8 @@ static bool s_dirty;
 static int64_t s_retry_utc;
 static reminder_store_t disk;
 static bool disk_exists, fail_save, cached_calendar;
-static unsigned writes, wakes;
+static unsigned writes, wakes, sound_stops;
+void pdkpass_sound_reminder_stop(void) {sound_stops++;}
 static int xSemaphoreCreateMutex(void) {return 1;}
 static void wake(void) {wakes++;}
 static const char *esp_err_to_name(int err) {(void)err;return "FAIL";}
@@ -1130,7 +1131,7 @@ int main(void) {
  pdkpass_reminder_set_time_valid(true);
  assert(!pdkpass_reminder_poll(start-590,&alert)); // Power cycle deduplication.
  previous=writes;pdkpass_reminder_set_enabled(false);
- assert(!pdkpass_reminder_enabled()&&writes==previous);
+ assert(!pdkpass_reminder_enabled()&&writes==previous&&sound_stops==1);
  assert(!pdkpass_reminder_poll(start-580,&alert));
  assert(disk.schedule.enabled==0);
  s_lock=0;assert(pdkpass_reminder_init(wake)==ESP_OK);
@@ -1171,11 +1172,17 @@ static QueueHandle_t s_queue=(void *)1,s_keys=(void *)2;
 typedef struct {bsp_btn_t button;bsp_btn_ev_t event;bool reschedule;} key_event_t;
 static atomic_bool s_reminder_active,s_reminder_cancelled=true;
 static int s_consumed_button=-1;
-static unsigned volume,stops,writes,samples,delays,key_cues,ui_events,cancel_at;
+static unsigned volume,stops,writes,samples,delays,key_cues,ui_events,cancel_at,disable_at,queued;
+static atomic_bool s_enabled=true;
+static void (*s_wake)(void);
+static bool reenable;
+bool pdkpass_reminder_enabled(void) {return atomic_load(&s_enabled);}
+void pdkpass_reminder_set_enabled(bool enabled);
+void pdkpass_sound_reminder_stop(void);
 static pdkpass_sound_kind_t last_kind;
 bool pdkpass_sound_consume_key(bsp_btn_t button,bsp_btn_ev_t event);
 static int xQueueOverwrite(QueueHandle_t queue,const void *value) {
- assert(queue==s_queue);last_kind=*(const pdkpass_sound_kind_t *)value;
+ assert(queue==s_queue);last_kind=*(const pdkpass_sound_kind_t *)value;queued++;
  if(last_kind!=PDKPASS_SOUND_REMINDER)key_cues++;
  return pdTRUE;
 }
@@ -1195,6 +1202,10 @@ static int bsp_audio_write(const void *pcm,size_t bytes) {
  assert(volume==80&&pcm==s_reminder_pcm+samples&&bytes<=512&&bytes%2==0);
  samples+=bytes/2;writes++;
  if(writes==cancel_at)assert(pdkpass_sound_consume_key(BSP_BTN_OK,BSP_BTN_PRESS));
+ if(writes==disable_at) {
+  pdkpass_reminder_set_enabled(false);
+  if(reenable)pdkpass_reminder_set_enabled(true);
+ }
  return ESP_OK;
 }
 '''
@@ -1202,6 +1213,8 @@ static int bsp_audio_write(const void *pcm,size_t bytes) {
                     'bool pdkpass_sound_consume_key(', 'static void play_reminder(',
                     'void pdkpass_sound_key(']:
             code += function(source, sig)
+        code += function(production_source(ROOT / 'main/pdkpass_reminder.c'),
+                         'void pdkpass_reminder_set_enabled(')
         code += function(main_source, 'static void on_key(')
         code += r'''
 int main(void) {
@@ -1224,7 +1237,26 @@ int main(void) {
  assert(pdkpass_sound_consume_key(BSP_BTN_OK,BSP_BTN_CLICK));
  pdkpass_sound_reminder_stop();
  assert(atomic_load(&s_reminder_cancelled));
- puts("Approved reminder PCM streaming, 80/50 volume and one-gesture dismissal: PASS");
+ // OFF rejects new reminders without swallowing the next key gesture.
+ pdkpass_reminder_set_enabled(false);
+ unsigned previous=queued;
+ pdkpass_sound_reminder_play();
+ assert(queued==previous&&!atomic_load(&s_reminder_active));
+ assert(!pdkpass_sound_consume_key(BSP_BTN_UP,BSP_BTN_PRESS));
+ // OFF cancels a queued reminder even if ON returns before the worker runs.
+ pdkpass_reminder_set_enabled(true);pdkpass_sound_reminder_play();
+ pdkpass_reminder_set_enabled(false);pdkpass_reminder_set_enabled(true);
+ writes=samples=stops=delays=0;cancel_at=0;
+ play_reminder();assert(writes==0&&stops==1&&delays==0);
+ // Stop streaming on the next chunk; ON does not resume cancelled audio.
+ for(unsigned repeat=0;repeat<2;repeat++) {
+  pdkpass_reminder_set_enabled(true);pdkpass_sound_reminder_play();
+  writes=samples=stops=delays=0;disable_at=5;reenable=repeat!=0;
+  play_reminder();
+  assert(writes==5&&samples==1280&&stops==1&&delays==0&&volume==50);
+  assert(!atomic_load(&s_reminder_active)&&atomic_load(&s_reminder_cancelled));
+ }
+ puts("Reminder streaming, dismissal and ALERTS OFF cancellation: PASS");
 }
 '''
         compile_run(code)
@@ -1257,7 +1289,7 @@ static int64_t now_us;
 static int64_t esp_timer_get_time(void) {return now_us;}
 static bool retry_case, open_fail;
 static bool init_fail, write_fail, coalesced, alerts_enabled=true;
-static bool queued_disabled_result, queued_enabled_result;
+static bool queued_disabled_result, queued_enabled_result, queued_disabled_reminder;
 bool pdkpass_reminder_enabled(void) {return alerts_enabled;}
 static atomic_bool s_reminder_active, s_reminder_cancelled;
 static void pdkpass_sound_reminder_stop(void) {atomic_store(&s_reminder_active,false);atomic_store(&s_reminder_cancelled,true);}
@@ -1296,6 +1328,18 @@ static int xQueueSend(QueueHandle_t queue,const void *value,unsigned wait) {
 }
 static int xQueueReceive(QueueHandle_t queue,void *value,unsigned wait) {
  assert(queue==s_queue);
+ if(queued_disabled_reminder) {
+  if(wait==0)return 0;
+  if(step++==0) {
+   atomic_store(&s_reminder_active,true);
+   atomic_store(&s_reminder_cancelled,false);
+   *(pdkpass_sound_kind_t *)value=PDKPASS_SOUND_REMINDER;
+   return pdTRUE;
+  }
+  assert(wait==portMAX_DELAY&&stops==1&&writes==0);
+  assert(!atomic_load(&s_reminder_active)&&atomic_load(&s_reminder_cancelled));
+  longjmp(done,1);
+ }
  if(queued_enabled_result) {
   if(wait==0) return 0;
   if(step++==0) {
@@ -1409,6 +1453,10 @@ int main(void) {
  if(setjmp(done)==0) sound_worker(NULL);
  assert(writes==1 && rendered[0]==PDKPASS_SOUND_RESULT_READY && volume==50);
  step=init_calls=opens=stops=writes=delays=0;queued_enabled_result=false;
+ queued_disabled_reminder=true;alerts_enabled=false;
+ if(setjmp(done)==0) sound_worker(NULL);
+ step=init_calls=opens=stops=writes=delays=0;
+ queued_disabled_reminder=false;alerts_enabled=true;
  retry_case=true;init_fail=true;now_us=0;coalesced=true;
  if(setjmp(done)==0) sound_worker(NULL);
  assert(!atomic_load(&s_reminder_active));

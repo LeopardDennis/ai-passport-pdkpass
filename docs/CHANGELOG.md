@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Cancel queued or streaming session reminder audio when ALERTS turns off, and recheck the setting before showing a delayed reminder or playing its sound. Re-enabling alerts does not resume cancelled audio; button sounds remain enabled.
+
 - Keep the track-page design while showing every scheduled session in three-row pages, with button hints and no page counter. Up/down selects a session and pages without wrapping or requesting data; OK opens that session directly. Default to the latest completed session (or next known start), retain the selection on return and background updates, and show cached Beijing times or explicit unknown/cancelled states.
 
 - Use the selected circuit theme for the results-page background and side rails, matching the track page. Retain team-colored podium cards and the race-accent session bar; adapt pending-result text contrast to the circuit background.

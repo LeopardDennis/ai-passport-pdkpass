@@ -1,6 +1,7 @@
 #include "pdkpass_cache.h"
 #include "pdkpass_reminder.h"
 #include "pdkpass_season.h"
+#include "pdkpass_sound.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "nvs.h"
@@ -111,6 +112,7 @@ bool pdkpass_reminder_enabled(void) { return atomic_load(&s_enabled); }
 void pdkpass_reminder_set_enabled(bool enabled)
 {
     atomic_store(&s_enabled, enabled);
+    if (!enabled) pdkpass_sound_reminder_stop();
     if (s_wake) s_wake();
 }
 

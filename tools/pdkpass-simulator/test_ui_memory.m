@@ -527,6 +527,12 @@ int main(void)
         assert(pdkpass_ui_display_dark());
         pdkpass_reminder_entry_t alert={.round=15,.kind=PDKPASS_SESSION_SPRINT_QUALIFYING,
             .session_key=777,.start_utc=(int64_t)time(NULL)+600};
+        // A reminder waiting for the UI lock must not wake or ring after OFF.
+        pdkpass_reminder_set_enabled(false);
+        pdkpass_ui_reminder_show(&alert);
+        assert(pdkpass_ui_display_dark()&&s_panel_sleeping&&!s_reminder_sound_playing);
+        assert(!find_label(lv_screen_active(),"ANY KEY TO DISMISS"));
+        pdkpass_reminder_set_enabled(true);
         pdkpass_ui_reminder_show(&alert);
         assert(!pdkpass_ui_display_dark()&&!s_panel_sleeping&&s_reminder_sound_playing);
         assert(find_label(lv_screen_active(),"SPRINT QUALIFYING"));

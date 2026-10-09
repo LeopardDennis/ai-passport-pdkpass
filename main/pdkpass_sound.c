@@ -30,6 +30,7 @@ static int s_consumed_button = -1; // Owned by the button callback.
 
 void pdkpass_sound_reminder_play(void)
 {
+    if (!pdkpass_reminder_enabled()) return;
     atomic_store(&s_reminder_cancelled, false);
     atomic_store(&s_reminder_active, true);
     if (s_queue) {
@@ -60,14 +61,15 @@ static void play_reminder(void)
 {
     bsp_audio_set_volume(80);
     for (size_t offset = 0; offset < 48000U &&
-         !atomic_load(&s_reminder_cancelled); offset += 256U) {
+         !atomic_load(&s_reminder_cancelled) && pdkpass_reminder_enabled(); offset += 256U) {
         size_t count = 48000U - offset;
         if (count > 256U) count = 256U;
         if (bsp_audio_write(s_reminder_pcm + offset, count * sizeof(int16_t)) != ESP_OK)
             break;
     }
-    // Drain the last DMA block, unless a key requested immediate silence.
-    if (!atomic_load(&s_reminder_cancelled)) vTaskDelay(pdMS_TO_TICKS(100));
+    // Drain the last DMA block unless dismissed or ALERTS was turned off.
+    if (!atomic_load(&s_reminder_cancelled) && pdkpass_reminder_enabled())
+        vTaskDelay(pdMS_TO_TICKS(100));
     bsp_audio_stop();
     bsp_audio_set_volume(SOUND_VOLUME);
 }
@@ -118,6 +120,7 @@ static void sound_worker(void *unused)
         pdkpass_sound_kind_t latest;
         if (xQueueReceive(s_queue, &latest, 0) == pdTRUE) kind = latest;
         if (kind == PDKPASS_SOUND_REMINDER) {
+            if (!pdkpass_reminder_enabled()) pdkpass_sound_reminder_stop();
             if (!atomic_load(&s_reminder_cancelled)) play_reminder();
             else bsp_audio_stop();
             opened = false;
