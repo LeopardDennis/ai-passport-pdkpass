@@ -174,11 +174,17 @@ The audio demo's three-second recording buffer is about 96 KB and is the largest
 
 ## 9. CW2017 fuel gauge
 
-Initialization reads VERSION and CONFIG. A sleeping/reset gauge receives
-`0x30`, then `0x00`, with write-error checks and CONFIG readback. An already
-active gauge is left running to preserve its SOC estimate. The driver retains
-the existing battery profile; the embedded standard Li-Poly profile is for
-testing and is not proof of calibration for the installed cell.
+Initialization reads VERSION, the update flag at `0x0B` and the 80-byte profile
+at `0x10..0x5F`. The expected original-cell parameters match the
+[official implementation](https://github.com/FoloToy/ai-passport/blob/a06235e4c94361e3f8a2d498930254101718acae/components/bsp/src/bsp_battery.c).
+If the flag is missing or any byte differs, the driver enters and verifies sleep
+mode (`0x30`, then `0xF0`), clears the update flag, writes all bytes, verifies
+them and sets/verifies the flag while preserving its lower threshold bits.
+It then activates the gauge (`0x30`, then `0x00`) and checks CONFIG readback.
+An active gauge with matching parameters is not reset. Initialization waits up
+to five seconds for SOC in 0..100; any read/write/verification error releases the
+device handle and leaves the battery unavailable until initialization succeeds.
+Use matching vendor parameters and charge/discharge validation for replacement cells.
 See the manufacturer's [CW2017 datasheet, sections Power State, Battery Profile,
 and CONFIG](https://uploadcdn.oneyac.com/upload/document/1737612108523_8373.pdf).
 
@@ -187,7 +193,12 @@ and CONFIG](https://uploadcdn.oneyac.com/upload/document/1737612108523_8373.pdf)
   polls SOC only while lit/on wake; use the voltage API explicitly when needed.
 - Voltage uses the 14-bit value at `0x02–0x03`, converted as `raw × 312.5 µV`, and returned in mV.
 - Transactions use a 100 ms timeout at 100 kHz.
-- A missing device returns `ESP_ERR_NOT_FOUND`; the battery page is disabled without stopping the application.
+- A missing device returns `ESP_ERR_NOT_FOUND`. SOC requests retry initialization
+  at most once a minute; PDKPASS does not permanently disable sampling after a
+  startup failure. Calls must be serialized on a worker, outside the LVGL lock.
+- After initialization, invalid SOC and I2C errors return unavailable without
+  a periodic restart or repeated profile writes. Later samples may recover a
+  real percentage. Voltage-derived or fabricated SOC is never substituted.
 
 Accurate production SOC requires the cell parameters, CW2017 datasheet/vendor profile, and full charge/discharge validation.
 

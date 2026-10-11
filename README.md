@@ -167,6 +167,13 @@ three-key wake reliability and the actual battery benefit need device testing.
 The battery worker reads the fuel gauge once a minute while the display is lit.
 It stops polling while the display is off and reads once immediately after a
 key wakes the screen; unchanged readings do not redraw the battery icon.
+At startup, the gauge's update flag and 80-byte battery profile are checked
+against the official original-cell parameters. Missing or mismatched parameters
+are written in sleep mode, read back and verified before activation. Startup
+waits up to five seconds for valid SOC. Failed initialization retries on a later
+visible sample, at most once a minute. There is no periodic reset for invalid
+runtime readings; the icon stays unavailable until a real percentage is read.
+Replacement cells require matching supplier parameters.
 
 The CPU stays at 160 MHz while the screen is lit, and may drop to 40 MHz and
 enter automatic light sleep while dark. Setup/connection work and an attached
@@ -339,8 +346,8 @@ Calendar GETs retain only their construction array; the publication snapshot
 is allocated after TLS is released. The season worker reads its current snapshot
 without another full copy. Manual driver-points GETs retain only a compact roster
 and assemble a persisted season after TLS cleanup. HTTP transport/allocation
-failures log numeric available-heap and largest-free-block counters before client
-cleanup. Incoming TLS records remain 16 KB and certificate validation stays enabled;
+failures retain compact error reports without heap snapshots or reconnect progress.
+Incoming TLS records remain 16 KB and certificate validation stays enabled;
 physical-device peak headroom and long-term stability still require verification.
 
 Private store, parser, standings, portal and network-page implementation groups live in
@@ -431,8 +438,9 @@ respective owners.
 
 Release firmware keeps necessary warnings and errors only. It contains no
 charging-diagnostic sampling, I2C scanner, USB screenshot task, progress logs
-or heap sampling. Battery display still uses the gauge's measured SOC; charging
-and SOC parameters are unchanged.
+or heap sampling. Battery display uses the gauge's measured SOC. Startup restores
+missing or mismatched official original-cell parameters with readback verification;
+it does not substitute an estimated or forced percentage.
 
 Standings are checked again 30 minutes after the recorded race end; failed
 synchronization retries after five minutes. The displayed standings date refers

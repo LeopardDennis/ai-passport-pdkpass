@@ -699,7 +699,7 @@ static void update_home_status(void)
                                 BEIJING_OFFSET_SECONDS);
         struct tm parts;
         gmtime_r(&local, &parts);
-        snprintf(text, sizeof(text), "%s | ~%02d.%02d", network_word(),
+        snprintf(text, sizeof(text), "%s | %02d.%02d", network_word(),
                  parts.tm_mon + 1, parts.tm_mday);
     } else {
         snprintf(text, sizeof(text), "%s | --.--", network_word());

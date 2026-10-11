@@ -6,6 +6,12 @@
 
 ## Unreleased
 
+- Prepare the release firmware: remove battery-profile restoration progress, Wi-Fi idle/retry scheduling messages, HTTP reconnect/recovery progress and heap snapshots. Retain actionable failure reports and the original-cell battery repair.
+
+- Restore missing or mismatched CW2017 battery parameters at startup using the official original-cell profile. Verify sleep mode, all 80 written bytes and the update flag before activating the gauge; wait at most five seconds for valid SOC. Retry failed initialization at most once a minute on visible-screen samples. Remove the previous five-minute invalid-SOC reset loop and retain real percentage reporting.
+
+- Remove the tilde before the home-page date while the clock is estimated; retain date display and time synchronization behavior.
+
 - Cancel queued or streaming session reminder audio when ALERTS turns off, and recheck the setting before showing a delayed reminder or playing its sound. Re-enabling alerts does not resume cancelled audio; button sounds remain enabled.
 
 - Keep the track-page design while showing every scheduled session in three-row pages, with button hints and no page counter. Up/down selects a session and pages without wrapping or requesting data; OK opens that session directly. Default to the latest completed session (or next known start), retain the selection on return and background updates, and show cached Beijing times or explicit unknown/cancelled states.
@@ -49,9 +55,8 @@
 - Reduce TLS peak RAM use by removing the extra current-season copy, delaying
   calendar publication snapshots until GETs finish, and fetching manual driver
   points into a compact roster. Release TLS before assembling persisted updates;
-  preserve complete caches on failures and log numeric heap/largest-block
-  counters only when HTTP transport or allocation fails. Keep standard 16 KB
-  incoming TLS records and certificate verification.
+  preserve complete caches on failures. Keep standard 16 KB incoming TLS records
+  and certificate verification.
 
 - Bound every HTTP network request to 30 seconds, including repeated header
   waits and trickling bodies; retain the 120-second manual-operation deadline

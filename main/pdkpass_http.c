@@ -3,7 +3,6 @@
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
-#include "esp_heap_caps.h"
 #include "mbedtls/net_sockets.h"
 #include "mbedtls/ssl.h"
 #include "esp_timer.h"
@@ -285,9 +284,6 @@ static esp_err_t perform(const char *url, response_t *r)
                                    0, ESP_ERR_TIMEOUT, 0);
             return ESP_ERR_TIMEOUT;
         }
-        const unsigned memory_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-        size_t start_free = heap_caps_get_free_size(memory_caps);
-        size_t start_largest = heap_caps_get_largest_free_block(memory_caps);
         esp_http_client_config_t config = {
             .url = url, .event_handler = http_event, .user_data = r,
             .crt_bundle_attach = esp_crt_bundle_attach, .timeout_ms = 15000,
@@ -351,13 +347,6 @@ static esp_err_t perform(const char *url, response_t *r)
                           tls_code == MBEDTLS_ERR_NET_SEND_FAILED ||
                           tls_code == MBEDTLS_ERR_NET_CONN_RESET ||
                           tls_code == MBEDTLS_ERR_SSL_CONN_EOF);
-        // Sample before releasing TLS; post-cleanup free memory hides its footprint.
-        // Numeric counters only: no addresses, URLs, credentials or body content.
-        if (transport_err != ESP_OK || err == ESP_ERR_NO_MEM)
-            ESP_LOGW(TAG, "GET memory start_free=%u start_largest=%u failure_free=%u failure_largest=%u",
-                     (unsigned)start_free, (unsigned)start_largest,
-                     (unsigned)heap_caps_get_free_size(memory_caps),
-                     (unsigned)heap_caps_get_largest_free_block(memory_caps));
         // Callback contexts are stack-owned. Cleanup may emit DISCONNECTED later.
         esp_http_client_set_user_data(client, NULL);
         if (client == s_client) {
@@ -374,14 +363,7 @@ static esp_err_t perform(const char *url, response_t *r)
                                 : r->length == 0 ? "empty-body" : "stream-end";
             report_request_failure(url, started_us, stage, status, err, r->length);
         }
-        if (!reconnect) {
-            if (err == ESP_OK && attempt)
-                ESP_LOGW(TAG, "GET recovered endpoint=%s origin=%s attempt=2",
-                         http_resource(url), origin == 1 ? "openf1" : origin == 2 ? "jolpica" : "other");
-            return err;
-        }
-        ESP_LOGW(TAG, "GET reconnect endpoint=%s origin=%s attempt=2",
-                 http_resource(url), origin == 1 ? "openf1" : origin == 2 ? "jolpica" : "other");
+        if (!reconnect) return err;
         // No body/header callbacks have touched the consumer. The same GET can be
         // replayed once, on a fresh client, with the original remaining budget.
     }

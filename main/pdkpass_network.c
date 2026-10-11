@@ -630,7 +630,6 @@ static void plan_background_retry(void)
     if (!s_background_retry_active || !s_profiles.count || s_has_ip ||
         s_in_setup || s_saved_deadline || s_background_retry_at) return;
     s_background_retry_at = esp_timer_get_time() + BACKGROUND_RETRY_INTERVAL_US;
-    ESP_LOGW(TAG, "Background Wi-Fi retry scheduled in 300 s");
 }
 
 // Sleep until the next active deadline; Wi-Fi, form and SNTP events wake us
@@ -857,9 +856,6 @@ static void network_task(void *arg)
             // recheck connectivity after acquiring this same mutex.
             if (s_time_synced_boot && pdkpass_sync_idle() && pdkpass_http_try_begin()) {
                 if (pdkpass_sync_idle()) {
-                    ESP_LOGW(TAG, "Wi-Fi parking: season_wait_ms=%lu results_wait_ms=%lu",
-                             (unsigned long)pdkpass_sync_wait_ms(PDKPASS_SYNC_SEASON),
-                             (unsigned long)pdkpass_sync_wait_ms(PDKPASS_SYNC_RESULTS));
                     s_auto_parked = go_offline() == ESP_OK;
                 }
                 pdkpass_http_end();

@@ -1536,13 +1536,10 @@ static unsigned s_client_origin;
 static bool s_transaction_active;
 static esp_err_t esp_http_client_set_url(esp_http_client_handle_t c,const char *url) {c->config.url=url;return ESP_OK;}
 static esp_err_t esp_http_client_set_user_data(esp_http_client_handle_t c,void *data) {c->config.user_data=data;return ESP_OK;}
-static int init_calls, cleanup_calls, log_calls, memory_logs, status_code=200;
+static int init_calls, cleanup_calls, log_calls, status_code=200;
 static int64_t now_us;
-#define MALLOC_CAP_INTERNAL 2
-static size_t heap_caps_get_free_size(unsigned caps) {assert(caps==3);return 50000;}
-static size_t heap_caps_get_largest_free_block(unsigned caps) {assert(caps==3);return 25000;}
 static bool init_fails, realloc_fails, async_pending, closed;
-static int async_calls, failed_attempts, tls_error_code, tls_error_flags, reconnect_logs, recovery_logs;
+static int async_calls, failed_attempts, tls_error_code, tls_error_flags;
 static esp_err_t tls_error_result;
 static bool fail_after_body, fail_after_header;
 static int64_t advance_us, chunk_advance_us, failed_advance_us;
@@ -1555,11 +1552,8 @@ static char endpoint_log[192];
 static void capture_log(const char *format,...) {
  va_list args;va_start(args,format);
  vsnprintf(last_log,sizeof(last_log),format,args);
- if(strstr(last_log,"GET memory ")) {memory_logs++;assert(strstr(last_log,"start_free=50000 start_largest=25000 failure_free=50000 failure_largest=25000"));}
- if(strstr(last_log,"GET recovered ")) {recovery_logs++;assert(!strstr(last_log,"private")&&!strstr(last_log,"secret"));}
- if(strstr(last_log,"GET reconnect ")) {
-  reconnect_logs++;assert(!strstr(last_log,"private")&&!strstr(last_log,"secret"));
- }
+ assert(!strstr(last_log,"GET memory ") && !strstr(last_log,"GET recovered ") &&
+        !strstr(last_log,"GET reconnect "));
  if(strstr(last_log,"GET endpoint="))
   snprintf(endpoint_log,sizeof(endpoint_log),"%s",last_log);
  va_end(args);log_calls++;
@@ -1640,11 +1634,11 @@ static const char *TAG="pdk_http_test";
 static void reset_request(void) {
  status_code=200;transport_error=ESP_OK;retry_after=NULL;
  s_deadline_us=0;async_pending=closed=fail_after_body=fail_after_header=false;async_calls=0;advance_us=chunk_advance_us=0;
- failed_attempts=tls_error_code=tls_error_flags=reconnect_logs=recovery_logs=0;failed_advance_us=0;tls_error_result=ESP_OK;
+ failed_attempts=tls_error_code=tls_error_flags=0;failed_advance_us=0;tls_error_result=ESP_OK;
  memset(body_timeout_ms,0,sizeof(body_timeout_ms));
  chunk_count=0;init_fails=false;realloc_fails=false;
  memset(s_request_at_us,0,sizeof(s_request_at_us));
- log_calls=memory_logs=0;last_log[0]='\0';endpoint_log[0]='\0';s_retry_at_us=0;s_jolpica_retry_at_us=0;
+ log_calls=0;last_log[0]='\0';endpoint_log[0]='\0';s_retry_at_us=0;s_jolpica_retry_at_us=0;
 }
 static bool reject_item(const cJSON *item,void *context) {(void)item;(void)context;return false;}
 static bool accept_item(const cJSON *item,void *context) {
@@ -1664,7 +1658,7 @@ int main(void) {
  assert(!json&&strstr(last_log,"stage=body-alloc"));
  reset_request();transport_error=ESP_FAIL;status_code=0;
  assert(pdkpass_http_get("https://example.test",16,&json)==ESP_FAIL);
- assert(strstr(last_log,"stage=transport")&&memory_logs==1);
+ assert(strstr(last_log,"stage=transport"));
  reset_request();transport_error=ESP_FAIL;status_code=0;
  assert(pdkpass_http_get("https://api.openf1.org/v1/sessions?meeting_key=123",16,&json)==ESP_FAIL);
  assert(strstr(endpoint_log,"endpoint=sessions")&&!strstr(endpoint_log,"123"));
@@ -1798,18 +1792,18 @@ int main(void) {
  failed_attempts=1;failed_advance_us=1000000;tls_error_code=-MBEDTLS_ERR_NET_RECV_FAILED;tls_error_result=ESP_FAIL;
  assert(pdkpass_http_get("https://api.jolpi.ca/ergast/f1/2026/constructorstandings/?secret=private",16,&json)==ESP_OK);
  assert(json&&strcmp(json,"ok")==0);free(json);
- assert(init_calls==recovery_inits+1&&cleanup_calls==recovery_cleanups+1&&reconnect_logs==1&&recovery_logs==1);
+ assert(init_calls==recovery_inits+1&&cleanup_calls==recovery_cleanups+1);
  assert(now_us==14600000&&s_deadline_us==120000000);
  pdkpass_http_release();s_transaction_active=false;
  // Signed network errors (as used by handshake paths) also recover.
  reset_request();now_us=0;chunks[0]="ok";chunk_count=1;failed_attempts=1;
  tls_error_code=MBEDTLS_ERR_NET_CONN_RESET;tls_error_result=ESP_FAIL;
  assert(pdkpass_http_get("https://api.openf1.org/v1/sessions",16,&json)==ESP_OK);free(json);
- assert(reconnect_logs==1&&recovery_logs==1);
+ assert(log_calls==2); // Only the failed request context/stage remain.
  // Permanent transport failure terminates after exactly two connections.
  reset_request();now_us=0;failed_attempts=2;recovery_inits=init_calls;
  assert(pdkpass_http_get("https://api.openf1.org/v1/sessions",16,&json)==ESP_ERR_HTTP_FETCH_HEADER);
- assert(!json&&init_calls==recovery_inits+2&&reconnect_logs==1&&failed_attempts==0);
+ assert(!json&&init_calls==recovery_inits+2&&failed_attempts==0);
  // TLS allocation/certificate failures do not immediately retry.
  int excluded[]={-0x7F00,-0x2700,0,0x7F00,0x2700};
  for(unsigned i=0;i<5;i++) {
@@ -1817,20 +1811,20 @@ int main(void) {
   if(i==2) tls_error_result=ESP_ERR_NO_MEM;
   recovery_inits=init_calls;
   assert(pdkpass_http_get("https://api.openf1.org/v1/sessions",16,&json)==ESP_ERR_HTTP_FETCH_HEADER);
-  assert(!json&&init_calls==recovery_inits+1&&!reconnect_logs);
+  assert(!json&&init_calls==recovery_inits+1);
  }
  reset_request();failed_attempts=1;tls_error_flags=1;recovery_inits=init_calls;
  assert(pdkpass_http_get("https://api.openf1.org/v1/sessions",16,&json)==ESP_ERR_HTTP_FETCH_HEADER);
- assert(init_calls==recovery_inits+1&&!reconnect_logs);
+ assert(init_calls==recovery_inits+1);
  // A consumer that saw any streamed data is never replayed.
  reset_request();now_us=0;chunks[0]="[{\"x\":1}]";chunk_count=1;fail_after_body=true;items=0;
  recovery_inits=init_calls;
  assert(pdkpass_http_array("https://api.openf1.org/v1/sessions",accept_item,&items)==ESP_ERR_HTTP_CONNECTION_CLOSED);
- assert(items==1&&init_calls==recovery_inits+1&&!reconnect_logs);
+ assert(items==1&&init_calls==recovery_inits+1);
  // Even an empty response with a header is not replayed.
  reset_request();now_us=0;retry_after="0";fail_after_header=true;recovery_inits=init_calls;
  assert(pdkpass_http_get("https://api.openf1.org/v1/sessions",16,&json)==ESP_ERR_HTTP_FETCH_HEADER);
- assert(init_calls==recovery_inits+1&&!reconnect_logs&&!json);
+ assert(init_calls==recovery_inits+1&&!json);
  // Retry pacing cannot wait past a shorter accepted manual deadline.
  reset_request();now_us=0;s_deadline_us=5000000;failed_attempts=1;recovery_inits=init_calls;
  assert(pdkpass_http_get("https://api.jolpi.ca/ergast/f1/2026/constructorstandings/",16,&json)==ESP_ERR_TIMEOUT);
@@ -1839,7 +1833,7 @@ int main(void) {
  reset_request();now_us=0;failed_attempts=1;failed_advance_us=20000000;
  async_pending=true;advance_us=5000000;recovery_inits=init_calls;
  assert(pdkpass_http_get("https://api.jolpi.ca/ergast/f1/2026/constructorstandings/",16,&json)==ESP_ERR_TIMEOUT);
- assert(!json&&init_calls==recovery_inits+2&&async_calls==2&&reconnect_logs==1);
+ assert(!json&&init_calls==recovery_inits+2&&async_calls==2);
  assert(now_us>=30000000&&now_us<30010000&&strstr(last_log,"request-timeout"));
  // A shorter manual deadline still takes precedence across reconnection.
  reset_request();now_us=0;s_deadline_us=25000000;failed_attempts=1;failed_advance_us=20000000;
@@ -1849,7 +1843,7 @@ int main(void) {
  // Response headers and HTTP rate limits do not trigger connection replay.
  reset_request();now_us=0;status_code=429;retry_after="60";recovery_inits=init_calls;
  assert(pdkpass_http_get("https://api.jolpi.ca/ergast/f1/2026/constructorstandings/",16,&json)==ESP_ERR_INVALID_RESPONSE);
- assert(init_calls==recovery_inits+1&&!reconnect_logs&&s_jolpica_retry_at_us==60000000);
+ assert(init_calls==recovery_inits+1&&s_jolpica_retry_at_us==60000000);
  puts("HTTP: fresh-connection recovery, excluded failures, original deadlines and pacing: PASS");
 }
 '''
@@ -2290,30 +2284,36 @@ int main(void) {
 '''
         code += source[enum_start:enum_end] + r'''
 static bool dark;
-static int lock_calls, lock_fail_on, reads, updates, last_soc;
+static int lock_calls, lock_fail_on, reads, updates, last_soc, next_soc=55;
 static bool bsp_lvgl_lock(int timeout) {
  (void)timeout; lock_calls++; return lock_calls != lock_fail_on;
 }
 static void bsp_lvgl_unlock(void) {}
 static bool pdkpass_ui_display_dark(void) {return dark;}
-static int bsp_battery_soc(void) {reads++;return 55;}
+static int bsp_battery_soc(void) {reads++;return next_soc;}
 static void pdkpass_ui_battery_update(int soc) {updates++;last_soc=soc;}
 '''
         code += function(source, 'static battery_sample_outcome_t sample_battery_if_visible(')
         code += r'''
 int main(void) {
  dark=true;
- assert(sample_battery_if_visible(true)==BATTERY_SAMPLE_PAUSE_DARK);
+ assert(sample_battery_if_visible()==BATTERY_SAMPLE_PAUSE_DARK);
  assert(reads==0 && updates==0);
  dark=false;
- assert(sample_battery_if_visible(true)==BATTERY_SAMPLE_DONE);
+ assert(sample_battery_if_visible()==BATTERY_SAMPLE_DONE);
  assert(reads==1 && updates==1 && last_soc==55);
  lock_calls=0;lock_fail_on=1;
- assert(sample_battery_if_visible(true)==BATTERY_SAMPLE_RETRY);
+ assert(sample_battery_if_visible()==BATTERY_SAMPLE_RETRY);
  assert(reads==1 && updates==1);
- lock_fail_on=0;
- assert(sample_battery_if_visible(false)==BATTERY_SAMPLE_DONE);
- assert(reads==1 && updates==2 && last_soc==-1);
+ lock_fail_on=0;next_soc=-1;
+ assert(sample_battery_if_visible()==BATTERY_SAMPLE_DONE);
+ assert(reads==2 && updates==2 && last_soc==-1);
+ next_soc=72;
+ assert(sample_battery_if_visible()==BATTERY_SAMPLE_DONE);
+ assert(reads==3 && updates==3 && last_soc==72); // A previous failure is not latched.
+ dark=true;
+ assert(sample_battery_if_visible()==BATTERY_SAMPLE_PAUSE_DARK);
+ assert(reads==3); // Recovery requests also pause while dark.
  puts("dark display skips battery I2C: PASS");
 }
 '''
@@ -2611,8 +2611,14 @@ int main(void) {
 }
 ''', ['main/pdkpass_sync_policy.c'])
 
-    def test_battery_startup_and_raw_measurements(self):
+    def test_battery_profile_initialization_and_failure_retry(self):
         source = production_source(ROOT / 'components/bsp/src/bsp_battery.c')
+        import hashlib
+        profile_body = re.search(r'static const uint8_t s_battery_profile\[CW_PROFILE_SIZE\] = \{(.*?)\};', source, re.S).group(1)
+        profile = bytes(int(x, 16) for x in re.findall(r'0x([0-9A-Fa-f]{2})', profile_body))
+        self.assertEqual(len(profile), 80)
+        self.assertEqual(hashlib.sha256(profile).hexdigest(),
+                         '562086dac308f8aa8797a06ce0d731f290252ad3c6ed29206498ebfd267c1f57')
         code = r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -2620,89 +2626,130 @@ int main(void) {
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
-#include <stdarg.h>
-#include "bsp_battery.h"
-#include "esp_err.h"
-int bsp_battery_mv(void);
-#define ESP_ERR_INVALID_ARG 0x102
-#define ESP_ERR_INVALID_STATE 0x103
+typedef int esp_err_t;
+typedef void *i2c_master_dev_handle_t;
+typedef struct {int dev_addr_length,device_address,scl_speed_hz;} i2c_device_config_t;
+#define ESP_OK 0
 #define ESP_FAIL -1
+#define ESP_ERR_NOT_FOUND 0x105
+#define ESP_ERR_TIMEOUT 0x107
 #define I2C_ADDR_BIT_LEN_7 0
 #define BSP_I2C_CW2017_ADDR 0x63
 #define pdMS_TO_TICKS(x) (x)
-#define ESP_LOGW(...) ((void)0)
 #define ESP_LOGE(...) ((void)0)
-static char last_log[128];
-static void capture(const char *fmt,...) {
- va_list args;va_start(args,fmt);vsnprintf(last_log,sizeof(last_log),fmt,args);va_end(args);
-}
-#define ESP_LOGI(tag,...) capture(__VA_ARGS__)
-typedef void *i2c_master_dev_handle_t;
-typedef struct {int dev_addr_length, device_address, scl_speed_hz;} i2c_device_config_t;
-static i2c_master_dev_handle_t s_dev;
-static uint8_t config, values[4];
-static unsigned writes, delay_ms, removals, voltage_reads;
-static int fail_read=-1, fail_write, read_config_calls, fail_config_read_at;
-static bool ignore_writes;
-static unsigned raw_soc=96*256+128, raw_mv=11840;
-static int bsp_i2c_init(void) {return ESP_OK;}
+#define ESP_LOGW(...) ((void)0)
+static uint8_t regs[256], written_reg[512], written_value[512];
+static unsigned reads,writes,profile_writes,voltage_reads,soc_reads,adds,removes,delay_ms;
+static unsigned fail_read_at,fail_write_at,ignore_write_at;
+static unsigned raw_soc=96*256,valid_after;
+static bool fail_bus,fail_add;
+static int64_t now_us;
+static int64_t esp_timer_get_time(void) {return now_us;}
+static void vTaskDelay(unsigned ms) {assert(ms==10||ms==20||ms==100);delay_ms+=ms;now_us+=(int64_t)ms*1000;}
+static int bsp_i2c_init(void) {return fail_bus?ESP_FAIL:ESP_OK;}
 static void *bsp_i2c_bus(void) {return (void *)2;}
 static int i2c_master_bus_add_device(void *bus,const i2c_device_config_t *cfg,void **out) {
- assert(bus==(void *)2 && cfg->device_address==0x63 && cfg->scl_speed_hz==100000);
- *out=(void *)1;return ESP_OK;
+ assert(bus==(void *)2 && cfg->device_address==0x63 && cfg->scl_speed_hz==100000);adds++;
+ if(fail_add)return ESP_FAIL;*out=(void *)1;return ESP_OK;
 }
-static void i2c_master_bus_rm_device(void *dev) {assert(dev==(void *)1);removals++;}
-static void vTaskDelay(unsigned ticks) {assert(ticks==20 || ticks==100);delay_ms+=ticks;}
-static int cw_read(uint8_t reg,uint8_t *out,size_t n) {
- if(reg==8 && ++read_config_calls==fail_config_read_at)return -1;
- if(reg==fail_read)return -1;
- if(reg==8){assert(n==1);*out=config;}
- else if(reg==0){assert(n==1);*out=0xa0;}
- else {assert(n==2 && (reg==2 || reg==4));if(reg==2)voltage_reads++;unsigned v=reg==2 ? raw_mv : raw_soc;
- out[0]=v>>8;out[1]=v&255;}
- return 0;
+static void i2c_master_bus_rm_device(void *dev) {assert(dev==(void *)1);removes++;}
+static int i2c_master_transmit_receive(void *dev,const void *send,size_t count,void *out,size_t n,int timeout) {
+ assert(dev==(void *)1 && count==1 && timeout==100);reads++;
+ if(reads==fail_read_at)return ESP_ERR_TIMEOUT;
+ unsigned reg=*(const uint8_t *)send;uint8_t *data=out;
+ if(reg==4) {
+  assert(n==2);soc_reads++;unsigned soc=valid_after && soc_reads>=valid_after?96*256:raw_soc;
+  data[0]=soc>>8;data[1]=soc&255;
+ } else if(reg==2) {assert(n==2);voltage_reads++;data[0]=0x2e;data[1]=0x40;}
+ else {assert(n==1 && (reg==0 || reg==8 || reg==0x0b || (reg>=0x10 && reg<=0x5f)));*data=regs[reg];}
+ return ESP_OK;
 }
-static int cw_write(uint8_t reg,uint8_t value) {
- assert(reg==8 && writes<4);values[writes++]=value;
- if((int)writes==fail_write)return -1;
- if(!ignore_writes)config=value;
- return 0;
+static int i2c_master_transmit(void *dev,const void *send,size_t n,int timeout) {
+ assert(dev==(void *)1 && n==2 && timeout==100 && writes<512);
+ const uint8_t *data=send;unsigned reg=data[0];writes++;
+ written_reg[writes-1]=reg;written_value[writes-1]=data[1];
+ if(writes==fail_write_at)return ESP_FAIL;
+ assert(reg==8 || reg==0x0b || (reg>=0x10 && reg<=0x5f));
+ if(reg>=0x10) {assert(regs[8]==0xf0 && !(regs[0x0b]&0x80));profile_writes++;}
+ if(writes!=ignore_write_at)regs[reg]=data[1];
+ return ESP_OK;
 }
 '''
-        code += '\n'.join(x for x in source.splitlines() if x.startswith('#define CW_REG_'))+'\n'
-        for signature in ['static esp_err_t cw_ensure_active(', 'esp_err_t bsp_battery_init(',
-                          'int bsp_battery_soc(', 'int bsp_battery_mv(']:
-            code += function(source, signature)
+        code += re.sub(r'^#include[^\n]*\n', '', source, flags=re.M)
         code += r'''
+static void reset(void) {
+ memset(regs,0,sizeof(regs));regs[0]=0x0f;regs[0x0b]=0x14;
+ reads=writes=profile_writes=voltage_reads=soc_reads=adds=removes=delay_ms=0;
+ fail_read_at=fail_write_at=ignore_write_at=valid_after=0;
+ raw_soc=96*256;fail_bus=fail_add=false;now_us=0;s_dev=NULL;s_init_retry_at_us=0;
+}
+static void seed_profile(void) {memcpy(regs+0x10,s_battery_profile,80);regs[0x0b]=0x94;}
 int main(void) {
- config=0xf0;
- assert(bsp_battery_init()==ESP_OK && writes==2 && config==0);
- assert(values[0]==0x30 && values[1]==0 && delay_ms==120);
- assert(bsp_battery_init()==ESP_OK && writes==2);
- s_dev=NULL;writes=delay_ms=0;
- assert(bsp_battery_init()==ESP_OK && writes==0 && delay_ms==0); // retain active estimate
- for(int failure=1;failure<=2;failure++) {
-  s_dev=NULL;config=0xf0;writes=0;fail_write=failure;
-  assert(bsp_battery_init()==ESP_FAIL && s_dev==NULL && writes==(unsigned)failure);
- }
- fail_write=0;s_dev=NULL;fail_read=8;writes=0;
- assert(bsp_battery_init()==ESP_FAIL && !s_dev && writes==0);
- fail_read=-1;read_config_calls=0;fail_config_read_at=2;config=0xf0;writes=0;
- assert(bsp_battery_init()==ESP_FAIL && !s_dev);
- fail_config_read_at=0;ignore_writes=true;config=0xf0;writes=0;
- assert(bsp_battery_init()==ESP_FAIL && !s_dev); // readback still asleep
- ignore_writes=false;writes=0;
- assert(bsp_battery_init()==ESP_OK && s_dev);
- assert(bsp_battery_soc()==96 && voltage_reads==0);
+ reset();assert(bsp_battery_init()==ESP_OK && s_dev);
+ assert(profile_writes==80 && regs[0x0b]==0x94 && regs[8]==0);
+ assert(memcmp(regs+0x10,s_battery_profile,80)==0);
+ unsigned complete_writes=writes,complete_reads=reads;
+ assert(complete_writes==86 && delay_ms==250 && voltage_reads==0);
+ assert(written_reg[0]==8 && written_value[0]==0x30);
+ assert(written_reg[1]==8 && written_value[1]==0xf0);
+ assert(written_reg[2]==0x0b && written_value[2]==0x14);
+ assert(written_reg[83]==0x0b && written_value[83]==0x94);
+ assert(written_reg[84]==8 && written_value[84]==0x30);
+ assert(written_reg[85]==8 && written_value[85]==0);
+ assert(bsp_battery_init()==ESP_OK && writes==complete_writes && reads==complete_reads);
+ // A later MCU boot with matching parameters does not rewrite or reset the gauge.
+ s_dev=NULL;assert(bsp_battery_init()==ESP_OK && writes==complete_writes);
+ for(unsigned soc=0;soc<=100;soc++) {raw_soc=soc*256+255;assert(bsp_battery_soc()==(int)soc);}
  assert(bsp_battery_mv()==3700 && voltage_reads==1);
- raw_soc=98*256+255;assert(bsp_battery_soc()==98);
- raw_soc=99*256+255;assert(bsp_battery_soc()==99); // no synthetic full charge
- raw_soc=100*256;assert(bsp_battery_soc()==100);
- raw_soc=255*256;assert(bsp_battery_soc()==-1);
- raw_soc=96*256;fail_read=2;
- assert(bsp_battery_soc()==96 && voltage_reads==1);
- assert(bsp_battery_mv()==-1);
- fail_read=4;assert(bsp_battery_soc()==-1);
+ raw_soc=0xfee8;unsigned before_reads=reads;
+ for(int i=0;i<20;i++) {now_us+=300000000;assert(bsp_battery_soc()==-1);}
+ assert(writes==complete_writes && reads==before_reads+20); // No periodic restart/profile polling.
+ raw_soc=83*256;assert(bsp_battery_soc()==83);
+ // Missing flag, mismatched last byte and erased bytes each require a verified rewrite.
+ reset();seed_profile();regs[0x0b]=0x14;assert(bsp_battery_init()==ESP_OK && profile_writes==80);
+ reset();seed_profile();regs[0x5f]^=1;assert(bsp_battery_init()==ESP_OK && profile_writes==80);
+ reset();memset(regs+0x10,255,80);assert(bsp_battery_init()==ESP_OK && profile_writes==80);
+ reset();seed_profile();regs[8]=0xf0;assert(bsp_battery_init()==ESP_OK && writes==2 && profile_writes==0);
+ // Startup calculation can settle; waiting is bounded and never maps 254 to a percentage.
+ reset();raw_soc=0xfee8;valid_after=3;assert(bsp_battery_init()==ESP_OK && soc_reads==3);
+ reset();raw_soc=0xfee8;assert(bsp_battery_init()==ESP_ERR_TIMEOUT && !s_dev && soc_reads==50);
+ assert(delay_ms==5150 && removes==1);unsigned attempts=adds;
+ for(int i=0;i<20;i++)assert(bsp_battery_soc()==-1);
+ assert(adds==attempts);now_us=s_init_retry_at_us;raw_soc=96*256;
+ assert(bsp_battery_soc()==96 && adds==attempts+1 && writes==complete_writes);
+ // Every failed write/read aborts initialization and can recover on the next permitted sample.
+ for(unsigned i=1;i<=complete_writes;i++) {
+  reset();fail_write_at=i;assert(bsp_battery_init()!=ESP_OK && !s_dev && removes==1 && writes==i);
+  fail_write_at=0;now_us=s_init_retry_at_us;
+  assert(bsp_battery_soc()==96 && s_dev && memcmp(regs+0x10,s_battery_profile,80)==0);
+ }
+ for(unsigned i=1;i<=complete_reads;i++) {
+  reset();fail_read_at=i;assert(bsp_battery_init()!=ESP_OK && !s_dev && removes==1 && reads==i);
+  fail_read_at=0;now_us=s_init_retry_at_us;assert(bsp_battery_soc()==96 && s_dev);
+ }
+ // Failed reads of an existing matching profile must never trigger an overwrite.
+ reset();seed_profile();assert(bsp_battery_init()==ESP_OK);unsigned matched_reads=reads;
+ for(unsigned i=1;i<=matched_reads;i++) {
+  reset();seed_profile();fail_read_at=i;
+  assert(bsp_battery_init()!=ESP_OK && !s_dev && writes==0);
+ }
+ // Acknowledged but ignored sleep/profile/flag/activation writes must fail readback.
+ const unsigned ignored[]={2,4,83,84,86};
+ for(unsigned j=0;j<sizeof(ignored)/sizeof(ignored[0]);j++) {
+  reset();ignore_write_at=ignored[j];assert(bsp_battery_init()!=ESP_OK && !s_dev);
+  ignore_write_at=0;now_us=s_init_retry_at_us;assert(bsp_battery_soc()==96);
+ }
+ reset();seed_profile();regs[0x5f]^=1;ignore_write_at=3;
+ assert(bsp_battery_init()!=ESP_OK && !s_dev && profile_writes==0); // Cannot clear update flag.
+ reset();fail_bus=true;assert(bsp_battery_init()!=ESP_OK && !s_dev && adds==0);
+ reset();fail_add=true;assert(bsp_battery_init()!=ESP_OK && !s_dev && reads==0);
+ reset();fail_read_at=1;assert(bsp_battery_init()==ESP_ERR_NOT_FOUND && !s_dev);
+ for(int i=0;i<20;i++)assert(bsp_battery_soc()==-1);
+ assert(adds==1);fail_read_at=0;now_us=s_init_retry_at_us-1;assert(bsp_battery_soc()==-1);
+ now_us++;assert(bsp_battery_soc()==96 && adds==2);
+ fail_read_at=reads+1;before_reads=reads;unsigned before_writes=writes;
+ assert(bsp_battery_soc()==-1 && reads==before_reads+1 && writes==before_writes);
+ puts("Battery original profile restore, verification, bounded startup retry and no periodic reset: PASS");
 }
 '''
         compile_run(code)

@@ -109,14 +109,14 @@ typedef enum {
     BATTERY_SAMPLE_DONE,
 } battery_sample_outcome_t;
 
-static battery_sample_outcome_t sample_battery_if_visible(bool available)
+static battery_sample_outcome_t sample_battery_if_visible(void)
 {
     if (!bsp_lvgl_lock(500)) return BATTERY_SAMPLE_RETRY;
     bool dark = pdkpass_ui_display_dark();
     bsp_lvgl_unlock();
     if (dark) return BATTERY_SAMPLE_PAUSE_DARK;
 
-    int soc = available ? bsp_battery_soc() : -1;
+    int soc = bsp_battery_soc();
     if (!bsp_lvgl_lock(500)) return BATTERY_SAMPLE_RETRY;
     pdkpass_ui_battery_update(soc);
     bsp_lvgl_unlock();
@@ -127,7 +127,7 @@ static battery_sample_outcome_t sample_battery_if_visible(bool available)
 // slow I2C never runs in the LVGL timer or button driver's context.
 static void ui_worker(void *arg)
 {
-    bool battery_available = (bool)(uintptr_t)arg;
+    (void)arg;
     TickType_t next_battery = xTaskGetTickCount();
     bool battery_paused_for_dark = false;
     bool monotonic_ready = false;
@@ -151,7 +151,7 @@ static void ui_worker(void *arg)
         if (!battery_paused_for_dark &&
             (int32_t)(now - next_battery) >= 0) {
             battery_sample_outcome_t outcome =
-                sample_battery_if_visible(battery_available);
+                sample_battery_if_visible();
             if (outcome == BATTERY_SAMPLE_PAUSE_DARK) {
                 // Keys and scheduled reminders can wake the dark display.
                 battery_paused_for_dark = true;
@@ -241,7 +241,7 @@ void app_main(void)
 
     s_keys = xQueueCreate(12, sizeof(key_event_t));
     if (!s_keys || xTaskCreate(ui_worker, "pdk_ui_io", 3072,
-                              (void *)(uintptr_t)battery_available, 3, NULL) != pdPASS) {
+                              NULL, 3, NULL) != pdPASS) {
         ESP_LOGE(TAG, "UI worker failed to start");
     }
     if (pdkpass_sound_start() != ESP_OK) {
