@@ -716,6 +716,10 @@ static void update_home_status(void)
 
 static void make_progress(size_t current, size_t total)
 {
+    // Fixed across circuit themes: red through orange to pale yellow.
+    static const uint32_t colors[] = {
+        UI_RED, 0xED652B, 0xF28C28, 0xF8B326, UI_YELLOW, 0xFFE66A,
+    };
     const int segments = 6;
     const int gap = 3;
     const int width = (184 - gap * (segments - 1)) / segments;
@@ -723,8 +727,7 @@ static void make_progress(size_t current, size_t total)
                                    total) : 0;
     int x = 13;
     for (int i = 0; i < segments; i++) {
-        uint32_t color = i < filled ? (i == 0 ? UI_RED : UI_YELLOW)
-                                    : UI_PAPER;
+        uint32_t color = i < filled ? colors[i] : UI_PAPER;
         make_card(s_content, x, 168, width, 9, color, 2);
         x += width + gap;
     }

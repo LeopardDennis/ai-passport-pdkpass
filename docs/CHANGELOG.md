@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Give the six home-page progress segments a fixed red-to-yellow sequence: red, red-orange, orange, gold, yellow and pale yellow. Unreached segments stay off-white; retain segment geometry, fill thresholds and the current/total race label across all circuit themes.
+
 - Replace NETWORK BACK with a persistent, default-on BEEP switch. Keep long-OK return and the four-row layout. Muting is silent; enabling plays one confirmation. BEEP controls key cues independently from ALERTS; both off mute all application sound cues. Save settings on the worker with bounded failure retries.
 
 - Prepare the release firmware: remove battery-profile restoration progress, Wi-Fi idle/retry scheduling messages, HTTP reconnect/recovery progress and heap snapshots. Retain actionable failure reports and the original-cell battery repair.
