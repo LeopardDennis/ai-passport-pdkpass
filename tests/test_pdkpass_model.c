@@ -258,6 +258,10 @@ int main(void)
     pdkpass_state_handle(&state, PDKPASS_INPUT_UP, 23, 23, 11);
     assert(state.network_selection == 3);
     pdkpass_state_handle(&state, PDKPASS_INPUT_OK, 23, 23, 11);
+    assert(state.page == PDKPASS_PAGE_NETWORK && state.network_selection == 3);
+    pdkpass_state_handle(&state, PDKPASS_INPUT_DOWN, 23, 23, 11);
+    assert(state.network_selection == 0);
+    pdkpass_state_handle(&state, PDKPASS_INPUT_BACK, 23, 23, 11);
     assert(state.page == PDKPASS_PAGE_HOME);
     return 0;
 }

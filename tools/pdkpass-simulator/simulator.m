@@ -108,6 +108,11 @@ bool pdkpass_reminder_round_schedule(unsigned year, int32_t meeting_key,
 { (void)year; (void)meeting_key; (void)entries; return false; }
 bool pdkpass_reminder_enabled(void) { return s_reminders_enabled; }
 void pdkpass_reminder_set_enabled(bool enabled) { s_reminders_enabled = enabled; }
+static bool s_beep_enabled = true;
+bool pdkpass_sound_beep_enabled(void) { return s_beep_enabled; }
+void pdkpass_sound_set_beep_enabled(bool enabled) { s_beep_enabled = enabled; }
+static bool s_defer_ok;
+void pdkpass_sound_defer_ok(bool defer) { s_defer_ok = defer; }
 void pdkpass_sound_reminder_play(void) { s_reminder_sound_playing = true; }
 void pdkpass_sound_reminder_stop(void) { s_reminder_sound_playing = false; }
 

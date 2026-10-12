@@ -114,7 +114,8 @@ static void render_network_menu(void)
                           &lv_font_unscii_8, UI_PAPER);
     }
     const char *titles[] = {"WI-FI SETUP", "RETRY WI-FI",
-        pdkpass_reminder_enabled() ? "ALERTS: ON" : "ALERTS: OFF", "BACK"};
+        pdkpass_reminder_enabled() ? "ALERTS: ON" : "ALERTS: OFF",
+        pdkpass_sound_beep_enabled() ? "BEEP: ON" : "BEEP: OFF"};
     for (unsigned i = 0; i < 4U; i++) {
         bool selected = s_state.network_selection == i;
         uint32_t ink = selected ? UI_INK : UI_SKY_DARK;

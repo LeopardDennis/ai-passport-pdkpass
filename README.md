@@ -126,7 +126,15 @@ change the saved setting. Every scheduled FP1, FP2, FP3, sprint qualifying,
 sprint, qualifying and race session rings once, ten minutes before its start.
 Missing or cancelled sessions do not ring. Schedule updates change the deadline.
 The same switch controls the cue when a session result is first saved; button
-cues remain available when `ALERTS` is off.
+cues are controlled independently by `BEEP`.
+
+The fourth NETWORK row is `BEEP: ON/OFF`, replacing BACK without changing the
+layout. It defaults to ON and persists across restarts. Short OK toggles it:
+turning it off is silent, and turning it on plays one confirmation. It controls
+all button cues, including long-OK return sounds. Hold OK to return; the footer
+retains `HOLD:BACK`. With both BEEP and ALERTS off, button, session-reminder and
+new-result sounds are muted. Settings save asynchronously; failed saves retry
+after five seconds.
 
 The approved three-second melody plays at 80%; button cues remain at 50%.
 Audio initialization/open failures retry on a new cue after at least 60 seconds;

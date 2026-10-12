@@ -1387,8 +1387,15 @@ static void render_reminder(void)
                    &pdkpass_body_font, 256, UI_INK);
 }
 
+static void update_key_sound_context(void)
+{
+    pdkpass_sound_defer_ok(s_idle_stage != 2 && !s_reminder_visible &&
+        s_state.page == PDKPASS_PAGE_NETWORK && s_state.network_selection == 3U);
+}
+
 static void render(void)
 {
+    update_key_sound_context();
     if (s_idle_stage == 2) { s_needs_render = true; return; }
     s_needs_render = false;
     if (s_reminder_visible) { render_reminder(); return; }
@@ -1563,6 +1570,7 @@ static void idle_tick(lv_timer_t *timer)
         bsp_display_sleep(true);
         pdkpass_power_display(false);
         s_idle_stage = 2;
+        update_key_sound_context();
         lv_timer_pause(s_sync_timer);
         if (s_state.page == PDKPASS_PAGE_HOME && s_state.home_browsing) {
             pdkpass_state_reset_home_race(&s_state, s_season.race_count);
@@ -1625,6 +1633,7 @@ void pdkpass_ui_reminder_show(const pdkpass_reminder_entry_t *alert)
     if (s_idle_stage != 2 || bsp_display_sleep(false) == ESP_OK) {
         bsp_lvgl_set_drawing(true);
         s_idle_stage = 0;
+        update_key_sound_context();
         manual_sync_tick(NULL);
         lv_timer_reset(s_sync_timer);
         lv_timer_resume(s_sync_timer);
@@ -1825,6 +1834,7 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         }
         s_last_activity = lv_tick_get();
         s_idle_stage = 0;
+        update_key_sound_context();
         if (was_off) {
             manual_sync_tick(NULL);
             lv_timer_reset(s_sync_timer);
@@ -1888,6 +1898,12 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         return;
     }
     if (s_state.page == PDKPASS_PAGE_NETWORK && input == PDKPASS_INPUT_OK &&
+        s_state.network_selection == 3U) {
+        pdkpass_sound_set_beep_enabled(!pdkpass_sound_beep_enabled());
+        render();
+        return;
+    }
+    if (s_state.page == PDKPASS_PAGE_NETWORK && input == PDKPASS_INPUT_OK &&
         s_state.network_selection == 2U) {
         pdkpass_reminder_set_enabled(!pdkpass_reminder_enabled());
         render();
@@ -1942,6 +1958,7 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         (previous.page == PDKPASS_PAGE_HOME || previous.page == PDKPASS_PAGE_CALENDAR))
         s_detail_default_pending = true;
     if (memcmp(&previous, &s_state, sizeof(s_state)) == 0) return;
+    update_key_sound_context();
     if (previous.page == PDKPASS_PAGE_NETWORK &&
         s_state.page == PDKPASS_PAGE_NETWORK &&
         update_network_selection(previous.network_selection,

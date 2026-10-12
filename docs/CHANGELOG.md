@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Replace NETWORK BACK with a persistent, default-on BEEP switch. Keep long-OK return and the four-row layout. Muting is silent; enabling plays one confirmation. BEEP controls key cues independently from ALERTS; both off mute all application sound cues. Save settings on the worker with bounded failure retries.
+
 - Prepare the release firmware: remove battery-profile restoration progress, Wi-Fi idle/retry scheduling messages, HTTP reconnect/recovery progress and heap snapshots. Retain actionable failure reports and the original-cell battery repair.
 
 - Restore missing or mismatched CW2017 battery parameters at startup using the official original-cell profile. Verify sleep mode, all 80 written bytes and the update flag before activating the gauge; wait at most five seconds for valid SOC. Retry failed initialization at most once a minute on visible-screen samples. Remove the previous five-minute invalid-SOC reset loop and retain real percentage reporting.

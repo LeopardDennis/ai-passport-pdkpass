@@ -3,6 +3,18 @@
 #include "bsp_button.h"
 #include "esp_err.h"
 #include <stdbool.h>
+#include <stdint.h>
+
+// Load after cache initialization, before UI/buttons. Missing/invalid data defaults ON.
+void pdkpass_sound_settings_init(void (*wake_worker)(void));
+// Call only on the UI I/O worker, outside the LVGL lock. Failed saves retry after 5 s.
+void pdkpass_sound_settings_poll(void);
+uint32_t pdkpass_sound_settings_wait_ms(void);
+// Non-blocking, independent of ALERTS. Enabling queues one confirmation tone.
+bool pdkpass_sound_beep_enabled(void);
+void pdkpass_sound_set_beep_enabled(bool enabled);
+// UI publishes whether OK targets BEEP; defer that PRESS until the toggle commits.
+void pdkpass_sound_defer_ok(bool defer);
 
 // Prepares audio on a worker at startup; closes it after 250 ms idle.
 // Failed init/open attempts retry on a new cue after at least 60 seconds.

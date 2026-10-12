@@ -134,6 +134,7 @@ static void ui_worker(void *arg)
     bool alert_pending = false;
     pdkpass_reminder_entry_t alert;
     for (;;) {
+        pdkpass_sound_settings_poll();
         dispatch_ui_updates();
         if (!monotonic_ready && bsp_lvgl_lock(500)) {
             monotonic_ready = bsp_lvgl_use_monotonic_clock() == ESP_OK;
@@ -169,6 +170,9 @@ static void ui_worker(void *arg)
         uint32_t reminder_ms = pdkpass_reminder_wait_ms((int64_t)time(NULL));
         if (reminder_ms != UINT32_MAX && pdMS_TO_TICKS(reminder_ms) < wait)
             wait = pdMS_TO_TICKS(reminder_ms);
+        uint32_t settings_ms = pdkpass_sound_settings_wait_ms();
+        if (settings_ms != UINT32_MAX && pdMS_TO_TICKS(settings_ms) < wait)
+            wait = pdMS_TO_TICKS(settings_ms);
         if (!wait) wait = 1;
         if (ui_updates_pending() && wait > pdMS_TO_TICKS(100))
             wait = pdMS_TO_TICKS(100);
@@ -216,6 +220,7 @@ void app_main(void)
                  esp_err_to_name(cache_err));
         return; // No service may access an unsuccessfully initialized partition.
     }
+    pdkpass_sound_settings_init(wake_reminder_worker);
     pdkpass_sync_status_init(on_data_status);
     if (pdkpass_reminder_init(wake_reminder_worker) != ESP_OK)
         ESP_LOGW(TAG, "Session reminders unavailable");

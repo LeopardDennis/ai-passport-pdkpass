@@ -1179,6 +1179,9 @@ static bool reenable;
 bool pdkpass_reminder_enabled(void) {return atomic_load(&s_enabled);}
 void pdkpass_reminder_set_enabled(bool enabled);
 void pdkpass_sound_reminder_stop(void);
+static atomic_bool s_defer_ok;
+static bool beep_enabled=true;
+bool pdkpass_sound_beep_enabled(void) {return beep_enabled;}
 static pdkpass_sound_kind_t last_kind;
 bool pdkpass_sound_consume_key(bsp_btn_t button,bsp_btn_ev_t event);
 static int xQueueOverwrite(QueueHandle_t queue,const void *value) {
@@ -1219,9 +1222,11 @@ static int bsp_audio_write(const void *pcm,size_t bytes) {
         code += r'''
 int main(void) {
  assert(sizeof(s_reminder_pcm)==96000);
+ beep_enabled=false;
  pdkpass_sound_reminder_play();
  assert(last_kind==PDKPASS_SOUND_REMINDER&&atomic_load(&s_reminder_active));
  play_reminder();assert(samples==48000&&stops==1&&delays==1&&volume==50);
+ beep_enabled=true;
  // Notice lasts 15 seconds even though the three-second audio has ended.
  on_key(BSP_BTN_DOWN,BSP_BTN_PRESS,NULL);
  assert(!atomic_load(&s_reminder_active)&&ui_events==1&&key_cues==0);
@@ -1261,6 +1266,93 @@ int main(void) {
 '''
         compile_run(code)
 
+    def test_beep_settings_persistence_and_confirmation(self):
+        source = production_source(ROOT / 'main/pdkpass_sound.c')
+        code = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdatomic.h>
+#include "bsp_button.h"
+#include "pdkpass_sound_core.h"
+#define ESP_LOGW(...) ((void)0)
+static atomic_bool s_beep_enabled=true,s_reminder_active,s_defer_ok;
+static bool s_saved_beep=true;
+static int64_t s_settings_retry_us,now_us;
+static void (*s_settings_wake)(void);
+static void *s_queue=(void *)1;
+static unsigned writes,wakes,cues;
+static bool have_value,fail_write,fail_read,concurrent_toggle;
+static uint8_t disk_value;
+static size_t disk_size=1;
+static int64_t esp_timer_get_time(void) {return now_us;}
+static void wake(void) {wakes++;}
+static int xQueueOverwrite(void *queue,const void *data) {
+ assert(queue==s_queue && *(const pdkpass_sound_kind_t *)data==PDKPASS_SOUND_OK);
+ cues++;return 1;
+}
+static esp_err_t pdkpass_cache_read_blob(const char *ns,const char *key,void *data,size_t *size) {
+ assert(!strcmp(ns,"pdk_sound") && !strcmp(key,"beep") && *size==1);
+ if(fail_read || !have_value)return -1;
+ *(uint8_t *)data=disk_value;*size=disk_size;return ESP_OK;
+}
+static esp_err_t pdkpass_cache_write_blob(const char *ns,const char *key,const void *data,size_t size) {
+ assert(!strcmp(ns,"pdk_sound") && !strcmp(key,"beep") && size==1);writes++;
+ if(fail_write)return -1;
+ disk_value=*(const uint8_t *)data;disk_size=1;have_value=true;
+ if(concurrent_toggle)atomic_store(&s_beep_enabled,true);
+ return ESP_OK;
+}
+'''
+        for sig in ['void pdkpass_sound_settings_init(', 'bool pdkpass_sound_beep_enabled(',
+                    'void pdkpass_sound_set_beep_enabled(', 'void pdkpass_sound_defer_ok(',
+                    'uint32_t pdkpass_sound_settings_wait_ms(', 'void pdkpass_sound_settings_poll(']:
+            code += function(source, sig)
+        code += r'''
+int main(void) {
+ pdkpass_sound_settings_init(wake);
+ assert(pdkpass_sound_beep_enabled() && cues==0 && writes==0);
+ assert(pdkpass_sound_settings_wait_ms()==UINT32_MAX);
+ pdkpass_sound_defer_ok(true);assert(atomic_load(&s_defer_ok));
+ pdkpass_sound_set_beep_enabled(false);
+ assert(!pdkpass_sound_beep_enabled() && cues==0 && wakes==1 && writes==0);
+ assert(pdkpass_sound_settings_wait_ms()==0);
+ pdkpass_sound_settings_poll();assert(writes==1 && disk_value==0);
+ pdkpass_sound_settings_poll();assert(writes==1);
+ pdkpass_sound_settings_init(wake);assert(!pdkpass_sound_beep_enabled() && cues==0);
+ pdkpass_sound_set_beep_enabled(true);assert(cues==1 && wakes==2 && writes==1);
+ pdkpass_sound_set_beep_enabled(true);assert(cues==1 && wakes==2);
+ pdkpass_sound_settings_poll();assert(writes==2 && disk_value==1);
+ pdkpass_sound_settings_init(wake);assert(pdkpass_sound_beep_enabled());
+ // Persistence failure leaves previous durable value and retries without blocking keys.
+ pdkpass_sound_set_beep_enabled(false);fail_write=true;
+ pdkpass_sound_settings_poll();assert(writes==3 && disk_value==1 && !pdkpass_sound_beep_enabled());
+ assert(pdkpass_sound_settings_wait_ms()==5000);
+ for(int i=0;i<20;i++)pdkpass_sound_settings_poll();assert(writes==3);
+ now_us=4999999;assert(pdkpass_sound_settings_wait_ms()==1);
+ pdkpass_sound_settings_poll();assert(writes==3);
+ now_us=5000000;fail_write=false;pdkpass_sound_settings_poll();
+ assert(writes==4 && disk_value==0 && pdkpass_sound_settings_wait_ms()==UINT32_MAX);
+ pdkpass_sound_settings_init(wake);assert(!pdkpass_sound_beep_enabled());
+ // A new setting arriving during a save cannot be lost.
+ pdkpass_sound_set_beep_enabled(true);pdkpass_sound_settings_poll();
+ pdkpass_sound_set_beep_enabled(false);concurrent_toggle=true;pdkpass_sound_settings_poll();
+ assert(disk_value==0 && pdkpass_sound_settings_wait_ms()==0);
+ concurrent_toggle=false;pdkpass_sound_settings_poll();assert(disk_value==1);
+ // Malformed/missing settings default ON without touching other namespaces.
+ disk_value=2;pdkpass_sound_settings_init(wake);assert(pdkpass_sound_beep_enabled());
+ disk_value=0;disk_size=0;pdkpass_sound_settings_init(wake);assert(pdkpass_sound_beep_enabled());
+ disk_size=1;fail_read=true;pdkpass_sound_settings_init(wake);assert(pdkpass_sound_beep_enabled());
+ fail_read=false;pdkpass_sound_settings_init(wake);assert(!pdkpass_sound_beep_enabled());
+ atomic_store(&s_reminder_active,true);unsigned before=cues;
+ pdkpass_sound_set_beep_enabled(true);assert(cues==before); // Do not replace a reminder.
+ puts("BEEP default, restart retention, silent OFF, ON confirmation and failed-save retry: PASS");
+}
+'''
+        compile_run(code)
+
     def test_sound_press_dispatch_and_worker_lifecycle(self):
         source = production_source(ROOT / 'main/pdkpass_sound.c')
         main_source = production_source(ROOT / 'main/main.c')
@@ -1289,9 +1381,11 @@ static int64_t now_us;
 static int64_t esp_timer_get_time(void) {return now_us;}
 static bool retry_case, open_fail;
 static bool init_fail, write_fail, coalesced, alerts_enabled=true;
-static bool queued_disabled_result, queued_enabled_result, queued_disabled_reminder;
+static bool queued_disabled_result, queued_enabled_result, queued_disabled_reminder, queued_muted_key, mute_during_open;
 bool pdkpass_reminder_enabled(void) {return alerts_enabled;}
 static atomic_bool s_reminder_active, s_reminder_cancelled;
+static atomic_bool s_defer_ok, s_beep_enabled = true;
+bool pdkpass_sound_beep_enabled(void) {return atomic_load(&s_beep_enabled);}
 static void pdkpass_sound_reminder_stop(void) {atomic_store(&s_reminder_active,false);atomic_store(&s_reminder_cancelled,true);}
 
 static void play_reminder(void) {assert(false);}
@@ -1299,7 +1393,9 @@ static bool pdkpass_sound_consume_key(bsp_btn_t btn,bsp_btn_ev_t ev) {(void)btn;
 static pdkpass_sound_kind_t last_kind, rendered[4];
 static int bsp_audio_init_playback(void) {init_calls++;return init_fail ? -1 : ESP_OK;}
 static int bsp_audio_set_format(unsigned hz,unsigned bits,unsigned channels) {
- assert(hz==16000 && bits==16 && channels==1);opens++;return open_fail ? -1 : ESP_OK;
+ assert(hz==16000 && bits==16 && channels==1);opens++;
+ if(mute_during_open) atomic_store(&s_beep_enabled,false);
+ return open_fail ? -1 : ESP_OK;
 }
 static void bsp_audio_set_volume(unsigned value) {volume=value;}
 static void bsp_audio_stop(void) {stops++;}
@@ -1328,6 +1424,11 @@ static int xQueueSend(QueueHandle_t queue,const void *value,unsigned wait) {
 }
 static int xQueueReceive(QueueHandle_t queue,void *value,unsigned wait) {
  assert(queue==s_queue);
+ if(queued_muted_key) {
+  if(wait==0)return 0;
+  if(step++==0) {*(pdkpass_sound_kind_t *)value=PDKPASS_SOUND_OK;return pdTRUE;}
+  assert(writes==0);longjmp(done,1);
+ }
  if(queued_disabled_reminder) {
   if(wait==0)return 0;
   if(step++==0) {
@@ -1437,7 +1538,17 @@ int main(void) {
  assert(sounds==5); // ALERTS OFF suppresses new result cues.
  on_key(BSP_BTN_UP,BSP_BTN_PRESS,NULL);
  assert(sounds==6 && last_kind==PDKPASS_SOUND_UP); // Buttons still sound.
+ atomic_store(&s_defer_ok,true);
+ on_key(BSP_BTN_OK,BSP_BTN_PRESS,NULL);assert(sounds==6);
+ on_key(BSP_BTN_OK,BSP_BTN_LONG,NULL);assert(sounds==7&&last_kind==PDKPASS_SOUND_BACK);
+ atomic_store(&s_defer_ok,false);atomic_store(&s_beep_enabled,false);
+ on_key(BSP_BTN_UP,BSP_BTN_PRESS,NULL);on_key(BSP_BTN_DOWN,BSP_BTN_PRESS,NULL);
+ on_key(BSP_BTN_OK,BSP_BTN_PRESS,NULL);on_key(BSP_BTN_OK,BSP_BTN_LONG,NULL);
+ assert(sounds==7); // Both off: no key cue or result cue.
+ pdkpass_sound_result_ready();assert(sounds==7);
  alerts_enabled=true;
+ pdkpass_sound_result_ready();assert(sounds==8); // BEEP OFF does not mute ALERTS.
+ atomic_store(&s_beep_enabled,true);
  if(setjmp(done)==0) sound_worker(NULL);
  assert(probes==3 && volume==50);
  step=init_calls=opens=stops=writes=delays=0;coalesced=false;write_fail=true;
@@ -1449,9 +1560,10 @@ int main(void) {
  if(setjmp(done)==0) sound_worker(NULL);
  assert(writes==0); // A queued result cue is dropped if ALERTS turns off.
  step=init_calls=opens=stops=writes=delays=0;queued_disabled_result=false;
- queued_enabled_result=true;alerts_enabled=true;
+ queued_enabled_result=true;alerts_enabled=true;atomic_store(&s_beep_enabled,false);
  if(setjmp(done)==0) sound_worker(NULL);
  assert(writes==1 && rendered[0]==PDKPASS_SOUND_RESULT_READY && volume==50);
+ atomic_store(&s_beep_enabled,true);
  step=init_calls=opens=stops=writes=delays=0;queued_enabled_result=false;
  queued_disabled_reminder=true;alerts_enabled=false;
  if(setjmp(done)==0) sound_worker(NULL);
@@ -1460,7 +1572,12 @@ int main(void) {
  retry_case=true;init_fail=true;now_us=0;coalesced=true;
  if(setjmp(done)==0) sound_worker(NULL);
  assert(!atomic_load(&s_reminder_active));
- puts("Press dispatch, warm audio reuse, idle stop and audio failure cleanup: PASS");
+ retry_case=false;init_fail=false;queued_muted_key=true;
+ step=init_calls=opens=stops=writes=delays=0;atomic_store(&s_beep_enabled,false);
+ if(setjmp(done)==0) sound_worker(NULL);
+ step=init_calls=opens=stops=writes=delays=0;atomic_store(&s_beep_enabled,true);mute_during_open=true;
+ if(setjmp(done)==0) sound_worker(NULL);
+ puts("Press dispatch, BEEP/ALERTS independence, queued mute and audio lifecycle: PASS");
 }
 """
         compile_run(code)

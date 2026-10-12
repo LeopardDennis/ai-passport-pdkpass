@@ -1,6 +1,7 @@
 #include "pdkpass_sound.h"
 
 #include "bsp_audio.h"
+#include "pdkpass_cache.h"
 #include "pdkpass_reminder.h"
 #include "pdkpass_sound_core.h"
 #include "esp_log.h"
@@ -27,6 +28,60 @@ _Static_assert(sizeof(s_reminder_pcm) / sizeof(s_reminder_pcm[0]) == 48000,
 static atomic_bool s_reminder_active;
 static atomic_bool s_reminder_cancelled = true;
 static int s_consumed_button = -1; // Owned by the button callback.
+static atomic_bool s_beep_enabled = true;
+static atomic_bool s_defer_ok;
+// Settings initialization precedes the UI; persistence belongs to the UI I/O worker.
+static bool s_saved_beep = true;
+static int64_t s_settings_retry_us;
+static void (*s_settings_wake)(void);
+
+void pdkpass_sound_settings_init(void (*wake_worker)(void))
+{
+    uint8_t enabled = 1;
+    size_t size = sizeof(enabled);
+    if (pdkpass_cache_read_blob("pdk_sound", "beep", &enabled, &size) != ESP_OK ||
+        size != sizeof(enabled) || enabled > 1) enabled = 1;
+    s_saved_beep = enabled != 0;
+    atomic_store(&s_beep_enabled, s_saved_beep);
+    s_settings_retry_us = 0;
+    s_settings_wake = wake_worker;
+}
+
+bool pdkpass_sound_beep_enabled(void) { return atomic_load(&s_beep_enabled); }
+
+void pdkpass_sound_set_beep_enabled(bool enabled)
+{
+    if (atomic_exchange(&s_beep_enabled, enabled) == enabled) return;
+    if (s_settings_wake) s_settings_wake();
+    // The toggle's PRESS is deferred: only enabling produces confirmation.
+    if (enabled && s_queue && !atomic_load(&s_reminder_active)) {
+        pdkpass_sound_kind_t kind = PDKPASS_SOUND_OK;
+        xQueueOverwrite(s_queue, &kind);
+    }
+}
+
+void pdkpass_sound_defer_ok(bool defer) { atomic_store(&s_defer_ok, defer); }
+
+uint32_t pdkpass_sound_settings_wait_ms(void)
+{
+    if (pdkpass_sound_beep_enabled() == s_saved_beep) return UINT32_MAX;
+    int64_t remaining = s_settings_retry_us - esp_timer_get_time();
+    return remaining > 0 ? (uint32_t)((remaining + 999) / 1000) : 0;
+}
+
+void pdkpass_sound_settings_poll(void)
+{
+    if (pdkpass_sound_settings_wait_ms() != 0) return;
+    uint8_t enabled = pdkpass_sound_beep_enabled() ? 1 : 0;
+    esp_err_t err = pdkpass_cache_write_blob("pdk_sound", "beep", &enabled, sizeof(enabled));
+    if (err == ESP_OK) {
+        s_saved_beep = enabled != 0;
+        s_settings_retry_us = 0;
+    } else {
+        s_settings_retry_us = esp_timer_get_time() + 5000000LL;
+        ESP_LOGW(TAG, "Beep setting not saved: %s", esp_err_to_name(err));
+    }
+}
 
 void pdkpass_sound_reminder_play(void)
 {
@@ -129,6 +184,9 @@ static void sound_worker(void *unused)
         // The ALERTS setting may have been turned off after this cue queued.
         if (kind == PDKPASS_SOUND_RESULT_READY && !pdkpass_reminder_enabled())
             continue;
+        // Recheck after queueing/codec startup, so muted pending key cues expire.
+        if (kind != PDKPASS_SOUND_RESULT_READY && !pdkpass_sound_beep_enabled())
+            continue;
         size_t count = pdkpass_sound_render(kind, s_pcm, PDKPASS_SOUND_SAMPLES);
         if (count > 0U) {
             if (kind == PDKPASS_SOUND_RESULT_READY)
@@ -163,6 +221,8 @@ esp_err_t pdkpass_sound_start(void)
 
 void pdkpass_sound_key(bsp_btn_t button, bsp_btn_ev_t event)
 {
+    if (!pdkpass_sound_beep_enabled() ||
+        (button == BSP_BTN_OK && event == BSP_BTN_PRESS && atomic_load(&s_defer_ok))) return;
     if (atomic_load(&s_reminder_active) || !s_queue || (event != BSP_BTN_PRESS &&
                      !(event == BSP_BTN_LONG && button == BSP_BTN_OK))) return;
     pdkpass_sound_kind_t kind;

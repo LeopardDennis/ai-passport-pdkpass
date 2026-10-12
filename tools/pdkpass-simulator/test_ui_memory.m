@@ -562,8 +562,9 @@ int main(void)
             lv_obj_t *label = find_label(lv_screen_active(), sync_rows[row]);
             assert(label && lv_obj_get_y(label) == (int)row * 14);
         }
-        lv_obj_t *back = lv_obj_get_parent(find_label(lv_screen_active(), "BACK"));
-        assert(lv_obj_get_y(back) + lv_obj_get_height(back) <= 177);
+        lv_obj_t *beep = lv_obj_get_parent(find_label(lv_screen_active(), "BEEP: ON"));
+        assert(lv_obj_get_y(beep) + lv_obj_get_height(beep) <= 177);
+        assert(!find_label(lv_screen_active(), "BACK"));
         for(unsigned i=0;i<4;i++) {
             lv_obj_t *label=find_label(lv_screen_active(),"ALERTS: ON");
             assert(label);
@@ -577,10 +578,29 @@ int main(void)
         check_memory();
         simulator_send_button(BSP_BTN_OK,BSP_BTN_CLICK);
         assert(pdkpass_reminder_enabled());
-        // The fourth menu action returns directly home.
+        // Fourth-row BEEP toggles in place; only long OK returns home.
+        assert(!s_defer_ok);
+        simulator_send_button(BSP_BTN_DOWN,BSP_BTN_CLICK);
+        assert(s_defer_ok);
+        simulator_send_button(BSP_BTN_OK,BSP_BTN_CLICK);
+        assert(!pdkpass_sound_beep_enabled() && pdkpass_reminder_enabled());
+        assert(find_label(lv_screen_active(), "BEEP: OFF"));
+        check_memory();
+        simulator_send_button(BSP_BTN_UP,BSP_BTN_CLICK);
+        assert(!s_defer_ok);
+        simulator_send_button(BSP_BTN_OK,BSP_BTN_CLICK);
+        assert(!pdkpass_reminder_enabled() && !pdkpass_sound_beep_enabled());
         simulator_send_button(BSP_BTN_DOWN,BSP_BTN_CLICK);
         simulator_send_button(BSP_BTN_OK,BSP_BTN_CLICK);
-        assert(!find_label(lv_screen_active(), "ALERTS: ON"));
+        assert(pdkpass_sound_beep_enabled() && !pdkpass_reminder_enabled());
+        assert(find_label(lv_screen_active(), "BEEP: ON"));
+        assert(s_defer_ok);
+        lv_tick_inc(91000);lv_timer_handler();lv_timer_handler();
+        assert(pdkpass_ui_display_dark() && !s_defer_ok);
+        simulator_send_button(BSP_BTN_OK,BSP_BTN_CLICK); // Wake does not toggle.
+        assert(pdkpass_sound_beep_enabled() && s_defer_ok);
+        simulator_send_button(BSP_BTN_OK,BSP_BTN_LONG);
+        assert(!s_defer_ok && !find_label(lv_screen_active(), "BEEP: ON"));
         check_memory();
         lv_mem_monitor_t memory;
         lv_mem_monitor(&memory);
