@@ -29,6 +29,11 @@ def function(source, signature):
         end += 1
     return source[start:end] + '\n'
 
+def calendar_types(source):
+    start = source.index('typedef struct {\n    int32_t keys[PDKPASS_SESSION_COUNT];')
+    end = source.index('} race_build_t;', start) + len('} race_build_t;')
+    return source[start:end] + '\n'
+
 def compile_run(code, extra=()):
     with tempfile.TemporaryDirectory(prefix='pdkpass-services-') as directory:
         source = Path(directory) / 'test.c'
@@ -1098,6 +1103,8 @@ bool pdkpass_season_has_cached_data(void) {return cached_calendar;}
                     'void pdkpass_reminder_set_time_valid(', 'void pdkpass_reminder_season_changed(',
                     'static void reconcile_calendar(', 'bool pdkpass_reminder_enabled(',
                     'void pdkpass_reminder_set_enabled(', 'void pdkpass_reminder_update_round(',
+                    'bool pdkpass_reminder_update_calendar_round(',
+                    'bool pdkpass_reminder_round_schedule(',
                     'bool pdkpass_reminder_poll(', 'uint32_t pdkpass_reminder_wait_ms(']:
             code += function(source, sig)
         code += r'''
@@ -1147,6 +1154,41 @@ int main(void) {
  pdkpass_reminder_season_changed();
  assert(!pdkpass_reminder_poll(start-570,&alert));
  assert(s_store.schedule.entries[0].flags&PDKPASS_REMINDER_CANCELLED);
+ // Calendar patch: ALERTS OFF still stores starts, omissions retain known data.
+ pdkpass_reminder_set_enabled(false);
+ memset(entries,0,sizeof(entries));
+ entries[PDKPASS_SESSION_FP1]=(pdkpass_reminder_entry_t){.session_key=900,.start_utc=start+10000};
+ entries[PDKPASS_SESSION_FP2]=(pdkpass_reminder_entry_t){.session_key=901,.start_utc=start+20000};
+ entries[PDKPASS_SESSION_FP3]=(pdkpass_reminder_entry_t){.session_key=902,.start_utc=start+30000};
+ assert(pdkpass_reminder_update_calendar_round(2026,1,500,entries,NULL));
+ fail_save=true;assert(!pdkpass_reminder_poll(start,&alert));
+ fail_save=false;assert(!pdkpass_reminder_poll(start+5,&alert));
+ s_lock=0;memset(&s_store,0,sizeof(s_store));assert(pdkpass_reminder_init(wake)==ESP_OK);
+ assert(!pdkpass_reminder_enabled());
+ pdkpass_reminder_entry_t loaded[PDKPASS_SESSION_COUNT];
+ assert(pdkpass_reminder_round_schedule(2026,500,loaded));
+ assert(loaded[PDKPASS_SESSION_FP2].start_utc==start+20000);
+ assert(loaded[PDKPASS_SESSION_FP3].start_utc==start+30000);
+ memset(entries,0,sizeof(entries));
+ entries[PDKPASS_SESSION_FP1]=(pdkpass_reminder_entry_t){.session_key=900,.start_utc=start+11000};
+ assert(pdkpass_reminder_update_calendar_round(2026,1,500,entries,NULL));
+ assert(pdkpass_reminder_round_schedule(2026,500,loaded));
+ assert(loaded[PDKPASS_SESSION_FP1].start_utc==start+11000);
+ assert(loaded[PDKPASS_SESSION_FP2].start_utc==start+20000);
+ assert(!(loaded[PDKPASS_SESSION_FP2].flags&PDKPASS_REMINDER_CANCELLED));
+ // Explicit cancellation overrides the cached time; an older year cannot erase it.
+ memset(entries,0,sizeof(entries));
+ entries[PDKPASS_SESSION_FP3]=(pdkpass_reminder_entry_t){.session_key=902,.flags=PDKPASS_REMINDER_CANCELLED};
+ assert(pdkpass_reminder_update_calendar_round(2026,1,500,entries,NULL));
+ assert(pdkpass_reminder_round_schedule(2026,500,loaded));
+ assert(loaded[PDKPASS_SESSION_FP3].flags&PDKPASS_REMINDER_CANCELLED);
+ assert(!pdkpass_reminder_update_calendar_round(2025,1,500,entries,NULL));
+ // Repeated identical syncs must not dirty NVS or wake the worker.
+ assert(!pdkpass_reminder_poll(start+6,&alert));
+ unsigned saved_wakes=wakes;previous=writes;bool changed=true;
+ assert(pdkpass_reminder_update_calendar_round(2026,1,500,entries,&changed));
+ assert(!changed);
+ assert(wakes==saved_wakes&&!s_dirty&&writes==previous);
  puts("Reminder NVS failure/retry, persisted dismissal, toggle and cancelled meeting: PASS");
 }
 '''
@@ -2213,7 +2255,7 @@ int main(void) {
 
     def test_jolpica_sync_survives_openf1_failure(self):
         source = production_source(ROOT / 'main/pdkpass_season.c')
-        code = PRELUDE + r'''
+        code = PRELUDE + calendar_types(source) + r'''
 static unsigned marks[PDKPASS_SYNC_STATUS_COUNT];
 void pdkpass_sync_mark_success(pdkpass_sync_status_t status,int64_t utc) {
  (void)utc;assert((unsigned)status<PDKPASS_SYNC_STATUS_COUNT);marks[status]++;
@@ -2221,15 +2263,21 @@ void pdkpass_sync_mark_success(pdkpass_sync_status_t status,int64_t utc) {
 #define ESP_ERR_NO_MEM 0x101
 static pdkpass_season_snapshot_t s_season;
 static bool s_has_cached_data,calendar_ok,points_ok,save_ok=true;
-static int saves,callbacks,fetches;
+static int saves,callbacks,fetches,schedule_publishes;
+static bool schedule_ok=true,schedule_changed=true;
 static void callback(void) {callbacks++;}
 static pdkpass_season_callback_t s_callback=callback;
 bool pdkpass_season_snapshot(pdkpass_season_snapshot_t *out) {*out=s_season;return true;}
 static void pdkpass_http_report_data_failure(const char *stage,esp_err_t err,size_t bytes) {(void)stage;(void)err;(void)bytes;}
-static bool build_candidate(unsigned year,const pdkpass_season_snapshot_t *current,pdkpass_season_snapshot_t **out) {
- assert(current==&s_season);*out=NULL;if(!calendar_ok)return false;
+static bool build_candidate(unsigned year,const pdkpass_season_snapshot_t *current,pdkpass_season_snapshot_t **out,calendar_sessions_t **sessions) {
+ assert(current==&s_season);*out=NULL;*sessions=NULL;if(!calendar_ok)return false;
+ *sessions=calloc(1,sizeof(**sessions));
  *out=malloc(sizeof(**out));assert(*out);**out=*current;
  (*out)->year=year;(*out)->races[0].laps=60;return true;
+}
+static bool publish_calendar_sessions(const pdkpass_season_snapshot_t *out,const calendar_sessions_t *sessions,bool *changed) {
+ assert(out->year==s_season.year&&out->races[0].laps==s_season.races[0].laps&&sessions);
+ schedule_publishes++;*changed=schedule_changed;return schedule_ok;
 }
 static bool fetch_standings(int64_t now,pdkpass_season_snapshot_t *out) {
  (void)now;fetches++;assert(out->year==2026);if(!points_ok)return false;
@@ -2252,6 +2300,17 @@ int main(void) {
  old=s_season;points_ok=false;assert(!synchronize(now));assert(!memcmp(&old,&s_season,sizeof(old)));
  calendar_ok=true;assert(!synchronize(now));assert(s_season.races[0].laps==60&&s_season.drivers[0].points_tenths==2920);
  points_ok=true;assert(synchronize(now));assert(marks[0]==2&&marks[2]==2);
+ // An unchanged calendar must still publish full schedules and refresh UI.
+ int previous_callbacks=callbacks,previous_publishes=schedule_publishes;
+ assert(synchronize(now));assert(callbacks==previous_callbacks+1);
+ assert(schedule_publishes==previous_publishes+1);
+ // Identical legacy calendar AND all-session schedule must not redraw.
+ schedule_changed=false;previous_callbacks=callbacks;
+ assert(synchronize(now));assert(callbacks==previous_callbacks);
+ schedule_ok=false;assert(!synchronize(now));schedule_ok=true;
+ // A failed calendar save must never publish its schedules.
+ s_season.races[0].laps=59;save_ok=false;previous_publishes=schedule_publishes;
+ assert(!synchronize(now)&&schedule_publishes==previous_publishes);save_ok=true;
  int previous=fetches;calendar_ok=false;assert(!synchronize(now+366LL*86400));assert(fetches==previous);
  puts("Independent Jolpica sync, retry and persisted atomic publication: PASS");
 }
@@ -2539,8 +2598,7 @@ static const cJSON *cJSON_GetObjectItemCaseSensitive(const cJSON *o,const char *
 }
 static bool cJSON_IsTrue(const cJSON *o) {return o&&o->cancelled;}
 '''
-        start = source.index('typedef struct {\n    pdkpass_race_t race;')
-        code += source[start:source.index('} race_build_t;', start)+len('} race_build_t;')] + '\n'
+        code += calendar_types(source)
         start = source.index('typedef struct {\n    race_build_t *build;')
         code += source[start:source.index('} build_context_t;', start)+len('} build_context_t;')] + '\n'
         for signature in ['static void copy_text(', 'static void copy_upper(',
@@ -3702,22 +3760,144 @@ int main(void) {
 '''
         compile_run(code, ['main/pdkpass_results_core.c'])
 
+    def test_calendar_caches_all_published_sessions_before_results_window(self):
+        source = production_source(ROOT / 'main/pdkpass_season.c')
+        code = PRELUDE + '\n#include <ctype.h>\n#include "pdkpass_reminder_core.h"\n' + calendar_types(source)
+        start = source.index('typedef struct {\n    race_build_t *build;')
+        code += source[start:source.index('} build_context_t;', start)+len('} build_context_t;')] + '\n'
+        code += r'''
+#define ESP_ERR_NO_MEM 0x101
+typedef struct {
+ const char *name,*country,*circuit,*start,*end;
+ int meeting_key,circuit_key,session_key;bool cancelled;
+} cJSON;
+static const char *json_string(const cJSON *o,const char *name) {
+ if(!strcmp(name,"meeting_name")||!strcmp(name,"session_name"))return o->name;
+ if(!strcmp(name,"country_name"))return o->country;
+ if(!strcmp(name,"circuit_short_name"))return o->circuit;
+ if(!strcmp(name,"date_start"))return o->start;
+ if(!strcmp(name,"date_end"))return o->end;
+ return NULL;
+}
+static bool json_number(const cJSON *o,const char *name,int *value) {
+ if(!strcmp(name,"meeting_key")){*value=o->meeting_key;return true;}
+ if(!strcmp(name,"circuit_key")){*value=o->circuit_key;return true;}
+ if(!strcmp(name,"session_key")){*value=o->session_key;return true;}
+ return false;
+}
+static const cJSON *cJSON_GetObjectItemCaseSensitive(const cJSON *o,const char *name) {
+ return !strcmp(name,"is_cancelled")?o:NULL;
+}
+static bool cJSON_IsTrue(const cJSON *o) {return o&&o->cancelled;}
+static cJSON fixture[]={
+ {.name="Practice 1",.meeting_key=1297,.session_key=11389,.start="2026-10-23T17:30:00+00:00",.end="2026-10-23T18:30:00+00:00"},
+ {.name="Practice 2",.meeting_key=1297,.session_key=11390,.start="2026-10-23T21:00:00+00:00",.end="2026-10-23T22:00:00+00:00"},
+ {.name="Practice 3",.meeting_key=1297,.session_key=11391,.start="2026-10-24T17:30:00+00:00",.end="2026-10-24T18:30:00+00:00"},
+ {.name="Qualifying",.meeting_key=1297,.session_key=11392,.start="2026-10-24T21:00:00+00:00",.end="2026-10-24T22:00:00+00:00"},
+ {.name="Race",.meeting_key=1297,.session_key=11396,.start="2026-10-25T20:00:00+00:00",.end="2026-10-25T22:00:00+00:00"}
+};
+static bool interrupted, duplicate;
+static unsigned requests,publications;
+static pdkpass_reminder_entry_t published[PDKPASS_SESSION_COUNT];
+static bool pdkpass_reminder_update_calendar_round(unsigned year,unsigned round,int32_t meeting,
+ const pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT],bool *changed) {
+ assert(year==2026&&round==1&&meeting==1297);
+ *changed=memcmp(published,entries,sizeof(published))!=0; // Single-meeting test calendar.
+ publications++;memcpy(published,entries,sizeof(published));return true;
+}
+static esp_err_t pdkpass_http_array(const char *url,bool (*parse)(const cJSON *,void *),void *user) {
+ requests++;
+ if(strstr(url,"/meetings?year=2026")) {
+  cJSON m={.name="United States Grand Prix",.country="United States",.circuit="Austin",
+    .meeting_key=1297,.circuit_key=9,.start="2026-10-23T17:30:00+00:00",.end="2026-10-25T22:00:00+00:00"};
+  return parse(&m,user)?ESP_OK:ESP_FAIL;
+ }
+ assert(strstr(url,"/sessions?year=2026"));
+ for(unsigned i=0;i<5;i++) {
+  if(!parse(&fixture[i],user))return ESP_FAIL;
+  if(interrupted&&i==1)return ESP_FAIL;
+ }
+ if(duplicate&&!parse(&fixture[0],user))return ESP_FAIL;
+ return ESP_OK;
+}
+static void pdkpass_http_report_data_failure(const char *stage,esp_err_t err,size_t bytes) {
+ (void)stage;(void)err;(void)bytes;
+}
+'''
+        for signature in ['static void copy_text(', 'static void copy_upper(',
+                          'static uint32_t accent_for_key(', 'static void apply_track_details(',
+                          'static int compare_races(', 'static bool is_grand_prix(',
+                          'static bool parse_meeting(', 'static race_build_t *find_meeting(',
+                          'static const char *session_short_label(', 'static bool populate_session(',
+                          'static bool same_text(', 'static void preserve_track_details(',
+                          'static bool snapshot_valid(', 'static bool build_candidate(',
+                          'static bool publish_calendar_sessions(']:
+            code += function(source, signature)
+        code += r'''
+int main(void) {
+ assert(sizeof(race_build_t)*PDKPASS_MAX_RACES<=6144);
+ pdkpass_season_snapshot_t current={.year=2026,.race_count=1},*candidate=NULL;
+ calendar_sessions_t *sessions=NULL;bool changed=false;
+ // No "now" or results eligibility gate; the calendar publishes future starts.
+ assert(build_candidate(2026,&current,&candidate,&sessions));
+ assert(requests==2&&publications==0);
+ assert(publish_calendar_sessions(candidate,sessions,&changed)&&publications==1&&changed);
+ assert(publish_calendar_sessions(candidate,sessions,&changed)&&publications==2&&!changed);
+ int64_t expected;assert(pdkpass_parse_iso8601_utc(fixture[1].start,&expected));
+ assert(published[PDKPASS_SESSION_FP2].start_utc==expected);
+ assert(published[PDKPASS_SESSION_FP2].session_key==11390);
+ assert(pdkpass_parse_iso8601_utc(fixture[2].start,&expected));
+ assert(published[PDKPASS_SESSION_FP3].start_utc==expected);
+ char line[PDKPASS_SESSION_LINE_LEN];
+ pdkpass_format_beijing_session("FP2",published[PDKPASS_SESSION_FP2].start_utc,line,sizeof(line));
+ assert(!strcmp(line,"FP2   24 OCT 05:00"));
+ pdkpass_format_beijing_session("FP3",published[PDKPASS_SESSION_FP3].start_utc,line,sizeof(line));
+ assert(!strcmp(line,"FP3   25 OCT 01:30"));
+ free(candidate);free(sessions);
+ interrupted=true;
+ assert(!build_candidate(2026,&current,&candidate,&sessions)&&!candidate&&!sessions);
+ assert(publications==2);interrupted=false;duplicate=true;
+ assert(!build_candidate(2026,&current,&candidate,&sessions)&&!candidate&&!sessions);
+ assert(publications==2);duplicate=false;
+ // Sprint weekends use the same data flow, not just the old three fields.
+ fixture[1].name="Sprint Qualifying";fixture[2].name="Sprint";
+ assert(build_candidate(2026,&current,&candidate,&sessions));
+ assert(publish_calendar_sessions(candidate,sessions,&changed));
+ assert(published[PDKPASS_SESSION_SPRINT_QUALIFYING].session_key==11390);
+ assert(published[PDKPASS_SESSION_SPRINT].session_key==11391);
+ free(candidate);free(sessions);
+ // Missing unpublished time is omitted; explicit cancellation is retained.
+ fixture[1].start=NULL;fixture[1].end=NULL;
+ fixture[2].cancelled=true;fixture[2].start=NULL;fixture[2].end=NULL;
+ assert(build_candidate(2026,&current,&candidate,&sessions));
+ assert(publish_calendar_sessions(candidate,sessions,&changed));
+ assert(!published[PDKPASS_SESSION_SPRINT_QUALIFYING].session_key);
+ assert(published[PDKPASS_SESSION_SPRINT].session_key==11391);
+ assert(published[PDKPASS_SESSION_SPRINT].flags&PDKPASS_REMINDER_CANCELLED);
+ free(candidate);free(sessions);
+ puts("Calendar all-session starts: COTA, sprint, cancellation, interrupted/duplicate responses and 6 KB budget: PASS");
+}
+'''
+        compile_run(code, ['main/pdkpass_season_core.c', 'main/pdkpass_results_core.c',
+                           'main/pdkpass_tracks.c'])
+
     def test_partial_season_does_not_replace_cache(self):
         source = production_source(ROOT / 'main/pdkpass_season.c')
-        code = PRELUDE.replace('static void pdkpass_http_release(void) {}\n', '') + r'''
+        code = PRELUDE.replace('static void pdkpass_http_release(void) {}\n', '') + calendar_types(source) + r'''
 #define ESP_ERR_NO_MEM 0x101
-typedef struct {pdkpass_race_t race;int64_t start_utc,meeting_end_utc;} race_build_t;
 typedef struct {race_build_t *build;size_t count;bool sprint_qualifying[PDKPASS_MAX_RACES];} build_context_t;
 static void copy_text(char *d,size_t n,const char *s) {snprintf(d,n,"%s",s);}
 static bool parse_meeting(const void *item,void *user) {(void)item;(void)user;return true;}
 static bool populate_session(const void *item,void *user) {(void)item;(void)user;return true;}
 static int compare_races(const void *a,const void *b) {(void)a;(void)b;return 0;}
-static bool sessions_fail, tls_released, publication_alloc_fails;
+static bool sessions_fail, tls_released, publication_alloc_fails,schedule_alloc_fails;
 static size_t calendar_working_bytes;
 static void pdkpass_http_release(void) {tls_released=true;}
 static void *calendar_calloc(size_t count,size_t size) {
  if(size==sizeof(pdkpass_season_snapshot_t)) {
   assert(tls_released);if(publication_alloc_fails)return NULL;
+ } else if(size==sizeof(calendar_sessions_t)) {
+  assert(tls_released);if(schedule_alloc_fails)return NULL;
  } else {assert(!calendar_working_bytes);calendar_working_bytes=count*size;}
  return calloc(count,size);
 }
@@ -3742,22 +3922,26 @@ static void pdkpass_http_report_data_failure(const char *stage,esp_err_t err,siz
         code += r'''
 int main(void) {
  pdkpass_season_snapshot_t current={.year=2026,.race_count=1}, *candidate=NULL;
+ calendar_sessions_t *sessions=NULL;
  races[0].meeting_key=10;races[0].round=1;races[0].switch_at_utc=1788688800;
  current.races[0]=races[0];strcpy(current.races[0].race_cn,"RACE 06 SEP 16:00");
  current.driver_count=1;current.drivers[0].points_tenths=2420;
  strcpy(current.standings_as_of,"31 AUG");
  sessions_fail=true;
- assert(!build_candidate(2026,&current,&candidate));
- assert(!candidate);calendar_working_bytes=0;
+ assert(!build_candidate(2026,&current,&candidate,&sessions));
+ assert(!candidate&&!sessions);calendar_working_bytes=0;
  sessions_fail=false;publication_alloc_fails=true;
- assert(!build_candidate(2026,&current,&candidate)&&!candidate);
+ assert(!build_candidate(2026,&current,&candidate,&sessions)&&!candidate);
  calendar_working_bytes=0;publication_alloc_fails=false;
- assert(build_candidate(2026,&current,&candidate));
+ schedule_alloc_fails=true;
+ assert(!build_candidate(2026,&current,&candidate,&sessions)&&!candidate&&!sessions);
+ schedule_alloc_fails=false;calendar_working_bytes=0;
+ assert(build_candidate(2026,&current,&candidate,&sessions));
  assert(strcmp(candidate->races[0].race_cn,current.races[0].race_cn)==0);
  // Calendar refresh retains standings; synchronize updates them independently.
  assert(candidate->drivers[0].points_tenths==2420);
  assert(strcmp(candidate->standings_as_of,"31 AUG")==0);
- free(candidate);
+ free(candidate);free(sessions);
  puts("Calendar: compact GET working set, deferred snapshot and atomic failure: PASS");
 }
 '''

@@ -4,6 +4,7 @@
 #include "pdkpass_tracks.h"
 #include "pdkpass_sync_policy.h"
 #include "pdkpass_network.h"
+#include "pdkpass_reminder.h"
 
 #include "cJSON.h"
 #include "pdkpass_http.h"
@@ -69,11 +70,20 @@ typedef struct {
 
 
 
+// Transient calendar data only: keep the TLS working set within 6 KB.
+// Negative keys encode explicit cancellation; uint32_t UTC covers through 2100.
+typedef struct {
+    int32_t keys[PDKPASS_SESSION_COUNT];
+    uint32_t starts[PDKPASS_SESSION_COUNT];
+} calendar_sessions_t;
+
 typedef struct {
     pdkpass_race_t race;
     int64_t start_utc;
-    int64_t meeting_end_utc;
+    calendar_sessions_t sessions;
 } race_build_t;
+_Static_assert(sizeof(race_build_t) * PDKPASS_MAX_RACES <= 6144,
+               "Calendar GET working set exceeds budget");
 
 static const char *TAG = "pdkpass_season";
 static const char *NVS_NAMESPACE = "pdk_season";
@@ -240,7 +250,6 @@ static bool parse_meeting(const cJSON *meeting, void *user)
     race_build_t *entry = &context->build[context->count++];
     memset(entry, 0, sizeof(*entry));
     entry->start_utc = start_utc;
-    entry->meeting_end_utc = end_utc;
     entry->race.meeting_key = meeting_key;
     entry->race.switch_at_utc = end_utc;
     entry->race.accent = accent_for_key(circuit_key);
@@ -282,25 +291,35 @@ static const char *session_short_label(pdkpass_session_kind_t kind)
 static bool populate_session(const cJSON *session, void *user)
 {
     build_context_t *context = user;
-    int meeting_key;
-    int session_key;
+    int meeting_key, session_key;
     const char *name = json_string(session, "session_name");
-    const char *start_text = json_string(session, "date_start");
-    const char *end_text = json_string(session, "date_end");
-    const cJSON *cancelled =
-        cJSON_GetObjectItemCaseSensitive(session, "is_cancelled");
-    int64_t start_utc;
-    int64_t end_utc;
-    if (cJSON_IsTrue(cancelled) || !name || !start_text || !end_text ||
-        !json_number(session, "meeting_key", &meeting_key) ||
-        !json_number(session, "session_key", &session_key) ||
-        !pdkpass_parse_iso8601_utc(start_text, &start_utc) ||
-        !pdkpass_parse_iso8601_utc(end_text, &end_utc)) return true;
+    if (!json_number(session, "meeting_key", &meeting_key)) return false;
     race_build_t *entry = find_meeting(context->build, context->count, meeting_key);
-    if (!entry) return true;
-    size_t index = (size_t)(entry - context->build);
+    if (!entry) return true; // Pre-season tests and excluded meetings.
+    if (!name) return false;
     pdkpass_session_kind_t kind = pdkpass_session_kind_from_name(name);
     if (kind >= PDKPASS_SESSION_COUNT) return true;
+    if (!json_number(session, "session_key", &session_key) || session_key <= 0 ||
+        entry->sessions.keys[kind] != 0) return false;
+    const char *start_text = json_string(session, "date_start");
+    const char *end_text = json_string(session, "date_end");
+    bool cancelled = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(session, "is_cancelled"));
+    int64_t start_utc = 0, end_utc = 0;
+    bool has_start = start_text && pdkpass_parse_iso8601_utc(start_text, &start_utc);
+    bool has_end = end_text && pdkpass_parse_iso8601_utc(end_text, &end_utc);
+    if (!cancelled && (!has_start || !has_end)) return true; // Unpublished time.
+    if (!cancelled && (start_utc < 1767225600LL || start_utc > UINT32_MAX ||
+                       end_utc <= start_utc)) return false;
+    if (cancelled && (!has_start || start_utc < 1767225600LL || start_utc > UINT32_MAX))
+        start_utc = 0;
+    for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++) {
+        int32_t key = entry->sessions.keys[i];
+        if (key == session_key || key == -session_key) return false;
+    }
+    entry->sessions.keys[kind] = cancelled ? -session_key : session_key;
+    entry->sessions.starts[kind] = (uint32_t)start_utc;
+    size_t index = (size_t)(entry - context->build);
+    if (cancelled) return true; // Full schedule carries the explicit status.
 
     char line[PDKPASS_SESSION_LINE_LEN];
     pdkpass_format_beijing_session(session_short_label(kind), start_utc,
@@ -364,9 +383,11 @@ static void preserve_track_details(pdkpass_season_snapshot_t *candidate,
 
 static bool build_candidate(unsigned year,
                             const pdkpass_season_snapshot_t *current,
-                            pdkpass_season_snapshot_t **output)
+                            pdkpass_season_snapshot_t **output,
+                            calendar_sessions_t **sessions_output)
 {
     *output = NULL;
+    *sessions_output = NULL;
     char url[128];
     race_build_t *build = calloc(PDKPASS_MAX_RACES, sizeof(*build));
     if (!build) {
@@ -422,11 +443,47 @@ static bool build_candidate(unsigned year,
         copy_text(candidate->standings_as_of, sizeof(candidate->standings_as_of), "PENDING");
     }
     for (size_t i = 0; i < context.count; i++) candidate->races[i] = build[i].race;
-    free(build);
     preserve_track_details(candidate, current);
-    if (!snapshot_valid(candidate)) { free(candidate); return false; }
+    if (!snapshot_valid(candidate)) { free(build); free(candidate); return false; }
+    calendar_sessions_t *sessions = calloc(context.count, sizeof(*sessions));
+    if (!sessions) {
+        pdkpass_http_report_data_failure("calendar-sessions-alloc", ESP_ERR_NO_MEM,
+                                         context.count * sizeof(*sessions));
+        free(build);
+        free(candidate);
+        return false;
+    }
+    for (size_t i = 0; i < context.count; i++) sessions[i] = build[i].sessions;
+    free(build);
     *output = candidate;
+    *sessions_output = sessions;
     return true;
+}
+
+static bool publish_calendar_sessions(const pdkpass_season_snapshot_t *season,
+                                       const calendar_sessions_t *sessions,
+                                       bool *changed)
+{
+    *changed = false;
+    bool accepted = true;
+    for (size_t i = 0; i < season->race_count; i++) {
+        pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT] = {0};
+        bool present = false;
+        for (unsigned kind = 0; kind < PDKPASS_SESSION_COUNT; kind++) {
+            int32_t key = sessions[i].keys[kind];
+            if (!key) continue;
+            present = true;
+            entries[kind].session_key = key < 0 ? -key : key;
+            entries[kind].start_utc = sessions[i].starts[kind];
+            entries[kind].flags = key < 0 ? PDKPASS_REMINDER_CANCELLED : 0;
+        }
+        bool round_changed = false;
+        if (present && !pdkpass_reminder_update_calendar_round(season->year,
+                season->races[i].round, season->races[i].meeting_key, entries, &round_changed))
+            accepted = false;
+        *changed |= round_changed;
+    }
+    return accepted;
 }
 
 static bool network_ready(void)
@@ -460,7 +517,8 @@ static bool synchronize(int64_t now_utc)
     const pdkpass_season_snapshot_t *current = &s_season;
     pdkpass_season_snapshot_t *candidate = NULL;
     unsigned target_year = pdkpass_beijing_year(now_utc);
-    bool calendar_ok = build_candidate(target_year, current, &candidate);
+    calendar_sessions_t *sessions = NULL;
+    bool calendar_ok = build_candidate(target_year, current, &candidate, &sessions);
     if (!calendar_ok) {
         pdkpass_http_release();
         candidate = malloc(sizeof(*candidate));
@@ -494,7 +552,15 @@ static bool synchronize(int64_t now_utc)
             success = calendar_ok = standings_ok = false;
         }
     }
-    if (updated) {
+    // Publish only after the corresponding calendar is accepted. This also
+    // fills missing schedules when the three legacy times have not changed.
+    bool sessions_changed = false;
+    if (calendar_ok && !publish_calendar_sessions(candidate, sessions, &sessions_changed)) {
+        calendar_ok = false;
+        success = false;
+    }
+    free(sessions);
+    if (updated || sessions_changed) {
         if (s_callback) s_callback();
     }
     if (calendar_ok)

@@ -221,24 +221,19 @@ static lv_obj_t *make_fit_zoom_label(lv_obj_t *parent, const char *text,
     if (scale >= 512) {
         return make_zoom_label(parent, text, x, y, width, color);
     }
-    if (scale >= 256) {
-        // Keep the title at its fitted size instead of dropping straight from
-        // double-size to the unscaled font for medium-length race names.
-        int logical_width = available_width * 256 / scale;
-        lv_obj_t *label = make_label(parent, text,
-            x + (width - logical_width) / 2, y + 8, logical_width,
-            &lv_font_unscii_16, color);
-        lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_transform_pivot_x(label, logical_width / 2, 0);
-        lv_obj_set_style_transform_pivot_y(label, 8, 0);
-        lv_obj_set_style_transform_scale_x(label, scale, 0);
-        // Long names need a narrow fit, but should keep the same visual
-        // prominence as shorter races instead of shrinking in both axes.
-        lv_obj_set_style_transform_scale_y(label,
-            scale < 384 ? 384 : scale, 0);
-        return label;
-    }
-    return make_medium_label(parent, text, x, y, width, color);
+    int logical_width = available_width * 256 / scale;
+    lv_obj_t *label = make_label(parent, text,
+        x + (width - logical_width) / 2, y + 8, logical_width,
+        &lv_font_unscii_16, color);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_transform_pivot_x(label, logical_width / 2, 0);
+    lv_obj_set_style_transform_pivot_y(label, 8, 0);
+    lv_obj_set_style_transform_scale_x(label, scale, 0);
+    // Keep long names at title height even below their natural font width;
+    // switching to the body font here makes UNITED STATES abruptly smaller.
+    lv_obj_set_style_transform_scale_y(label,
+        scale < 384 ? 384 : scale, 0);
+    return label;
 }
 
 static uint32_t contrast_color(uint32_t color)
@@ -484,13 +479,13 @@ static void detail_session_line(pdkpass_session_kind_t session,
     if (!output || capacity == 0U) return;
     const pdkpass_detail_session_t *schedule = &s_detail_sessions[session];
     if (schedule->cancelled) {
-        snprintf(output, capacity, "%s CANCELLED",
+        snprintf(output, capacity, "%-5s CANCELLED",
                  detail_session_short_label(session));
     } else if (schedule->start_utc > 0) {
         pdkpass_format_beijing_session(detail_session_short_label(session),
                                        schedule->start_utc, output, capacity);
     } else {
-        snprintf(output, capacity, "%s TIME TBD", detail_session_short_label(session));
+        snprintf(output, capacity, "%-5s TIME TBD", detail_session_short_label(session));
     }
 }
 
@@ -1219,8 +1214,14 @@ static void render_detail(void)
         uint32_t bg = i == selected ? UI_YELLOW : UI_PAPER;
         lv_obj_t *row = make_card(s_content, 1, 109 + (int)(i - start) * 22,
                                   208, 21, bg, 2);
-        make_center_label(row, line, 1, 4, 204,
-                          &lv_font_unscii_8, UI_INK);
+        lv_obj_t *name = make_label(row, detail_session_short_label(session),
+                                    8, 4, 50, &lv_font_unscii_8, UI_INK);
+        lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_LEFT, 0);
+        // The formatter reserves five name characters and one separator.
+        // Center dates and shorter states within the same information column.
+        lv_obj_t *info = make_label(row, line + 6, 68, 4, 130,
+                                    &lv_font_unscii_8, UI_INK);
+        lv_obj_set_style_text_align(info, LV_TEXT_ALIGN_CENTER, 0);
     }
     if (!s_state.detail_count) {
         make_center_label(s_content, "NO SESSIONS", 1, 132, 208,

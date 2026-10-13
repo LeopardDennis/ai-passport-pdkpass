@@ -72,17 +72,29 @@ static void check_memory(void)
     assert(memory.total_size > memory.max_used + 2048);
 }
 
+static lv_obj_t *find_detail_line(const char *text)
+{
+    char name[6];
+    memcpy(name, text, 5);
+    name[5] = '\0';
+    for (int i = 4; i >= 0 && name[i] == ' '; i--) name[i] = '\0';
+    lv_obj_t *label = find_label(lv_screen_active(), name);
+    if (!label) return NULL;
+    return find_label(lv_obj_get_parent(label), text + 6);
+}
+
 static void check_selected_detail(const char *text, int row)
 {
     simulator_refresh();
-    lv_obj_t *label = find_label(lv_screen_active(), text);
+    lv_obj_t *label = find_detail_line(text);
     assert(label);
+    assert(lv_obj_get_style_text_align(label, 0) == LV_TEXT_ALIGN_CENTER);
     lv_obj_t *card = lv_obj_get_parent(label);
     assert(lv_color_eq(lv_obj_get_style_bg_color(card, 0), lv_color_hex(UI_YELLOW)));
     assert(lv_obj_get_y(card) == 109 + row * 22);
     assert(lv_obj_get_width(card) == 208 && lv_obj_get_height(card) == 21);
     lv_point_t size;
-    lv_text_get_size(&size, text, &lv_font_unscii_8, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    lv_text_get_size(&size, text + 6, lv_obj_get_style_text_font(label, 0), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
     assert(size.x <= lv_obj_get_width(label));
     check_memory();
 }
@@ -132,10 +144,10 @@ static void test_track_paging(void)
     simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
     assert(find_label(lv_screen_active(), "UP/DN OK:VIEW HOLD:BACK"));
     check_selected_detail(lines[3], 0);
-    assert(!find_label(lv_screen_active(), lines[0]));
-    assert(!find_label(lv_screen_active(), lines[1]));
-    assert(!find_label(lv_screen_active(), lines[2]));
-    assert(find_label(lv_screen_active(), lines[4]));
+    assert(!find_detail_line(lines[0]));
+    assert(!find_detail_line(lines[1]));
+    assert(!find_detail_line(lines[2]));
+    assert(find_detail_line(lines[4]));
     assert(memcmp(top, s_framebuffer, sizeof(top)) == 0); // map and metadata untouched
     assert(s_last_requested_race == SIZE_MAX); // pagination does not request data
     save_detail_preview("track-sessions-page-2.png");

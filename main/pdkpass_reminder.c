@@ -125,6 +125,48 @@ void pdkpass_reminder_update_round(unsigned year, unsigned round, int32_t meetin
     if (s_wake) s_wake();
 }
 
+bool pdkpass_reminder_update_calendar_round(unsigned year, unsigned round, int32_t meeting_key,
+    const pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT], bool *changed_out)
+{
+    if (changed_out) *changed_out = false;
+    if (!entries || !s_lock || xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE)
+        return false;
+    pdkpass_reminder_entry_t merged[PDKPASS_SESSION_COUNT] = {0};
+    if (s_store.schedule.year == year) {
+        for (size_t i = 0; i < PDKPASS_MAX_RACES; i++) {
+            if (s_store.schedule.meeting_keys[i] == meeting_key) {
+                memcpy(merged, &s_store.schedule.entries[i * PDKPASS_SESSION_COUNT], sizeof(merged));
+                break;
+            }
+        }
+    }
+    for (unsigned kind = 0; kind < PDKPASS_SESSION_COUNT; kind++)
+        if (entries[kind].session_key) merged[kind] = entries[kind];
+    bool changed = pdkpass_reminder_merge(&s_store.schedule, year, round, meeting_key, merged);
+    if (changed) s_dirty = true;
+    bool accepted = false;
+    if (s_store.schedule.year == year) {
+        for (size_t i = 0; i < PDKPASS_MAX_RACES; i++) {
+            if (s_store.schedule.meeting_keys[i] != meeting_key) continue;
+            accepted = true;
+            for (unsigned kind = 0; kind < PDKPASS_SESSION_COUNT; kind++) {
+                if (!entries[kind].session_key) continue;
+                const pdkpass_reminder_entry_t *stored =
+                    &s_store.schedule.entries[i * PDKPASS_SESSION_COUNT + kind];
+                if (stored->session_key != entries[kind].session_key ||
+                    stored->start_utc != entries[kind].start_utc || stored->round != round ||
+                    (stored->flags & PDKPASS_REMINDER_CANCELLED) !=
+                    (entries[kind].flags & PDKPASS_REMINDER_CANCELLED)) accepted = false;
+            }
+            break;
+        }
+    }
+    xSemaphoreGive(s_lock);
+    if (changed_out) *changed_out = changed;
+    if (changed && s_wake) s_wake();
+    return accepted;
+}
+
 bool pdkpass_reminder_poll(int64_t now, pdkpass_reminder_entry_t *alert)
 {
     if (!alert || !s_lock || xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE)

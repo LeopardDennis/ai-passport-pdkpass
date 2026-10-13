@@ -6,6 +6,12 @@
 
 ## Unreleased
 
+- Cache all published session start times during the existing calendar sync, including FP2, FP3 and Sprint, without waiting for the results discovery window. Retain cached times on missing data or failed responses, respect explicit cancellations and ALERTS OFF, and refresh the page when any session data changes, including changes outside the legacy three times. Identical data does not trigger a redraw or another schedule write. Reuse persistent schedule storage and existing requests; leave result-fetch timing unchanged.
+
+- Use two columns on track-page session rows: keep names aligned on the left and center start times or unknown/cancelled states within the right column. Retain the existing row geometry and font.
+
+- Keep long home-page country names such as UNITED STATES in the title font, fitting their width while retaining at least 24-pixel font height instead of falling back to small body text. Preserve the full name and surrounding layout.
+
 - Give the six home-page progress segments a fixed red-to-yellow sequence: red, red-orange, orange, gold, yellow and pale yellow. Unreached segments stay off-white; retain segment geometry, fill thresholds and the current/total race label across all circuit themes.
 
 - Replace NETWORK BACK with a persistent, default-on BEEP switch. Keep long-OK return and the four-row layout. Muting is silent; enabling plays one confirmation. BEEP controls key cues independently from ALERTS; both off mute all application sound cues. Save settings on the worker with bounded failure retries.

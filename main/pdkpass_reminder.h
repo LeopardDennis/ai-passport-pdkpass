@@ -9,6 +9,11 @@ void pdkpass_reminder_set_time_valid(bool valid);
 void pdkpass_reminder_season_changed(void);
 void pdkpass_reminder_update_round(unsigned year, unsigned round, int32_t meeting_key,
     const pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT]);
+// Calendar responses may omit unpublished sessions. Preserve those cached
+// entries; only explicit cancellations cancel. Persistence uses the existing worker.
+// Report actual cache changes separately from acceptance to avoid needless redraws.
+bool pdkpass_reminder_update_calendar_round(unsigned year, unsigned round, int32_t meeting_key,
+    const pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT], bool *changed_out);
 bool pdkpass_reminder_poll(int64_t now, pdkpass_reminder_entry_t *alert);
 uint32_t pdkpass_reminder_wait_ms(int64_t now);
 // These settings calls are non-blocking and may run under the LVGL lock.
