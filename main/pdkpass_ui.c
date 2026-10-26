@@ -329,6 +329,7 @@ static uint32_t result_driver_accent(const pdkpass_podium_driver_t *result,
                                      uint32_t fallback)
 {
     if (!result) return fallback;
+    if (result->has_accent) return result->accent;
     for (size_t i = 0; i < s_season.driver_count; i++) {
         const pdkpass_driver_t *driver = &s_season.drivers[i];
         if (strncmp(driver->code, result->code, sizeof(driver->code)) == 0) {
@@ -347,21 +348,9 @@ static uint32_t result_driver_accent(const pdkpass_podium_driver_t *result,
 static uint32_t result_team_text_color(const char *team, uint32_t background,
                                        uint32_t driver_ink)
 {
-    if (team && strcmp(team, "MERCEDES") == 0) return 0x002855;
-    unsigned r = (background >> 16) & 0xff;
-    unsigned g = (background >> 8) & 0xff;
-    unsigned b = background & 0xff;
-    // The card already uses the team's color. Keep its color family in the
-    // team label, but shift brightness to read against the same background.
-    if (r * 299 + g * 587 + b * 114 < 70000) {
-        return (((r * 3 + 255 * 7) / 10) << 16) |
-               (((g * 3 + 255 * 7) / 10) << 8) |
-               ((b * 3 + 255 * 7) / 10);
-    }
-    unsigned retain = driver_ink == UI_INK ? 3 : 1;
-    return ((r * retain / 10) << 16) |
-           ((g * retain / 10) << 8) |
-           (b * retain / 10);
+    (void)team;
+    (void)driver_ink;
+    return readable_text_color(background);
 }
 
 static void podium_display_name(const pdkpass_podium_driver_t *result,
@@ -1289,10 +1278,16 @@ static void render_results(void)
             // Persisted session metadata omits end times until rediscovery.
             detail = "CHECKING SESSION TIME";
         }
-        make_medium_label(s_content, state, 0, 42, INNER_W, notice_ink);
-        make_medium_label(s_content, detail, 0, 95, INNER_W, ink);
-        make_center_label(s_content, note, 0, 139,
-                          INNER_W, &lv_font_unscii_8, ink);
+        lv_obj_t *notices[] = {
+            make_medium_label(s_content, state, 0, 0, INNER_W, notice_ink),
+            make_medium_label(s_content, detail, 0, 0, INNER_W, ink),
+            make_center_label(s_content, note, 0, 0, INNER_W, &lv_font_unscii_8, ink),
+        };
+        // Center the three lines as a group, accounting for the helpers' different Y offsets.
+        const int row_step = 44;
+        const int first_y = (INNER_H - pdkpass_body_font.line_height) / 2 - row_step;
+        for (size_t i = 0; i < 3; i++)
+            lv_obj_set_y(notices[i], first_y + (int)i * row_step);
     } else {
         for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
             const pdkpass_podium_driver_t *driver = &result.podium[i];
@@ -1310,8 +1305,7 @@ static void render_results(void)
             make_label(row, driver->code, 7, 27, 32,
                        &lv_font_unscii_8, ink);
             make_fit_body_label(row, display_name, 45, 5, 153, ink);
-            make_label(row, driver->team, 45, 27, 153,
-                       &lv_font_unscii_8, team_ink);
+            make_fit_body_label(row, driver->team, 45, 27, 153, team_ink);
         }
     }
     set_hint("UP/DN OK:SYNC HOLD:BACK");

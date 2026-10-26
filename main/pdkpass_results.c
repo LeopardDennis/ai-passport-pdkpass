@@ -36,7 +36,7 @@
 #define RESULTS_SAVE_RETRY_MS 60000U
 #define RESULTS_SAVE_BUSY_RETRY_MS 1000U
 #define RESULTS_CACHE_MAGIC 0x50444B52U
-#define RESULTS_CACHE_VERSION 3U
+#define RESULTS_CACHE_VERSION 4U
 
 #define EVENT_WAKE BIT0
 
@@ -49,6 +49,7 @@ typedef struct {
     int64_t end_utc;
     int64_t last_attempt_utc;
     char podium_codes[PDKPASS_PODIUM_SIZE][4];
+    uint8_t profile_ids[PDKPASS_PODIUM_SIZE];
 } session_cache_t;
 
 typedef struct {
@@ -77,6 +78,17 @@ typedef struct {
     uint8_t race_count;
     uint8_t reserved[3];
     persisted_race_t races[PDKPASS_MAX_RACES];
+} v3_store_t;
+
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t year;
+    uint8_t race_count;
+    uint8_t reserved[3];
+    persisted_race_t races[PDKPASS_MAX_RACES];
+    uint8_t profile_ids[PDKPASS_MAX_RACES][PDKPASS_SESSION_COUNT][PDKPASS_PODIUM_SIZE];
+    pdkpass_podium_driver_t profiles[PDKPASS_RESULT_PROFILE_LIMIT];
 } results_store_t;
 
 typedef struct {
@@ -91,9 +103,9 @@ typedef struct {
     legacy_race_t races[PDKPASS_MAX_RACES];
 } legacy_store_t;
 
-// One full 24-round season, including seven session podiums per round, stays
-// below 3 KB and no longer duplicates driver/team strings.
-_Static_assert(sizeof(results_store_t) <= 3072,
+// Deduplicated session-specific identities keep the complete cache below 8 KB.
+// Team changes create a separate profile rather than rewriting historical results.
+_Static_assert(sizeof(results_store_t) <= 8192,
                "Season results cache no longer fits the NVS budget");
 
 
@@ -113,6 +125,7 @@ static const char *TAG = "pdkpass_results";
 static const char *NVS_NAMESPACE = "pdk_results";
 static const char *NVS_KEY = "season";
 static race_cache_t s_cache[PDKPASS_MAX_RACES];
+static pdkpass_podium_driver_t s_profiles[PDKPASS_RESULT_PROFILE_LIMIT];
 static SemaphoreHandle_t s_lock;
 static EventGroupHandle_t s_events;
 static pdkpass_results_callback_t s_callback;
@@ -157,7 +170,7 @@ static bool cache_has_due_result(size_t race_index, const race_cache_t *cache,
     int64_t retry_interval = retry_interval_seconds(race_index, now_utc);
     for (size_t i = 0; i < PDKPASS_SESSION_COUNT; i++) {
         const session_cache_t *session = &cache->sessions[i];
-        if (session->present && !session->cancelled && !session->ready &&
+        if (session->present && !session->cancelled && (!session->ready || !pdkpass_result_profiles_complete(session->profile_ids)) &&
             pdkpass_session_result_due(now_utc, session->end_utc) &&
             now_utc - session->last_attempt_utc >= retry_interval) return true;
     }
@@ -179,7 +192,7 @@ static bool cache_complete(size_t race_index, const race_cache_t *cache,
         !cache->sessions[PDKPASS_SESSION_RACE].present) return false;
     for (size_t i = 0; i < PDKPASS_SESSION_COUNT; i++) {
         const session_cache_t *session = &cache->sessions[i];
-        if (session->present && !session->cancelled && !session->ready) {
+        if (session->present && !session->cancelled && (!session->ready || !pdkpass_result_profiles_complete(session->profile_ids))) {
             return false;
         }
     }
@@ -220,7 +233,7 @@ static void expedite_requested_race(size_t race_index, int64_t now_utc)
             cache->next_discovery_utc = retry_at;
         for (size_t i = 0; i < PDKPASS_SESSION_COUNT; i++) {
             session_cache_t *session = &cache->sessions[i];
-            if (session->present && !session->cancelled && !session->ready &&
+            if (session->present && !session->cancelled && (!session->ready || !pdkpass_result_profiles_complete(session->profile_ids)) &&
                 pdkpass_session_result_due(now_utc, session->end_utc) &&
                 now_utc - session->last_attempt_utc >= RESULTS_MANUAL_RETRY_SECONDS)
                 session->last_attempt_utc = 0;
@@ -317,6 +330,7 @@ static process_outcome_t process_race(size_t race_index, int64_t now_utc)
 
     bool changed = false;
     unsigned fetched_session = PDKPASS_SESSION_COUNT;
+    bool first_classification = false;
     if (discovery_due(&cache, now_utc)) {
         race_cache_t before_discovery = cache;
         bool discovered = discover_sessions(race_index, &cache, now_utc);
@@ -332,11 +346,13 @@ static process_outcome_t process_race(size_t race_index, int64_t now_utc)
     int64_t retry_interval = retry_interval_seconds(race_index, now_utc);
     for (size_t i = 0; i < PDKPASS_SESSION_COUNT; i++) {
         session_cache_t *session = &cache.sessions[i];
-        if (!session->present || session->session_key <= 0 || session->cancelled || session->ready ||
+        if (!session->present || session->session_key <= 0 || session->cancelled || (session->ready && pdkpass_result_profiles_complete(session->profile_ids)) ||
             !pdkpass_session_result_due(now_utc, session->end_utc) ||
             now_utc - session->last_attempt_utc < retry_interval) continue;
         session->last_attempt_utc = now_utc;
+        bool was_ready = session->ready;
         if (fetch_result(session)) {
+            first_classification = !was_ready;
             fetched_session = (unsigned)i;
             changed = true;
             outcome = PROCESS_PROGRESS;
@@ -356,8 +372,9 @@ static process_outcome_t process_race(size_t race_index, int64_t now_utc)
     if (s_cache_dirty) {
         save_cache_with_retry();
     }
-    bool new_result = fetched_session < PDKPASS_SESSION_COUNT && !s_cache_dirty;
-    if (new_result) {
+    bool saved_result = fetched_session < PDKPASS_SESSION_COUNT && !s_cache_dirty;
+    bool new_result = saved_result && first_classification;
+    if (saved_result) {
         pdkpass_sync_mark_success(PDKPASS_SYNC_STATUS_RESULTS, (int64_t)time(NULL));
         finish_pending_manual_result(race_index, fetched_session);
     }
@@ -404,7 +421,8 @@ static bool persisted_race_changed(const race_cache_t *before,
         if (a->session_key != b->session_key || a->present != b->present ||
             a->cancelled != b->cancelled || a->ready != b->ready ||
             memcmp(a->podium_codes, b->podium_codes,
-                   sizeof(a->podium_codes)) != 0) return true;
+                   sizeof(a->podium_codes)) != 0 ||
+            memcmp(a->profile_ids, b->profile_ids, sizeof(a->profile_ids)) != 0) return true;
     }
     return false;
 }
@@ -446,6 +464,7 @@ static void process_manual_race(size_t race_index, int64_t now_utc)
         }
         if (!session->ready) first_results++;
         updated |= !session->ready ||
+                   memcmp(session->profile_ids, checked.profile_ids, sizeof(session->profile_ids)) != 0 ||
                    memcmp(session->podium_codes, checked.podium_codes,
                           sizeof(session->podium_codes)) != 0;
         *session = checked;
@@ -526,7 +545,7 @@ static TickType_t next_scheduled_wait(int64_t now_utc)
         for (size_t session_index = 0;
              session_index < PDKPASS_SESSION_COUNT; session_index++) {
             const session_cache_t *session = &cache->sessions[session_index];
-            if (!session->present || session->end_utc <= 0 || session->cancelled || session->ready) continue;
+            if (!session->present || session->end_utc <= 0 || session->cancelled || (session->ready && pdkpass_result_profiles_complete(session->profile_ids))) continue;
             int64_t due_at = session->end_utc + PDKPASS_RESULT_DELAY_SECONDS;
             if (due_at <= now_utc) {
                 due_at = session->last_attempt_utc + retry_interval;
@@ -763,9 +782,13 @@ bool pdkpass_results_get(size_t race_index, pdkpass_session_kind_t session,
     const race_cache_t *race = &s_cache[race_index];
     session_cache_t cached = race->sessions[session];
     bool discovered = race->discovered;
-    xSemaphoreGive(s_lock);
-
     memset(snapshot, 0, sizeof(*snapshot));
+    for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
+        unsigned id = cached.profile_ids[i];
+        if (id && id <= PDKPASS_RESULT_PROFILE_LIMIT)
+            snapshot->podium[i] = s_profiles[id - 1];
+    }
+    xSemaphoreGive(s_lock);
     snapshot->session_end_utc = cached.end_utc;
     if (cached.ready) {
         snapshot->status = PDKPASS_RESULT_READY;
@@ -774,15 +797,15 @@ bool pdkpass_results_get(size_t race_index, pdkpass_session_kind_t session,
             podium->position = (unsigned)(i + 1U);
             snprintf(podium->code, sizeof(podium->code), "%s",
                      cached.podium_codes[i]);
+            if (podium->name[0] && podium->team[0]) continue;
             pdkpass_driver_t driver;
             if (pdkpass_season_driver_by_code(podium->code, &driver)) {
                 snprintf(podium->name, sizeof(podium->name), "%s", driver.name);
                 snprintf(podium->team, sizeof(podium->team), "%.*s",
                          (int)sizeof(podium->team) - 1, driver.team);
             } else {
-                memcpy(podium->name, cached.podium_codes[i],
-                       sizeof(cached.podium_codes[i]));
-                snprintf(podium->team, sizeof(podium->team), "TEAM");
+                snprintf(podium->name, sizeof(podium->name), "NAME PENDING");
+                snprintf(podium->team, sizeof(podium->team), "DETAILS PENDING");
             }
         }
     } else if (cached.cancelled) {

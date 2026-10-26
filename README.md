@@ -227,6 +227,13 @@ up/down navigation remains available.
 
 ## Session results
 
+Result podiums also retain the session's driver names, teams and team colors locally,
+independently of the standings cache. Existing classifications survive upgrades;
+missing legacy details are filled on subsequent result syncs. Until then, unavailable
+names or teams are labeled `NAME PENDING` / `DETAILS PENDING`. Updating details alone
+does not replay the new-result sound.
+
+
 When a session has ended, open its race details and press **OK** to browse FP1,
 FP2, FP3, sprint qualifying, sprint, qualifying, and race results. PDKPASS waits
 at least 30 minutes after the recorded session end, then checks for the top

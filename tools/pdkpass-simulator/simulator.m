@@ -275,6 +275,8 @@ static void results_cache_load(void)
             copy_json_string(snapshot->podium[i].team,
                              sizeof(snapshot->podium[i].team),
                              driver[@"team"]);
+            snapshot->podium[i].accent = [driver[@"accent"] unsignedIntValue];
+            snapshot->podium[i].has_accent = [driver[@"has_accent"] boolValue];
         }
     }];
 }
@@ -306,6 +308,8 @@ static void results_cache_save_locked(void)
                         @"code" : @(snapshot->podium[i].code),
                         @"name" : @(snapshot->podium[i].name),
                         @"team" : @(snapshot->podium[i].team),
+                        @"accent" : @(snapshot->podium[i].accent),
+                        @"has_accent" : @(snapshot->podium[i].has_accent),
                     }];
                 }
                 entry[@"podium"] = podium;
@@ -426,9 +430,15 @@ static BOOL fill_podium(NSArray *classification, NSArray *drivers,
         copy_json_string(podium->code, sizeof(podium->code),
                          match[@"name_acronym"]);
         copy_json_string(podium->name, sizeof(podium->name),
-                         [match[@"last_name"] uppercaseString]);
+                         [match[@"full_name"] uppercaseString]);
         copy_json_string(podium->team, sizeof(podium->team),
                          [match[@"team_name"] uppercaseString]);
+        NSString *colour = match[@"team_colour"];
+        if ([colour isKindOfClass:NSString.class] && colour.length == 6 &&
+            strspn(colour.UTF8String, "0123456789abcdefABCDEF") == 6) {
+            podium->accent = (uint32_t)strtoul(colour.UTF8String, NULL, 16);
+            podium->has_accent = true;
+        }
     }
     snapshot->status = PDKPASS_RESULT_READY;
     return YES;

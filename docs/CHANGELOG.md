@@ -6,6 +6,12 @@
 
 ## Unreleased
 
+- Normalize the phone Wi-Fi form spacing: 24 px between sections, 12 px between network options and 8 px between field labels and inputs. Give the submitted/connecting page consistent outer padding and separation between its badge, heading and instructions.
+
+- Center the three result-status messages as a group with equal vertical spacing, preserving their text, fonts and colors.
+
+- Result podiums cache session-specific names, teams and team colors independently of standings. Identical profiles are shared within a bounded 48-entry table; transfers preserve historical team identities. Version 2/3 caches retain classifications and receive missing details through the existing background/manual sync, without replaying result sounds. Failed responses preserve the previous podium. Missing legacy details are labeled explicitly, and team text uses a readable foreground and fitted width.
+
 - Cache all published session start times during the existing calendar sync, including FP2, FP3 and Sprint, without waiting for the results discovery window. Retain cached times on missing data or failed responses, respect explicit cancellations and ALERTS OFF, and refresh the page when any session data changes, including changes outside the legacy three times. Identical data does not trigger a redraw or another schedule write. Reuse persistent schedule storage and existing requests; leave result-fetch timing unchanged.
 
 - Use two columns on track-page session rows: keep names aligned on the left and center start times or unknown/cancelled states within the right column. Retain the existing row geometry and font.

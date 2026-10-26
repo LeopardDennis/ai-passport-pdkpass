@@ -306,6 +306,38 @@ int main(void)
         simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // stays on results
         assert(find_label(lv_screen_active(), "MAX VERSTAPPEN"));
         assert(find_label(lv_screen_active(), "R1 WIFI OFFLINE"));
+        // Results keep their own session identities even with no standings cache.
+        s_driver_preview = false;
+        const char *full_names[] = {"KIMI ANTONELLI", "MAX VERSTAPPEN", "ISACK HADJAR"};
+        const char *result_codes[] = {"ANT", "VER", "HAD"};
+        const char *teams[] = {"MERCEDES", "RED BULL RACING", "RACING BULLS"};
+        const uint32_t colours[] = {0x00A19C, 0x3671C6, 0x6692FF};
+        for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
+            snprintf(sample->podium[i].code, sizeof(sample->podium[i].code), "%s", result_codes[i]);
+            snprintf(sample->podium[i].name, sizeof(sample->podium[i].name), "%s", full_names[i]);
+            snprintf(sample->podium[i].team, sizeof(sample->podium[i].team), "%s", teams[i]);
+            sample->podium[i].accent = colours[i];
+            sample->podium[i].has_accent = true;
+        }
+        assert(pdkpass_ui_season_update());
+        for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
+            assert(find_label(lv_screen_active(), full_names[i]));
+            lv_obj_t *team = find_label(lv_screen_active(), teams[i]);
+            assert(team);
+            lv_color_t bg = lv_obj_get_style_bg_color(lv_obj_get_parent(team), 0);
+            assert(lv_color_to_u32(bg) == lv_color_to_u32(lv_color_hex(colours[i])));
+            lv_color_t text = lv_obj_get_style_text_color(team, 0);
+            assert(lv_color_to_u32(text) != lv_color_to_u32(bg));
+        }
+        assert(!find_label(lv_screen_active(), "TEAM"));
+        check_memory();
+        const char *preview_path = getenv("PDKPASS_TEST_SCREENSHOT");
+        if (preview_path) {
+            simulator_refresh();
+            assert(save_framebuffer_png([NSString stringWithUTF8String:preview_path]));
+        }
+        s_driver_preview = true;
+        assert(pdkpass_ui_season_update());
         // A downloaded schedule is not a downloaded result. Exercise the
         // historical-session regression and missing timestamps restored from NVS.
         sample->status = PDKPASS_RESULT_SCHEDULED;

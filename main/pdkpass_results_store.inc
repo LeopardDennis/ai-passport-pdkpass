@@ -43,7 +43,7 @@ static int stored_index(const results_store_t *stored, size_t index,
 static void load_cache(void)
 {
     race_cache_t *loaded = calloc(PDKPASS_MAX_RACES, sizeof(*loaded));
-    results_store_t *stored = malloc(sizeof(*stored));
+    results_store_t *stored = calloc(1, sizeof(*stored));
     if (!loaded || !stored) {
         free(loaded);
         free(stored);
@@ -76,6 +76,11 @@ static void load_cache(void)
                 free(legacy);
             }
         }
+        if (err == ESP_OK && size == sizeof(v3_store_t) &&
+            stored->magic == RESULTS_CACHE_MAGIC && stored->version == 3U) {
+            stored->version = RESULTS_CACHE_VERSION;
+            size = sizeof(*stored);
+        }
         size_t race_count = pdkpass_season_race_count();
         valid = err == ESP_OK && size == sizeof(*stored) &&
                 persisted_matches(stored, pdkpass_season_year(), race_count);
@@ -90,6 +95,17 @@ static void load_cache(void)
                 for (size_t session = 0; session < PDKPASS_SESSION_COUNT;
                      session++) {
                     loaded[i].sessions[session].session_key = source->session_keys[session];
+                    for (size_t p = 0; p < PDKPASS_PODIUM_SIZE; p++) {
+                        unsigned id = stored->profile_ids[match][session][p];
+                        if (!id || id > PDKPASS_RESULT_PROFILE_LIMIT) continue;
+                        const pdkpass_podium_driver_t *profile = &stored->profiles[id - 1];
+                        if (!memchr(profile->code, 0, sizeof(profile->code)) ||
+                            !memchr(profile->name, 0, sizeof(profile->name)) ||
+                            !memchr(profile->team, 0, sizeof(profile->team)) ||
+                            !profile->name[0] || !profile->team[0] ||
+                            memcmp(profile->code, source->podium_codes[session][p], 4)) continue;
+                        loaded[i].sessions[session].profile_ids[p] = (uint8_t)id;
+                    }
                     uint8_t bit = (uint8_t)(1U << session);
                     loaded[i].sessions[session].present =
                         (source->present_mask & bit) != 0U;
@@ -107,6 +123,8 @@ static void load_cache(void)
 
     if (s_lock && xSemaphoreTake(s_lock, pdMS_TO_TICKS(2000)) == pdTRUE) {
         memcpy(s_cache, loaded, sizeof(s_cache));
+        if (valid) memcpy(s_profiles, stored->profiles, sizeof(s_profiles));
+        else memset(s_profiles, 0, sizeof(s_profiles));
         s_cache_year = pdkpass_season_year();
         s_cache_count = pdkpass_season_race_count();
         s_cache_dirty = false;
@@ -137,10 +155,13 @@ static esp_err_t save_cache(void)
         free(stored);
         return ESP_ERR_TIMEOUT;
     }
+    memcpy(stored->profiles, s_profiles, sizeof(s_profiles));
     for (size_t i = 0; i < race_count; i++) {
         stored->races[i].meeting_key = s_cache[i].meeting_key;
         stored->races[i].discovered = s_cache[i].discovered;
         for (size_t session = 0; session < PDKPASS_SESSION_COUNT; session++) {
+            memcpy(stored->profile_ids[i][session], s_cache[i].sessions[session].profile_ids,
+                   sizeof(stored->profile_ids[i][session]));
             stored->races[i].session_keys[session] = s_cache[i].sessions[session].session_key;
             uint8_t bit = (uint8_t)(1U << session);
             if (s_cache[i].sessions[session].present) {

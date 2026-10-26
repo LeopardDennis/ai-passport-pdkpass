@@ -79,6 +79,7 @@ PRELUDE = r'''
 #include <time.h>
 #include "pdkpass_season.h"
 #include "pdkpass_results_core.h"
+#include "pdkpass_results.h"
 #include "pdkpass_season_core.h"
 #include "pdkpass_tracks.h"
 #include "pdkpass_calendar.h"
@@ -375,6 +376,7 @@ int main(void) {
 typedef int nvs_handle_t;
 static const char *TAG="test",*NVS_NAMESPACE="test",*NVS_KEY="season";
 static race_cache_t s_cache[PDKPASS_MAX_RACES];
+static pdkpass_podium_driver_t s_profiles[PDKPASS_RESULT_PROFILE_LIMIT];
 static unsigned s_cache_year;
 static size_t s_cache_count,s_requested_race=SIZE_MAX,s_priority_race=SIZE_MAX;
 static int64_t s_priority_until_utc,s_cache_retry_at_us;
@@ -483,6 +485,7 @@ int main(void) {
   s_cache[i].meeting_key=races[i].meeting_key;s_cache[i].discovered=1;
   for(size_t session=0;session<PDKPASS_SESSION_COUNT;session++) {
    session_cache_t *sample=&s_cache[i].sessions[session];
+   memset(sample->profile_ids,1,sizeof(sample->profile_ids));
    sample->present=sample->ready=1;sample->session_key=(int)(100+i*10+session);
    sample->end_utc=wall_utc-4000;strcpy(sample->podium_codes[0],"OLD");
   }
@@ -790,9 +793,9 @@ static bool pdkpass_ui_season_update(void) {assert(locked);if(!snapshot_availabl
 static void pdkpass_ui_results_update(size_t i) {assert(locked&&(i==0||i==23));results++;}
 static void pdkpass_ui_sync_status_update(void) {assert(locked);statuses++;}
 void pdkpass_season_set_network(bool online,bool valid) {(void)online;(void)valid;}
-static void pdkpass_results_set_online(bool online) {(void)online;}
+void pdkpass_results_set_online(bool online) {(void)online;}
 static void pdkpass_reminder_set_time_valid(bool valid) {(void)valid;}
-static void pdkpass_results_season_changed(void) {}
+void pdkpass_results_season_changed(void) {}
 static void pdkpass_reminder_season_changed(void) {}
 static void pdkpass_sound_result_ready(void) {}
 """
@@ -2043,8 +2046,10 @@ void pdkpass_reminder_update_round(unsigned year,unsigned round,int32_t meeting_
  assert((entries[PDKPASS_SESSION_RACE].flags!=0)==cancelled_schedule);
  if(!cancelled_schedule)assert(entries[PDKPASS_SESSION_RACE].start_utc==900);
 }
+static race_cache_t s_cache[PDKPASS_MAX_RACES];
+static pdkpass_podium_driver_t s_profiles[PDKPASS_RESULT_PROFILE_LIMIT];
 static int driver_requests, fail_driver, missing_driver;
-static bool duplicate_driver, conflicting_driver;
+static bool duplicate_driver, conflicting_driver, missing_details, invalid_colour, conflicting_team;
 bool pdkpass_parse_iso8601_utc(const char *text,int64_t *out) {
  *out=strcmp(text,"start")==0?900:1000;return true;
 }
@@ -2078,9 +2083,13 @@ static int pdkpass_http_array(const char *url,bool (*item)(const cJSON *,void *)
  if(i==missing_driver)return ESP_OK;
  cJSON a={.key="driver_number",.valueint=i,.valuedouble=i,.type=2};
  cJSON b={.key="name_acronym",.valuestring=codes[i-1],.type=1};
- a.next=&b;cJSON obj={.child=&a};assert(item(&obj,ctx));
+ cJSON n={.key="full_name",.valuestring=missing_details?"":"Alex Example",.type=1};
+ cJSON t={.key="team_name",.valuestring="Example Team",.type=1};
+ cJSON c={.key="team_colour",.valuestring=invalid_colour?"12ZZ45":"00a19c",.type=1};
+ a.next=&b;b.next=&n;n.next=&t;t.next=&c;cJSON obj={.child=&a};if(!item(&obj,ctx))return ESP_FAIL;
  if(duplicate_driver) {
   if(conflicting_driver)b.valuestring="BAD";
+  if(conflicting_team)t.valuestring="Another Team";
   if(!item(&obj,ctx))return ESP_FAIL;
  }
  return fail_stream || i==fail_driver ? ESP_FAIL : ESP_OK;
@@ -2089,7 +2098,7 @@ static int pdkpass_http_array(const char *url,bool (*item)(const cJSON *,void *)
         for signature in ['static bool json_positive_key(', 'static bool json_bool(', 'static void update_session_identity(',
                           'static void parse_reminder_session(', 'static bool parse_discovered_session(', 'static bool discover_sessions(',
                           'static bool parse_podium_item(', 'static bool podium_complete(',
-                          'static void copy_json_text(', 'static bool parse_podium_driver(',
+                          'static void copy_json_text(', 'static bool store_podium_profiles(', 'static bool parse_podium_driver(',
                           'static bool podium_drivers_complete(', 'static bool fetch_result(']:
             code += function(source, signature)
         code += r'''
@@ -2123,6 +2132,19 @@ int main(void) {
  assert(strcmp(session->podium_codes[1],"BBB")==0);
  assert(strcmp(session->podium_codes[2],"CCC")==0);
 
+ assert(pdkpass_result_profiles_complete(session->profile_ids));
+ pdkpass_podium_driver_t *profile=&s_profiles[session->profile_ids[0]-1];
+ assert(!strcmp(profile->name,"ALEX EXAMPLE")&&!strcmp(profile->team,"EXAMPLE TEAM"));
+ assert(profile->has_accent&&profile->accent==0x00a19c);
+ session_cache_t saved=*session;
+ pdkpass_podium_driver_t saved_profiles[PDKPASS_RESULT_PROFILE_LIMIT];
+ memcpy(saved_profiles,s_profiles,sizeof(s_profiles));missing_details=true;
+ assert(!fetch_result(session)&&!memcmp(session,&saved,sizeof(saved)));
+ assert(!memcmp(saved_profiles,s_profiles,sizeof(s_profiles)));missing_details=false;
+ invalid_colour=true;assert(fetch_result(session));
+ assert(!s_profiles[session->profile_ids[0]-1].has_accent);invalid_colour=false;
+ duplicate_driver=true;conflicting_team=true;saved=*session;
+ assert(!fetch_result(session)&&!memcmp(session,&saved,sizeof(saved)));conflicting_team=false;
  duplicate_driver=true;session->ready=0;driver_requests=0;
  assert(fetch_result(session)&&session->ready&&driver_requests==3);
  conflicting_driver=true;session->ready=0;
@@ -2147,6 +2169,102 @@ int main(void) {
  puts("streamed results commit only complete responses: PASS");
 }
 '''
+        compile_run(code)
+
+    def test_result_profiles_survive_without_standings_and_preserve_history(self):
+        source = production_source(ROOT / 'main/pdkpass_results.c')
+        defines = '\n'.join(x for x in source.splitlines() if x.startswith('#define RESULTS_'))
+        types = source[source.index('typedef struct {'):source.index('static const char *TAG')]
+        code = PRELUDE + defines + '\n' + types + r"""
+#define ESP_ERR_NO_MEM 0x101
+#define ESP_ERR_TIMEOUT 0x107
+static race_cache_t s_cache[PDKPASS_MAX_RACES];
+static pdkpass_podium_driver_t s_profiles[PDKPASS_RESULT_PROFILE_LIMIT];
+static unsigned s_cache_year;
+static size_t s_cache_count,s_requested_race,s_priority_race;
+static int64_t s_priority_until_utc,s_cache_retry_at_us;
+static bool s_cache_dirty,s_has_cached_data;
+static const char *NVS_NAMESPACE="test",*NVS_KEY="season";
+static unsigned char disk[sizeof(results_store_t)];
+static size_t disk_size;
+static bool fail_write;
+esp_err_t pdkpass_cache_read_blob(const char *ns,const char *key,void *data,size_t *size) {
+ (void)ns;(void)key;assert(*size>=disk_size);memcpy(data,disk,disk_size);*size=disk_size;return ESP_OK;
+}
+esp_err_t pdkpass_cache_write_blob(const char *ns,const char *key,const void *data,size_t size) {
+ (void)ns;(void)key;if(fail_write)return ESP_FAIL;
+ assert(size<=sizeof(disk));memcpy(disk,data,size);disk_size=size;return ESP_OK;
+}
+void pdkpass_cache_forget_namespace(const char *ns) {(void)ns;disk_size=0;}
+bool pdkpass_season_driver_by_code(const char *code,pdkpass_driver_t *driver) {
+ (void)code;(void)driver;return false; // Reproduce the device: no standings at all.
+}
+"""
+        for sig in ['static bool store_podium_profiles(', 'static void reset_race_cache(',
+                    'static bool persisted_matches(', 'static int stored_index(',
+                    'static void load_cache(', 'static esp_err_t save_cache(',
+                    'bool pdkpass_results_get(']:
+            code += function(source, sig)
+        code += r"""
+int main(void) {
+ s_lock=1;race_count=2;races[0].meeting_key=10;races[1].meeting_key=20;
+ pdkpass_podium_driver_t profiles[3]={
+  {.code="ANT",.name="KIMI ANTONELLI",.team="MERCEDES",.accent=0x00A19C,.has_accent=true},
+  {.code="VER",.name="MAX VERSTAPPEN",.team="RED BULL RACING",.accent=0x3671C6,.has_accent=true},
+  {.code="HAD",.name="ISACK HADJAR",.team="RACING BULLS",.accent=0x6692FF,.has_accent=true}};
+ uint8_t ids[3];assert(store_podium_profiles(profiles,ids));
+ for(size_t i=0;i<2;i++) {
+  s_cache[i].meeting_key=races[i].meeting_key;s_cache[i].discovered=1;
+  session_cache_t *session=&s_cache[i].sessions[0];session->ready=session->present=1;
+  session->session_key=(int)(100+i);
+  memcpy(session->profile_ids,ids,3);
+  for(size_t j=0;j<3;j++)memcpy(session->podium_codes[j],profiles[j].code,4);
+ }
+ pdkpass_result_snapshot_t view;
+ assert(pdkpass_results_get(0,0,&view)&&view.status==PDKPASS_RESULT_READY);
+ assert(!strcmp(view.podium[0].name,"KIMI ANTONELLI"));
+ assert(!strcmp(view.podium[1].team,"RED BULL RACING"));
+ assert(view.podium[2].has_accent&&view.podium[2].accent==0x6692FF);
+ assert(view.podium[0].position==1&&view.podium[2].position==3);
+ uint8_t same[3];assert(store_podium_profiles(profiles,same)&&!memcmp(ids,same,3));
+ // A transfer changes only the newly downloaded session, not historical teams.
+ strcpy(profiles[2].team,"RED BULL RACING");profiles[2].accent=0x3671C6;
+ assert(store_podium_profiles(profiles,same));assert(same[2]!=ids[2]);
+ memcpy(s_cache[1].sessions[0].profile_ids,same,3);
+ assert(save_cache()==ESP_OK);
+ memset(s_cache,0,sizeof(s_cache));memset(s_profiles,0,sizeof(s_profiles));load_cache();
+ assert(pdkpass_results_get(0,0,&view)&&!strcmp(view.podium[2].team,"RACING BULLS"));
+ assert(pdkpass_results_get(1,0,&view)&&!strcmp(view.podium[2].team,"RED BULL RACING"));
+ // A failed save leaves the previously persisted identities intact after reboot.
+ strcpy(profiles[0].name,"CORRECTED NAME");assert(store_podium_profiles(profiles,same));
+ memcpy(s_cache[0].sessions[0].profile_ids,same,3);fail_write=true;
+ assert(save_cache()!=ESP_OK);load_cache();
+ assert(pdkpass_results_get(0,0,&view)&&!strcmp(view.podium[0].name,"KIMI ANTONELLI"));
+ // v3 migration keeps every classification and schedules identity enrichment.
+ v3_store_t old={.magic=RESULTS_CACHE_MAGIC,.version=3,.year=2026,.race_count=2};
+ old.races[0].meeting_key=10;old.races[0].ready_mask=old.races[0].present_mask=1;
+ old.races[0].session_keys[0]=100;
+ for(size_t j=0;j<3;j++)memcpy(old.races[0].podium_codes[0][j],profiles[j].code,4);
+ memcpy(disk,&old,sizeof(old));disk_size=sizeof(old);load_cache();
+ assert(s_cache[0].sessions[0].ready&&!pdkpass_result_profiles_complete(s_cache[0].sessions[0].profile_ids));
+ assert(pdkpass_results_get(0,0,&view)&&view.status==PDKPASS_RESULT_READY);
+ assert(!strcmp(view.podium[0].code,"ANT")&&!strcmp(view.podium[0].name,"NAME PENDING"));
+ assert(!strcmp(view.podium[0].team,"DETAILS PENDING"));
+ // Reclaim unused slots safely, including a stale slot matching a later candidate.
+ memset(s_cache,0,sizeof(s_cache));memset(s_profiles,0,sizeof(s_profiles));
+ s_profiles[0]=profiles[1];assert(store_podium_profiles(profiles,ids));
+ assert(ids[0]!=ids[1]&&!strcmp(s_profiles[ids[0]-1].code,"ANT"));
+ assert(!strcmp(s_profiles[ids[1]-1].code,"VER"));
+ // Never evict referenced historical identities when the bounded table is full.
+ for(size_t i=0;i<PDKPASS_RESULT_PROFILE_LIMIT;i++) {
+  s_profiles[i]=profiles[0];snprintf(s_profiles[i].name,sizeof(s_profiles[i].name),"DRIVER %zu",i);
+  s_cache[i/21].sessions[(i/3)%7].profile_ids[i%3]=(uint8_t)(i+1);
+ }
+ pdkpass_podium_driver_t before[PDKPASS_RESULT_PROFILE_LIMIT];memcpy(before,s_profiles,sizeof(before));
+ assert(!store_podium_profiles(profiles,ids)&&!memcmp(before,s_profiles,sizeof(before)));
+ puts("Results without standings: identities, colors, transfers, offline reload, failed save, v3 migration and bounded allocation: PASS");
+}
+"""
         compile_run(code)
 
     def test_jolpica_standings_atomic_pages_and_validation(self):
@@ -3323,6 +3441,7 @@ void pdkpass_sync_mark_success(pdkpass_sync_status_t status,int64_t utc) {
  (void)utc;assert((unsigned)status<PDKPASS_SYNC_STATUS_COUNT);marks[status]++;
 }
 static race_cache_t s_cache[PDKPASS_MAX_RACES];
+static pdkpass_podium_driver_t s_profiles[PDKPASS_RESULT_PROFILE_LIMIT];
 static size_t s_force_race=1;
 static pdkpass_manual_status_t s_force_status={.state=PDKPASS_MANUAL_RUNNING};
 static bool s_cache_dirty, fail_one, expired;
@@ -3406,6 +3525,7 @@ int main(void) {
         code = PRELUDE + defines + '\n' + types + r'''
 #define portMAX_DELAY UINT32_MAX
 static race_cache_t s_cache[PDKPASS_MAX_RACES];
+static pdkpass_podium_driver_t s_profiles[PDKPASS_RESULT_PROFILE_LIMIT];
 static bool s_cache_dirty, s_force_pending, fetch_ok=true, save_fail;
 static size_t s_force_race, requested_race=1;
 static unsigned requested_session=PDKPASS_SESSION_FP1;
@@ -3441,8 +3561,9 @@ static int save_cache_with_retry(void) {
 void pdkpass_sync_mark_success(pdkpass_sync_status_t status,int64_t utc) {
  assert(status==PDKPASS_SYNC_STATUS_RESULTS);(void)utc;
 }
+static bool cue_observed;
 static void callback(size_t race,bool first) {
- assert(race==1);(void)first;callbacks++;
+ assert(race==1);cue_observed=first;callbacks++;
  observed_state=s_force_status.state;observed_hold=sync_held[PDKPASS_SYNC_RESULTS];
 }
 static void (*s_callback)(size_t,bool)=callback;
@@ -3487,9 +3608,13 @@ int main(void) {
  assert(observed_state==PDKPASS_MANUAL_TIMED_OUT&&!observed_hold);
  assert(!take_manual_race(&next)); // Preserve the original deadline.
 
- reset();s_cache[1].sessions[0].ready=1;queue_manual();process_race(1,10000);
+ reset();s_cache[1].sessions[0].ready=1;
+ memset(s_cache[1].sessions[0].profile_ids,1,3);queue_manual();process_race(1,10000);
  assert(fetches==0&&s_force_status.state==PDKPASS_MANUAL_RUNNING);
  assert(sync_held[PDKPASS_SYNC_RESULTS]&&take_manual_race(&next));
+ // Legacy cached results acquire details without replaying the result cue.
+ reset();s_cache[1].sessions[0].ready=1;cue_observed=true;process_race(1,10000);
+ assert(fetches==1&&!cue_observed&&s_cache[1].sessions[0].ready);
  // Existing cached results still require a manual check for corrections.
  puts("Automatic result: coalesced matching manual request, deadline and failure ownership: PASS");
 }
@@ -3605,6 +3730,7 @@ int main(void) {
 #include "pdkpass_sync_policy.h"
 #define EVENT_WAKE 1
 static race_cache_t s_cache[PDKPASS_MAX_RACES];
+static pdkpass_podium_driver_t s_profiles[PDKPASS_RESULT_PROFILE_LIMIT];
 static size_t s_requested_race = SIZE_MAX, s_priority_race = SIZE_MAX, s_history_cursor;
 static int64_t s_priority_until_utc;
 static int s_events=1, sync_plan_calls, wake_calls;
@@ -3959,6 +4085,7 @@ typedef int nvs_handle_t;
 static const void *payload;
 static size_t payload_size;
 static race_cache_t s_cache[PDKPASS_MAX_RACES];
+static pdkpass_podium_driver_t s_profiles[PDKPASS_RESULT_PROFILE_LIMIT];
 static unsigned s_cache_year;
 static size_t s_cache_count, s_requested_race, s_priority_race;
 static int64_t s_priority_until_utc;

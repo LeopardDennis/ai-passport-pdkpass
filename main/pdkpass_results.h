@@ -9,6 +9,15 @@
 #include <stdint.h>
 
 #define PDKPASS_PODIUM_SIZE 3
+#define PDKPASS_RESULT_PROFILE_LIMIT 48
+
+// One-based references; zero denotes a legacy podium awaiting details.
+static inline bool pdkpass_result_profiles_complete(const uint8_t ids[PDKPASS_PODIUM_SIZE])
+{
+    for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++)
+        if (!ids[i] || ids[i] > PDKPASS_RESULT_PROFILE_LIMIT) return false;
+    return true;
+}
 
 typedef enum {
     PDKPASS_RESULT_UNKNOWN = 0,
@@ -21,8 +30,10 @@ typedef enum {
 typedef struct {
     unsigned position;
     char code[4];
-    char name[16];
-    char team[16];
+    char name[32];
+    char team[24];
+    uint32_t accent;
+    bool has_accent;
 } pdkpass_podium_driver_t;
 
 typedef struct {

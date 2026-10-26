@@ -190,7 +190,40 @@ static void copy_json_text(char *destination, size_t capacity,
 typedef struct {
     const result_driver_t *top;
     char (*podium_codes)[4];
+    pdkpass_podium_driver_t *profiles;
 } podium_details_t;
+
+static bool store_podium_profiles(const pdkpass_podium_driver_t profiles[PDKPASS_PODIUM_SIZE],
+                                  uint8_t ids[PDKPASS_PODIUM_SIZE])
+{
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    bool used[PDKPASS_RESULT_PROFILE_LIMIT] = {0};
+    bool reserved[PDKPASS_RESULT_PROFILE_LIMIT] = {0};
+    for (size_t r = 0; r < PDKPASS_MAX_RACES; r++)
+        for (size_t s = 0; s < PDKPASS_SESSION_COUNT; s++)
+            for (size_t p = 0; p < PDKPASS_PODIUM_SIZE; p++) {
+                unsigned id = s_cache[r].sessions[s].profile_ids[p];
+                if (id && id <= PDKPASS_RESULT_PROFILE_LIMIT) used[id - 1] = true;
+            }
+    for (size_t p = 0; p < PDKPASS_PODIUM_SIZE; p++) {
+        unsigned slot = PDKPASS_RESULT_PROFILE_LIMIT;
+        for (size_t i = 0; i < PDKPASS_RESULT_PROFILE_LIMIT; i++)
+            if (!reserved[i] && !memcmp(&profiles[p], &s_profiles[i], sizeof(profiles[p]))) { slot = i; break; }
+        if (slot == PDKPASS_RESULT_PROFILE_LIMIT)
+            for (size_t i = 0; i < PDKPASS_RESULT_PROFILE_LIMIT; i++)
+                if (!used[i]) { slot = i; break; }
+        if (slot == PDKPASS_RESULT_PROFILE_LIMIT) {
+            xSemaphoreGive(s_lock);
+            return false;
+        }
+        used[slot] = reserved[slot] = true;
+        ids[p] = (uint8_t)(slot + 1);
+    }
+    // Publish only after every slot is reserved. Failed downloads never alter profiles.
+    for (size_t p = 0; p < PDKPASS_PODIUM_SIZE; p++) s_profiles[ids[p] - 1] = profiles[p];
+    xSemaphoreGive(s_lock);
+    return true;
+}
 
 static bool parse_podium_driver(const cJSON *item, void *user)
 {
@@ -203,10 +236,27 @@ static bool parse_podium_driver(const cJSON *item, void *user)
         char fallback[8], code[4] = {0};
         snprintf(fallback, sizeof(fallback), "#%d", details->top[i].driver_number);
         copy_json_text(code, sizeof(code), item, "name_acronym", fallback);
+        pdkpass_podium_driver_t profile = {0};
+        memcpy(profile.code, code, sizeof(code));
+        copy_json_text(profile.name, sizeof(profile.name), item, "full_name", "");
+        if (!profile.name[0]) copy_json_text(profile.name, sizeof(profile.name), item, "last_name", "");
+        copy_json_text(profile.team, sizeof(profile.team), item, "team_name", "");
+        if (!profile.name[0] || !profile.team[0]) return false;
+        for (size_t c = 0; profile.name[c]; c++)
+            if (profile.name[c] >= 'a' && profile.name[c] <= 'z') profile.name[c] -= 'a' - 'A';
+        for (size_t c = 0; profile.team[c]; c++)
+            if (profile.team[c] >= 'a' && profile.team[c] <= 'z') profile.team[c] -= 'a' - 'A';
+        const cJSON *colour = cJSON_GetObjectItemCaseSensitive(item, "team_colour");
+        if (cJSON_IsString(colour) && strlen(colour->valuestring) == 6 &&
+            strspn(colour->valuestring, "0123456789abcdefABCDEF") == 6) {
+            profile.accent = (uint32_t)strtoul(colour->valuestring, NULL, 16);
+            profile.has_accent = true;
+        }
         // Repeated records that agree on the displayed identity are harmless.
         // Conflicting records still reject the entire candidate and keep cache.
         if (details->podium_codes[i][0])
-            return strcmp(details->podium_codes[i], code) == 0;
+            return memcmp(&details->profiles[i], &profile, sizeof(profile)) == 0;
+        details->profiles[i] = profile;
         memcpy(details->podium_codes[i], code, sizeof(code));
     }
     return true;
@@ -231,7 +281,8 @@ static bool fetch_result(session_cache_t *session)
         !podium_complete(top)) return false;
 
     char podium_codes[PDKPASS_PODIUM_SIZE][4] = {0};
-    podium_details_t details = {.top = top, .podium_codes = podium_codes};
+    pdkpass_podium_driver_t profiles[PDKPASS_PODIUM_SIZE] = {0};
+    podium_details_t details = {.top = top, .podium_codes = podium_codes, .profiles = profiles};
     // The full grid arrives in an 8-10 KB TLS record on OpenF1. Streaming
     // JSON cannot shrink that record: TLS must first allocate/decrypt it.
     // Fetch only the three required drivers, keeping each response small.
@@ -243,7 +294,10 @@ static bool fetch_result(session_cache_t *session)
             podium_codes[i][0] == '\0') return false;
     }
     bool parsed = podium_drivers_complete((const char (*)[4])podium_codes);
+    uint8_t ids[PDKPASS_PODIUM_SIZE] = {0};
+    if (parsed) parsed = store_podium_profiles(profiles, ids);
     if (parsed) {
+        memcpy(session->profile_ids, ids, sizeof(ids));
         memcpy(session->podium_codes, podium_codes, sizeof(podium_codes));
         session->ready = 1;
     }
