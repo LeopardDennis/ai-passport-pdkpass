@@ -4,7 +4,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define PDKPASS_WIFI_NEARBY_LIMIT 5
+#define PDKPASS_WIFI_NEARBY_LIMIT 12
+// Every SSID byte can require a JSON escape, plus quotes/separators and framing.
+#define PDKPASS_WIFI_NEARBY_JSON_CAPACITY (40 + PDKPASS_WIFI_NEARBY_LIMIT * (32 * 2 + 3))
 
 typedef struct {
     char ssid[33];

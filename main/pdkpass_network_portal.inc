@@ -8,7 +8,7 @@ static esp_err_t root_get(httpd_req_t *request)
 
 static esp_err_t nearby_get(httpd_req_t *request)
 {
-    char json[512];
+    char json[PDKPASS_WIFI_NEARBY_JSON_CAPACITY];
     if (!pdkpass_wifi_nearby_json(&s_setup_nearby, s_setup_scan_failed,
                                    json, sizeof(json))) {
         httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,

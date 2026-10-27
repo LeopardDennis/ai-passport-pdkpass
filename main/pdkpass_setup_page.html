@@ -16,7 +16,12 @@
     .status-mark { display: block; width: 16px; height: 16px; flex: none; border-radius: 5px; background: #55931b; }
     h1 { margin: 24px 0 12px; font-size: clamp(24px, 6vw, 27px); line-height: 1.2; }
     .eyebrow { margin: 0 0 12px; color: #697b84; font: 700 13px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .04em; }
-    .nearby { display: flex; flex-direction: column; gap: 12px; max-height: 142px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+    .nearby { display: flex; flex-direction: column; max-height: 292px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; border: 2px solid #d1dadc; border-radius: 12px; background: white; }
+    .nearby:empty { display: none; }
+    .nearby .network { min-height: 48px; padding: 10px 14px; border: 0; border-bottom: 1px solid #d1dadc; border-radius: 0; font-size: 17px; }
+    .nearby .network:last-child { border-bottom: 0; }
+    .nearby .network:focus-visible { outline-offset: -3px; }
+    #manual { min-height: 48px; padding: 10px 14px; font-size: 17px; }
     .network { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 65px; flex-shrink: 0; margin: 0; padding: 12px 16px; border: 2px solid #d1dadc; border-radius: 12px; background: white; color: #46545c; font: 21px system-ui, -apple-system, sans-serif; text-align: left; overflow-wrap: anywhere; }
     .network.selected { border-color: #17202a; background: #ffd928; color: #17202a; }
     .network:focus-visible, input:focus-visible, .connect:focus-visible { outline: 3px solid #0872c9; outline-offset: 2px; }
@@ -41,12 +46,12 @@
     <div class="status"><span class="status-mark" aria-hidden="true"></span>Connected to device hotspot</div>
     <h1>Select a 2.4 GHz Network</h1>
     <p class="eyebrow">NEARBY NETWORKS</p>
-    <form id="setup-form" method="post" action="/save">
+    <form id="setup-form" method="post" action="/save" autocomplete="off">
       <div id="nearby" class="nearby" role="group" aria-label="Nearby networks"></div>
       <p id="scan-note" class="scan-note" role="status">Scanning nearby networks...</p>
       <button id="manual" class="network selected" type="button" aria-pressed="true"><span>Enter Network Manually</span><span class="radio" aria-hidden="true"></span></button>
       <label id="manual-field" class="manual-field"><span class="field-label">Network Name</span><input id="ssid" name="ssid" maxlength="32" autocomplete="off" spellcheck="false" required></label>
-      <label class="password-field"><span class="field-label">Wi-Fi Password</span><input id="password" name="password" type="password" maxlength="63" autocomplete="new-password"></label>
+      <label class="password-field"><span class="field-label">Wi-Fi Password</span><input id="password" name="password" type="password" maxlength="63" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"></label>
       <p id="error" class="error" role="alert"></p>
       <button class="connect" type="submit">Connect</button>
     </form>

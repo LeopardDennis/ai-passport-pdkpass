@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Show nearby Wi-Fi networks in a compact scrollable list with about six visible rows and up to twelve distinct scanned SSIDs, ordered by signal strength. Size the JSON buffer for twelve fully escaped SSIDs. Remove the new-password hint and request autocomplete/correction off for the existing Wi-Fi password; system password-manager prompts remain browser-controlled.
+
 - Normalize the phone Wi-Fi form spacing: 24 px between sections, 12 px between network options and 8 px between field labels and inputs. Give the submitted/connecting page consistent outer padding and separation between its badge, heading and instructions.
 
 - Center the three result-status messages as a group with equal vertical spacing, preserving their text, fonts and colors.

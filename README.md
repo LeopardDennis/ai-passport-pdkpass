@@ -75,6 +75,11 @@ letters and digits, without `I`, `O`, `0` or `1`.
 3. Choose a real nearby 2.4 GHz network or enter its name manually, enter the
    password, then press **Connect**.
 
+Nearby networks are ordered by signal strength, with up to twelve distinct SSIDs
+in a scrollable list showing about six rows. The password field no longer requests
+a new password and asks the browser to disable autocomplete; system password-manager
+suggestions may still appear.
+
 PDKPASS tests the connection before saving it. A wrong password leaves the setup
 page available for another attempt without replacing saved credentials. Up to five
 networks survive power-off; the last successfully connected network is tried first.
