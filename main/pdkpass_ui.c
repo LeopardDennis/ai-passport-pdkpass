@@ -819,15 +819,20 @@ static void render_home(void)
     make_center_label(s_content, circuit_name, 0, 73, INNER_W,
                       circuit_font, 0xFFFFFF);
     char weekend[20];
-    if (strlen(race->weekend) == 9U && race->weekend[2] == '-' &&
-        race->weekend[5] == ' ') {
-        snprintf(weekend, sizeof(weekend), "%.3s %.5s",
-                 race->weekend + 6, race->weekend);
-    } else {
-        snprintf(weekend, sizeof(weekend), "%s", race->weekend);
-    }
-    make_center_label(s_content, weekend, 0, 94, INNER_W,
-                      &lv_font_unscii_16, UI_PAPER);
+    pdkpass_format_home_weekend(race->weekend, weekend, sizeof(weekend));
+    lv_point_t weekend_size;
+    lv_text_get_size(&weekend_size, weekend, &lv_font_unscii_16, 0, 0,
+                     LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    const int date_width = INNER_W - 6;
+    int logical_width = weekend_size.x > date_width ? weekend_size.x : date_width;
+    lv_obj_t *date_label = make_label(s_content, weekend,
+        (INNER_W - logical_width) / 2, 94, logical_width,
+        &lv_font_unscii_16, UI_PAPER);
+    lv_obj_set_style_text_align(date_label, LV_TEXT_ALIGN_CENTER, 0);
+    // Fit complete cross-month dates without clipping or reducing glyph height.
+    lv_obj_set_style_transform_pivot_x(date_label, logical_width / 2, 0);
+    lv_obj_set_style_transform_scale_x(date_label,
+        ui_pixel_fit_scale(logical_width, date_width, 256), 0);
 
     lv_obj_t *race_card = make_card(s_content, 8, 113, 194, 27,
                                     race->accent, 3);

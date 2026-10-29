@@ -6,6 +6,10 @@
 
 ## Unreleased
 
+- Increase the UI worker stack from 3 KB to 6 KB after a device trace confirmed a stack-protection reset when opening session results. Reserve room for nested page rendering, LVGL and C-library formatting calls; this costs 3 KB of additional system RAM.
+
+- Use month-first home dates consistently across month boundaries (for example, `OCT 31-NOV 02`), matching same-month dates such as `SEP 04-06`. Fit long dates on one centered line while preserving glyph height and the underlying cached dates.
+
 - Show nearby Wi-Fi networks in a compact scrollable list with about six visible rows and up to twelve distinct scanned SSIDs, ordered by signal strength. Size the JSON buffer for twelve fully escaped SSIDs. Remove the new-password hint and request autocomplete/correction off for the existing Wi-Fi password; system password-manager prompts remain browser-controlled.
 
 - Normalize the phone Wi-Fi form spacing: 24 px between sections, 12 px between network options and 8 px between field labels and inputs. Give the submitted/connecting page consistent outer padding and separation between its badge, heading and instructions.

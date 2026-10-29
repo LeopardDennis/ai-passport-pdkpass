@@ -224,6 +224,19 @@ int main(void)
         assert(lv_obj_get_style_transform_scale_x(australia, 0) > 256);
         assert(lv_obj_get_style_transform_scale_x(australia, 0) < 512);
         check_memory(); // Includes the home hint's full text width.
+        // Mexico's cross-month home date must be month-first and fully visible.
+        for (unsigned i = 0; i < 18; i++) simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
+        check_memory();
+        lv_obj_t *weekend = find_label(lv_screen_active(), "OCT 30-NOV 01");
+        assert(weekend);
+        lv_point_t date_size;
+        lv_text_get_size(&date_size, lv_label_get_text(weekend),
+            lv_obj_get_style_text_font(weekend, 0), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        assert(date_size.x <= lv_obj_get_content_width(weekend));
+        assert(date_size.x * lv_obj_get_style_transform_scale_x(weekend, 0) / 256 <= 204);
+        assert(lv_obj_get_style_transform_scale_y(weekend, 0) == 256);
+        for (unsigned i = 0; i < 18; i++) simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK);
+        check_memory();
         // First use shows no seeded points; a later cache update refreshes in place.
         assert(snapshot.driver_count == 0);
         simulator_send_button(BSP_BTN_UP, BSP_BTN_LONG);

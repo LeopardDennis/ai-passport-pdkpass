@@ -22,6 +22,9 @@
 static const char *TAG = "pdkpass";
 
 #define BATTERY_LIT_POLL_MS 60000U
+// Result rendering nests LVGL and newlib formatting calls on this task.
+// The previous 3 KB stack overflowed when opening a cached podium on device.
+#define UI_WORKER_STACK_BYTES 6144U
 
 typedef struct { bsp_btn_t button; bsp_btn_ev_t event; bool reschedule; } key_event_t;
 static QueueHandle_t s_keys;
@@ -245,7 +248,7 @@ void app_main(void)
     }
 
     s_keys = xQueueCreate(12, sizeof(key_event_t));
-    if (!s_keys || xTaskCreate(ui_worker, "pdk_ui_io", 3072,
+    if (!s_keys || xTaskCreate(ui_worker, "pdk_ui_io", UI_WORKER_STACK_BYTES,
                               NULL, 3, NULL) != pdPASS) {
         ESP_LOGE(TAG, "UI worker failed to start");
     }

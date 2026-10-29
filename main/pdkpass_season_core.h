@@ -17,6 +17,10 @@ bool pdkpass_season_candidate_valid(unsigned current_year,
 
 void pdkpass_format_beijing_weekend(int64_t start_utc, int64_t end_utc,
                                     char *output, size_t capacity);
+// Home uses month-first dates for both same-month and cross-month weekends.
+// Unknown/pending text is preserved; cached dates are not changed.
+void pdkpass_format_home_weekend(const char *weekend, char *output,
+                                  size_t capacity);
 void pdkpass_format_beijing_session(const char *label, int64_t start_utc,
                                     char *output, size_t capacity);
 void pdkpass_format_beijing_date(int64_t epoch_utc, char *output,

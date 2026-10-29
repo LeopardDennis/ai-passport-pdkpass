@@ -32,5 +32,25 @@ int main(void)
     assert(strcmp(text, "FP1   04 SEP 18:30") == 0);
     pdkpass_format_beijing_date(1788517800, text, sizeof(text));
     assert(strcmp(text, "04 SEP") == 0);
+    const char *weekends[][2] = {
+        {"04-06 SEP", "SEP 04-06"},
+        {"31 OCT-02 NOV", "OCT 31-NOV 02"},
+        {"30 OCT-01 NOV", "OCT 30-NOV 01"},
+        {"30 APR-02 MAY", "APR 30-MAY 02"},
+        {"30 JUL-01 AUG", "JUL 30-AUG 01"},
+        {"31 DEC-02 JAN", "DEC 31-JAN 02"},
+        {"TIME TBD", "TIME TBD"},
+        {"", ""},
+    };
+    for (size_t i = 0; i < sizeof(weekends) / sizeof(weekends[0]); i++) {
+        pdkpass_format_home_weekend(weekends[i][0], text, sizeof(text));
+        assert(strcmp(text, weekends[i][1]) == 0);
+    }
+    char small[4];
+    pdkpass_format_home_weekend("31 OCT-02 NOV", small, sizeof(small));
+    assert(strcmp(small, "OCT") == 0);
+    pdkpass_format_home_weekend(NULL, text, sizeof(text));
+    assert(text[0] == '\0');
+    pdkpass_format_home_weekend("31 OCT-02 NOV", NULL, 0);
     return 0;
 }

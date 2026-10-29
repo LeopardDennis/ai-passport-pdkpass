@@ -1,6 +1,7 @@
 #include "pdkpass_season_core.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #define SECONDS_PER_DAY 86400LL
 
@@ -98,6 +99,23 @@ void pdkpass_format_beijing_weekend(int64_t start_utc, int64_t end_utc,
     } else {
         snprintf(output, capacity, "%02u %s-%02u %s", start.day,
                  month_label(start.month), end.day, month_label(end.month));
+    }
+}
+
+void pdkpass_format_home_weekend(const char *weekend, char *output,
+                                  size_t capacity)
+{
+    if (!output || capacity == 0U) return;
+    if (!weekend) weekend = "";
+    size_t length = strlen(weekend);
+    if (length == 9U && weekend[2] == '-' && weekend[5] == ' ') {
+        snprintf(output, capacity, "%.3s %.5s", weekend + 6, weekend);
+    } else if (length == 13U && weekend[2] == ' ' &&
+               weekend[6] == '-' && weekend[9] == ' ') {
+        snprintf(output, capacity, "%.3s %.2s-%.3s %.2s",
+                 weekend + 3, weekend, weekend + 10, weekend + 7);
+    } else {
+        snprintf(output, capacity, "%s", weekend);
     }
 }
 
