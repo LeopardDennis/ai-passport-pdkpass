@@ -76,9 +76,10 @@ letters and digits, without `I`, `O`, `0` or `1`.
    password, then press **Connect**.
 
 Nearby networks are ordered by signal strength, with up to twelve distinct SSIDs
-in a scrollable list showing about six rows. The password field no longer requests
-a new password and asks the browser to disable autocomplete; system password-manager
-suggestions may still appear.
+in a scrollable list showing about six rows. The setup form follows the FMO
+provisioning pattern: unnamed inputs, a native masked password field with autocomplete/correction disabled, and a scripted POST.
+This reduces login-form cues without replacing native password masking. Browser
+password suggestions remain system-controlled and require iPhone verification.
 
 PDKPASS tests the connection before saving it. A wrong password leaves the setup
 page available for another attempt without replacing saved credentials. Up to five

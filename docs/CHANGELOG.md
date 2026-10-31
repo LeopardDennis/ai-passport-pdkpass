@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Align the Wi-Fi form with FMO: use unnamed inputs and a scripted POST while retaining native password masking, to reduce iOS login/autofill cues. Keep the existing connecting page, prevent duplicate submissions, and allow retry after HTTP errors or interrupted requests. iPhone popup behavior still requires device verification.
+
 - Increase the UI worker stack from 3 KB to 6 KB after a device trace confirmed a stack-protection reset when opening session results. Reserve room for nested page rendering, LVGL and C-library formatting calls; this costs 3 KB of additional system RAM.
 
 - Use month-first home dates consistently across month boundaries (for example, `OCT 31-NOV 02`), matching same-month dates such as `SEP 04-06`. Fit long dates on one centered line while preserving glyph height and the underlying cached dates.
