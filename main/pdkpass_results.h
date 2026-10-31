@@ -39,6 +39,7 @@ typedef struct {
 typedef struct {
     pdkpass_result_status_t status;
     int64_t session_end_utc;
+    int64_t session_start_utc; // Exact cached schedule; zero when unavailable.
     pdkpass_podium_driver_t podium[PDKPASS_PODIUM_SIZE];
 } pdkpass_result_snapshot_t;
 

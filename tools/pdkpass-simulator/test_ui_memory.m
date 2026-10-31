@@ -219,6 +219,23 @@ int main(void)
         simulator_initialize();
         s_simulator_online = NO; // Keep seeded page fixtures independent of HTTP.
         test_track_paging();
+        // A result can have exact session timing without a round schedule lookup.
+        s_results[0][PDKPASS_SESSION_FP2].status = PDKPASS_RESULT_READY;
+        s_results[0][PDKPASS_SESSION_FP2].session_start_utc = (int64_t)time(NULL) - 7200;
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+        char fp2_line[PDKPASS_SESSION_LINE_LEN];
+        pdkpass_format_beijing_session("FP2", s_results[0][PDKPASS_SESSION_FP2].session_start_utc,
+                                      fp2_line, sizeof(fp2_line));
+        check_memory();
+        assert(find_detail_line(fp2_line));
+        // Legacy/missing schedule: do not invent a time or claim it is TBD.
+        s_results[0][PDKPASS_SESSION_FP2].session_start_utc = 0;
+        pdkpass_ui_results_update(0);
+        check_memory();
+        assert(find_detail_line("FP2   RESULT READY"));
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
+        memset(s_results, 0, sizeof(s_results));
+
         lv_obj_t *australia = find_label(lv_screen_active(), "AUSTRALIA");
         assert(australia);
         assert(lv_obj_get_style_transform_scale_x(australia, 0) > 256);

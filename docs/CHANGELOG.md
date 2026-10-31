@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Resolve cached session start times by year and session ID when the fallback calendar has no meeting ID, so detail and home pages can use already downloaded FP2/FP3 schedules. If a result exists but its start time is unavailable, show RESULT READY instead of TIME TBD. Keep persisted cache formats unchanged.
+
 - Align the Wi-Fi form with FMO: use unnamed inputs and a scripted POST while retaining native password masking, to reduce iOS login/autofill cues. Keep the existing connecting page, prevent duplicate submissions, and allow retry after HTTP errors or interrupted requests. iPhone popup behavior still requires device verification.
 
 - Increase the UI worker stack from 3 KB to 6 KB after a device trace confirmed a stack-protection reset when opening session results. Reserve room for nested page rendering, LVGL and C-library formatting calls; this costs 3 KB of additional system RAM.

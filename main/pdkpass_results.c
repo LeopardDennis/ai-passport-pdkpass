@@ -782,6 +782,7 @@ bool pdkpass_results_get(size_t race_index, pdkpass_session_kind_t session,
     const race_cache_t *race = &s_cache[race_index];
     session_cache_t cached = race->sessions[session];
     bool discovered = race->discovered;
+    unsigned year = s_cache_year;
     memset(snapshot, 0, sizeof(*snapshot));
     for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
         unsigned id = cached.profile_ids[i];
@@ -789,6 +790,9 @@ bool pdkpass_results_get(size_t race_index, pdkpass_session_kind_t session,
             snapshot->podium[i] = s_profiles[id - 1];
     }
     xSemaphoreGive(s_lock);
+    // Release the results lock before reading the separate schedule cache.
+    snapshot->session_start_utc = pdkpass_reminder_session_start(year, session,
+                                                               cached.session_key);
     snapshot->session_end_utc = cached.end_utc;
     if (cached.ready) {
         snapshot->status = PDKPASS_RESULT_READY;

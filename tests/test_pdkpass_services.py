@@ -1108,6 +1108,7 @@ bool pdkpass_season_has_cached_data(void) {return cached_calendar;}
                     'void pdkpass_reminder_set_enabled(', 'void pdkpass_reminder_update_round(',
                     'bool pdkpass_reminder_update_calendar_round(',
                     'bool pdkpass_reminder_round_schedule(',
+                    'int64_t pdkpass_reminder_session_start(',
                     'bool pdkpass_reminder_poll(', 'uint32_t pdkpass_reminder_wait_ms(']:
             code += function(source, sig)
         code += r'''
@@ -1192,6 +1193,14 @@ int main(void) {
  assert(pdkpass_reminder_update_calendar_round(2026,1,500,entries,&changed));
  assert(!changed);
  assert(wakes==saved_wakes&&!s_dirty&&writes==previous);
+ // An exact session ID resolves independently of a missing meeting ID.
+ assert(!pdkpass_reminder_round_schedule(2026,0,loaded));
+ assert(pdkpass_reminder_session_start(2026,PDKPASS_SESSION_FP2,901)==start+20000);
+ assert(pdkpass_reminder_session_start(2027,PDKPASS_SESSION_FP2,901)==0);
+ assert(pdkpass_reminder_session_start(2026,PDKPASS_SESSION_FP1,901)==0);
+ assert(pdkpass_reminder_session_start(2026,PDKPASS_SESSION_FP2,999)==0);
+ assert(pdkpass_reminder_session_start(2026,PDKPASS_SESSION_FP2,0)==0);
+
  puts("Reminder NVS failure/retry, persisted dismissal, toggle and cancelled meeting: PASS");
 }
 '''
@@ -2181,6 +2190,9 @@ int main(void) {
 static race_cache_t s_cache[PDKPASS_MAX_RACES];
 static pdkpass_podium_driver_t s_profiles[PDKPASS_RESULT_PROFILE_LIMIT];
 static unsigned s_cache_year;
+int64_t pdkpass_reminder_session_start(unsigned year, pdkpass_session_kind_t kind, int32_t key) {
+ return year==2026 && kind==PDKPASS_SESSION_FP1 && key==1234 ? 1793400000LL : 0;
+}
 static size_t s_cache_count,s_requested_race,s_priority_race;
 static int64_t s_priority_until_utc,s_cache_retry_at_us;
 static bool s_cache_dirty,s_has_cached_data;
@@ -2222,6 +2234,12 @@ int main(void) {
  }
  pdkpass_result_snapshot_t view;
  assert(pdkpass_results_get(0,0,&view)&&view.status==PDKPASS_RESULT_READY);
+ s_cache_year=2026;s_cache[0].sessions[0].session_key=1234;
+ assert(pdkpass_results_get(0,0,&view)&&view.session_start_utc==1793400000LL);
+ s_cache[0].sessions[0].session_key=0;
+ assert(pdkpass_results_get(0,0,&view)&&view.session_start_utc==0);
+ s_cache[0].sessions[0].session_key=100;
+
  assert(!strcmp(view.podium[0].name,"KIMI ANTONELLI"));
  assert(!strcmp(view.podium[1].team,"RED BULL RACING"));
  assert(view.podium[2].has_accent&&view.podium[2].accent==0x6692FF);

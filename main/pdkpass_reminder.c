@@ -236,3 +236,23 @@ bool pdkpass_reminder_round_schedule(unsigned year, int32_t meeting_key,
     xSemaphoreGive(s_lock);
     return found;
 }
+
+int64_t pdkpass_reminder_session_start(unsigned year, pdkpass_session_kind_t kind,
+                                      int32_t session_key)
+{
+    if (session_key <= 0 || kind >= PDKPASS_SESSION_COUNT || !s_lock ||
+        xSemaphoreTake(s_lock, 0) != pdTRUE) return 0;
+    int64_t start = 0;
+    if (s_store.schedule.year == year) {
+        for (size_t slot = 0; slot < PDKPASS_MAX_RACES; slot++) {
+            const pdkpass_reminder_entry_t *entry =
+                &s_store.schedule.entries[slot * PDKPASS_SESSION_COUNT + kind];
+            if (entry->session_key == session_key) {
+                start = entry->start_utc;
+                break;
+            }
+        }
+    }
+    xSemaphoreGive(s_lock);
+    return start;
+}

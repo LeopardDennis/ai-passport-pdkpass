@@ -473,6 +473,8 @@ static void detail_session_line(pdkpass_session_kind_t session,
     } else if (schedule->start_utc > 0) {
         pdkpass_format_beijing_session(detail_session_short_label(session),
                                        schedule->start_utc, output, capacity);
+    } else if (schedule->result_ready) {
+        snprintf(output, capacity, "%-5s RESULT READY", detail_session_short_label(session));
     } else {
         snprintf(output, capacity, "%-5s TIME TBD", detail_session_short_label(session));
     }
@@ -760,11 +762,14 @@ static int64_t home_next_session(char *output, size_t capacity)
         entries[PDKPASS_SESSION_RACE].start_utc = home_calendar_start(race->race_cn);
         for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++) {
             pdkpass_result_snapshot_t result;
-            if (pdkpass_results_get(s_state.selected_race, i, &result) &&
-                (result.status == PDKPASS_RESULT_CANCELLED ||
-                 result.status == PDKPASS_RESULT_NOT_HELD ||
-                 result.status == PDKPASS_RESULT_READY))
-                entries[i].flags |= PDKPASS_REMINDER_CANCELLED;
+            if (pdkpass_results_get(s_state.selected_race, i, &result)) {
+                if (result.session_start_utc > 0)
+                    entries[i].start_utc = result.session_start_utc;
+                if (result.status == PDKPASS_RESULT_CANCELLED ||
+                    result.status == PDKPASS_RESULT_NOT_HELD ||
+                    result.status == PDKPASS_RESULT_READY)
+                    entries[i].flags |= PDKPASS_REMINDER_CANCELLED;
+            }
         }
     }
     int64_t now = (int64_t)time(NULL);
@@ -1145,6 +1150,8 @@ static void refresh_detail_sessions(void)
         pdkpass_result_snapshot_t result;
         if (pdkpass_results_get(s_state.selected_race, kind, &result) &&
             result.status != PDKPASS_RESULT_UNKNOWN) {
+            if (result.session_start_utc > 0)
+                session->start_utc = result.session_start_utc;
             session->end_utc = result.session_end_utc;
             session->result_ready = result.status == PDKPASS_RESULT_READY;
             session->cancelled |= result.status == PDKPASS_RESULT_CANCELLED;

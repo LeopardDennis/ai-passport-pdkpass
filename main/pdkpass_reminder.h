@@ -24,3 +24,8 @@ void pdkpass_reminder_set_enabled(bool enabled);
 // Non-blocking under the LVGL lock; false means no matching schedule available.
 bool pdkpass_reminder_round_schedule(unsigned year, int32_t meeting_key,
     pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT]);
+
+// Resolve an exact cached session even when the bundled race has no meeting ID.
+// Zero means unavailable; never match by round number or infer a time.
+int64_t pdkpass_reminder_session_start(unsigned year, pdkpass_session_kind_t kind,
+                                      int32_t session_key);
