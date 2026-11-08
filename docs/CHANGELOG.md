@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Automatically open the Wi-Fi QR page when the provisioning hotspot becomes active, even after delayed/coalesced status updates. Keep provisioning visible during connection and time-sync updates while the hotspot remains active; repeated updates preserve the manual-info selection.
+
 - Preserve discovered meeting IDs and match legacy result caches using verified session identities. Reject same-season calendar responses that omit known meetings or shrink the race list. Distinguish busy schedule reads from missing data and retry page rendering without replacing the last complete detail view. Schedule calendar, driver and team automatic refreshes independently; access-restricted calendar/points requests back off for 30 minutes while successful domains retain their normal deadlines.
 
 - Reduce iOS password prompts on the setup page by using a CSS-masked text field where supported. Keep entry disabled until masking is configured; fall back to a native password field on unsupported browsers. Actual iPhone AutoFill behavior remains subject to device verification.

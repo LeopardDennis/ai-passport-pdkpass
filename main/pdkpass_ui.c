@@ -1786,14 +1786,19 @@ void pdkpass_ui_network_update(const pdkpass_network_update_t *update)
              update->setup_ssid ? update->setup_ssid : "");
     snprintf(s_setup_password, sizeof(s_setup_password), "%s",
              update->setup_password ? update->setup_password : "");
-    if (!s_hotspot_active || (s_hotspot_active && !was_hotspot)) {
+    bool new_setup = s_hotspot_active && (!was_hotspot || credentials_changed);
+    if (!s_hotspot_active || new_setup) {
         s_setup_show_info = false;
         s_setup_qr_failed = false;
     } else if (credentials_changed) {
         s_setup_qr_failed = false;
     }
+    // AP readiness owns the provisioning page, even if coalesced status updates
+    // arrive after the user has navigated away from the progress screen.
+    if (new_setup)
+        s_state.page = PDKPASS_PAGE_NETWORK_PROGRESS;
     if (s_hotspot_active && s_setup_error[0]) s_setup_show_info = true;
-    if (s_state.page == PDKPASS_PAGE_NETWORK_PROGRESS &&
+    if (s_state.page == PDKPASS_PAGE_NETWORK_PROGRESS && !s_hotspot_active &&
         (update->state == PDKPASS_NETWORK_ONLINE || update->state == PDKPASS_NETWORK_SYNCING ||
          (was_hotspot && !s_hotspot_active))) s_state.page = PDKPASS_PAGE_HOME;
     if (s_setup_countdown && !error_changed)

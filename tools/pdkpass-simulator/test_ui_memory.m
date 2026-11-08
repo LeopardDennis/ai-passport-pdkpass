@@ -524,6 +524,40 @@ int main(void)
         assert(s_flush_pixels > 0 && s_flush_pixels < 240U * 320U / 2U);
         simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK); // restore first item
         check_memory();
+        // A delayed/coalesced AP-ready event must open the QR from the menu.
+        pdkpass_network_update_t ready = {
+            .state = PDKPASS_NETWORK_SETUP, .hotspot_active = true,
+            .time_valid = true, .setup_ssid = "PDKPASS-SETUP",
+            .setup_password = "K7M9P2X4", .setup_seconds_left = 180,
+        };
+        pdkpass_ui_network_update(&ready);
+        check_memory();
+        assert(find_label(lv_screen_active(), "SCAN TO CONNECT"));
+        // IP/time progress must keep the QR until the AP actually closes.
+        ready.state = PDKPASS_NETWORK_SYNCING;
+        pdkpass_ui_network_update(&ready);
+        check_memory();
+        assert(find_label(lv_screen_active(), "SCAN TO CONNECT"));
+        ready.state = PDKPASS_NETWORK_ONLINE;
+        pdkpass_ui_network_update(&ready);
+        check_memory();
+        assert(find_label(lv_screen_active(), "SCAN TO CONNECT"));
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
+        assert(find_label(lv_screen_active(), "CONNECT PHONE TO"));
+        pdkpass_ui_network_update(&ready); // duplicate must preserve manual info
+        check_memory();
+        assert(find_label(lv_screen_active(), "CONNECT PHONE TO"));
+        // Restarted AP credentials can arrive without an intermediate OFF event.
+        ready.setup_password = "P2X4K7M9";
+        pdkpass_ui_network_update(&ready);
+        check_memory();
+        assert(find_label(lv_screen_active(), "SCAN TO CONNECT"));
+        ready.hotspot_active = false;
+        pdkpass_ui_network_update(&ready);
+        check_memory();
+        assert(find_label(lv_screen_active(), "UP/DN:RACE OK:VIEW"));
+        simulator_set_network(PDKPASS_NETWORK_OFFLINE);
+        simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // home -> menu
         simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // first item: manual setup
         assert(find_label(lv_screen_active(), "SCAN TO CONNECT"));
         assert(find_label(lv_screen_active(), "OK:INFO  HOLD:BACK"));
