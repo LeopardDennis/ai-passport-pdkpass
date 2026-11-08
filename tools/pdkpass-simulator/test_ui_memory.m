@@ -10,11 +10,13 @@
 #include "src/misc/lv_text_private.h"
 static unsigned dark_timer_fired;
 static bool s_test_schedule_active;
+static bool s_test_schedule_busy;
 static pdkpass_reminder_entry_t s_test_schedule[PDKPASS_SESSION_COUNT];
 
 bool pdkpass_reminder_round_schedule(unsigned year, int32_t meeting_key,
     pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT])
 {
+    if (s_test_schedule_busy) { entries[0].session_key = -1; return false; }
     if (!s_test_schedule_active || year != 2026 ||
         meeting_key != pdkpass_races[0].meeting_key) return false;
     memcpy(entries, s_test_schedule, sizeof(s_test_schedule));
@@ -130,6 +132,24 @@ static void test_track_paging(void)
     simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
     assert(find_label(lv_screen_active(), "UP/DN OK:VIEW HOLD:BACK"));
     check_selected_detail(lines[1], 1); // latest finished FP2, no downloaded result
+    // A transient busy read must keep the old view, then retry through the timer.
+    s_test_schedule_busy = true;
+    s_test_schedule[PDKPASS_SESSION_FP2].start_utc += 60;
+    pdkpass_ui_results_update(0);
+    check_memory();
+    assert(find_detail_line(lines[1]));
+    s_test_schedule_busy = false;
+    lv_tick_inc(300);
+    lv_timer_handler();
+    check_memory();
+    char updated_line[PDKPASS_SESSION_LINE_LEN];
+    pdkpass_format_beijing_session("FP2", s_test_schedule[PDKPASS_SESSION_FP2].start_utc,
+                                   updated_line, sizeof(updated_line));
+    assert(find_detail_line(updated_line));
+    s_test_schedule[PDKPASS_SESSION_FP2].start_utc -= 60;
+    pdkpass_ui_results_update(0);
+    check_selected_detail(lines[1], 1);
+
     save_detail_preview("track-sessions-page-1.png");
     simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK);
     assert(find_label(lv_screen_active(), "FP2")); // default OK must not reset to FP1

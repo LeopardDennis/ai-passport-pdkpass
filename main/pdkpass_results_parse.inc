@@ -140,7 +140,10 @@ static bool discover_sessions(size_t race_index, race_cache_t *cache,
     if (pdkpass_http_array(url, parse_discovered_session, &discovery) != ESP_OK)
         return false;
     if (!discovery.valid) return false;
-    if (discovery.matched) parsed.discovered = 1;
+    if (discovery.matched) {
+        parsed.discovered = 1;
+        parsed.meeting_key = discovery.reminder_meeting;
+    }
     if (discovery.reminder_matched && discovery.reminder_valid)
         pdkpass_reminder_update_round(pdkpass_season_year(), race.round,
                                       discovery.reminder_meeting, discovery.reminders);

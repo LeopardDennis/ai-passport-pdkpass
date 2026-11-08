@@ -221,8 +221,11 @@ uint32_t pdkpass_reminder_wait_ms(int64_t now)
 bool pdkpass_reminder_round_schedule(unsigned year, int32_t meeting_key,
     pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT])
 {
-    if (!entries || meeting_key <= 0 || !s_lock ||
-        xSemaphoreTake(s_lock, 0) != pdTRUE) return false;
+    if (!entries || meeting_key <= 0 || !s_lock) return false;
+    if (xSemaphoreTake(s_lock, 0) != pdTRUE) {
+        entries[0].session_key = -1; // BUSY, distinct from a missing schedule.
+        return false;
+    }
     bool found = false;
     if (s_store.schedule.year == year) {
         for (size_t i = 0; i < PDKPASS_MAX_RACES; i++) {
@@ -240,8 +243,8 @@ bool pdkpass_reminder_round_schedule(unsigned year, int32_t meeting_key,
 int64_t pdkpass_reminder_session_start(unsigned year, pdkpass_session_kind_t kind,
                                       int32_t session_key)
 {
-    if (session_key <= 0 || kind >= PDKPASS_SESSION_COUNT || !s_lock ||
-        xSemaphoreTake(s_lock, 0) != pdTRUE) return 0;
+    if (session_key <= 0 || kind >= PDKPASS_SESSION_COUNT || !s_lock) return 0;
+    if (xSemaphoreTake(s_lock, 0) != pdTRUE) return -1;
     int64_t start = 0;
     if (s_store.schedule.year == year) {
         for (size_t slot = 0; slot < PDKPASS_MAX_RACES; slot++) {

@@ -105,6 +105,9 @@ static pdkpass_season_callback_t s_callback;
 static bool s_online;
 static bool s_time_valid;
 static int64_t s_last_attempt_utc;
+// Worker-owned independent deadlines: calendar, drivers, teams.
+static int64_t s_domain_due[3];
+static bool s_auto_sync;
 static bool s_points_force_pending;
 static pdkpass_points_target_t s_points_force_target;
 static pdkpass_manual_status_t s_points_force_status[PDKPASS_POINTS_TARGET_COUNT];
@@ -402,6 +405,19 @@ static bool build_candidate(unsigned year,
         free(build);
         return false;
     }
+    // A syntactically complete response can still omit meetings. Do not shrink
+    // a known season or silently remove a known identity and renumber its races.
+    if (year == current->year) {
+        bool complete = context.count >= current->race_count;
+        for (size_t i = 0; complete && i < current->race_count; i++) {
+            if (current->races[i].meeting_key <= 0) continue;
+            bool found = false;
+            for (size_t j = 0; j < context.count; j++)
+                if (build[j].race.meeting_key == current->races[i].meeting_key) found = true;
+            if (!found) complete = false;
+        }
+        if (!complete) { free(build); return false; }
+    }
     qsort(build, context.count, sizeof(build[0]), compare_races);
     for (size_t i = 0; i < context.count; i++) {
         build[i].race.round = (uint8_t)(i + 1U);
@@ -518,7 +534,11 @@ static bool synchronize(int64_t now_utc)
     pdkpass_season_snapshot_t *candidate = NULL;
     unsigned target_year = pdkpass_beijing_year(now_utc);
     calendar_sessions_t *sessions = NULL;
-    bool calendar_ok = build_candidate(target_year, current, &candidate, &sessions);
+    bool calendar_requested = !s_auto_sync || now_utc >= s_domain_due[0];
+    bool drivers_requested = !s_auto_sync || now_utc >= s_domain_due[1];
+    bool teams_requested = !s_auto_sync || now_utc >= s_domain_due[2];
+    bool calendar_ok = calendar_requested && build_candidate(target_year, current, &candidate, &sessions);
+    bool calendar_limited = calendar_requested && !calendar_ok && pdkpass_http_access_limited();
     if (!calendar_ok) {
         pdkpass_http_release();
         candidate = malloc(sizeof(*candidate));
@@ -531,11 +551,12 @@ static bool synchronize(int64_t now_utc)
     }
     // Standings have their own source. A failed OpenF1 calendar request must
     // never prevent same-season Jolpica updates or discard the cached calendar.
-    bool standings_ok = candidate->year == target_year &&
-                        fetch_standings(now_utc, candidate);
+    bool standings_ok = !drivers_requested || (candidate->year == target_year &&
+                        fetch_standings(now_utc, candidate));
+    bool drivers_limited = drivers_requested && !standings_ok && pdkpass_http_access_limited();
     if (!standings_ok) ESP_LOGW(TAG, "Jolpica standings unchanged; retry scheduled");
-    bool success = calendar_ok && standings_ok;
-    bool updated = (calendar_ok || standings_ok) &&
+    bool success = (!calendar_requested || calendar_ok) && standings_ok;
+    bool updated = (calendar_ok || (drivers_requested && standings_ok)) &&
                    memcmp(current, candidate, sizeof(*candidate)) != 0;
     if (updated) {
         esp_err_t err = save_cache(candidate);
@@ -565,10 +586,18 @@ static bool synchronize(int64_t now_utc)
     }
     if (calendar_ok)
         pdkpass_sync_mark_success(PDKPASS_SYNC_STATUS_CALENDAR, (int64_t)time(NULL));
-    if (standings_ok)
+    if (drivers_requested && standings_ok)
         pdkpass_sync_mark_success(PDKPASS_SYNC_STATUS_DRIVERS, (int64_t)time(NULL));
     free(candidate);
-    bool teams_ok = synchronize_teams(target_year, now_utc);
+    bool teams_ok = !teams_requested || synchronize_teams(target_year, now_utc);
+    bool teams_limited = teams_requested && !teams_ok && pdkpass_http_access_limited();
+    if (s_auto_sync) {
+        int64_t normal = next_sync_deadline((int64_t)time(NULL));
+        int64_t finished = (int64_t)time(NULL);
+        if (calendar_requested) s_domain_due[0] = calendar_ok ? normal : finished + (calendar_limited ? 1800 : 300);
+        if (drivers_requested) s_domain_due[1] = standings_ok ? normal : finished + (drivers_limited ? 1800 : 300);
+        if (teams_requested) s_domain_due[2] = teams_ok ? normal : finished + (teams_limited ? 1800 : 300);
+    }
     return success && teams_ok;
 }
 
@@ -799,13 +828,17 @@ static void season_task(void *arg)
         if (!network_ready()) { pdkpass_http_end(); delay = 1; continue; }
         now_utc = (int64_t)time(NULL);
         s_last_attempt_utc = now_utc;
+        s_auto_sync = true;
         bool success = synchronize(now_utc);
+        s_auto_sync = false;
         pdkpass_http_end();
         int64_t finished = (int64_t)time(NULL);
         // Compute from the attempt start so a due boundary crossed while HTTP
         // was active is not silently skipped.
-        int64_t deadline = next_sync_deadline(now_utc);
-        if (!success && deadline > finished + SEASON_MIN_REPEAT_SECONDS) {
+        int64_t deadline = s_domain_due[0];
+        for (unsigned i = 1; i < 3; i++)
+            if (s_domain_due[i] < deadline) deadline = s_domain_due[i];
+        if (!success && !deadline) {
             deadline = finished + SEASON_MIN_REPEAT_SECONDS;
         }
         int64_t seconds = deadline > finished ? deadline - finished : 1LL;

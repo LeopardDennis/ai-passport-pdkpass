@@ -35,3 +35,6 @@ esp_err_t pdkpass_http_array(const char *url, pdkpass_http_item_fn item,
 // Stage names must be static, non-sensitive labels; never log response bodies.
 void pdkpass_http_report_data_failure(const char *stage, esp_err_t err,
                                       size_t bytes);
+
+// Transaction owner only: distinguish access restrictions from transient failures.
+bool pdkpass_http_access_limited(void);

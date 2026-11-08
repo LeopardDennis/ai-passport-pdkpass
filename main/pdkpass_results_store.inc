@@ -17,10 +17,40 @@ static bool persisted_matches(const results_store_t *stored, unsigned year,
            stored->race_count > 0 && stored->race_count <= PDKPASS_MAX_RACES;
 }
 
+// Bind legacy/unkeyed results only with exact session identities or a verified
+// schedule in the bundled race's time window. Round/index alone is insufficient.
+static int stored_schedule_matches(const persisted_race_t *stored,
+                                     const pdkpass_race_t *race, unsigned year)
+{
+    int32_t key = race->meeting_key > 0 ? race->meeting_key : stored->meeting_key;
+    pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT] = {0};
+    if (key <= 0) return 0;
+    if (!pdkpass_reminder_round_schedule(year, key, entries))
+        return entries[0].session_key == -1 ? -1 : 0;
+    bool matched = false;
+    for (unsigned kind = 0; kind < PDKPASS_SESSION_COUNT; kind++) {
+        if (stored->session_keys[kind] <= 0) continue;
+        if (entries[kind].session_key != stored->session_keys[kind]) return false;
+        if (race->meeting_key == 0 &&
+            (entries[kind].start_utc <= race->switch_at_utc - RESULTS_WINDOW_SECONDS ||
+             entries[kind].start_utc > race->switch_at_utc)) return false;
+        matched = true;
+    }
+    return matched;
+}
+
 static int stored_index(const results_store_t *stored, size_t index,
                          const race_cache_t *race)
 {
+    pdkpass_race_t current;
+    bool have_race = pdkpass_season_race_get(index, &current);
     if (race->meeting_key == 0) {
+        for (size_t i = 0; have_race && i < stored->race_count; i++) {
+            if (stored->races[i].meeting_key <= 0) continue;
+            int match = stored_schedule_matches(&stored->races[i], &current, stored->year);
+            if (match < 0) return -2;
+            if (match) return (int)i;
+        }
         // The old offline calendar stored R13-R23 at indexes 0-10. Shift
         // only its unkeyed cache; keyed API results still match by identity.
         if (stored->year == 2026U && stored->race_count == 11U &&
@@ -37,11 +67,18 @@ static int stored_index(const results_store_t *stored, size_t index,
     for (size_t i = 0; i < stored->race_count; i++) {
         if (stored->races[i].meeting_key == race->meeting_key) return (int)i;
     }
+    for (size_t i = 0; have_race && i < stored->race_count; i++) {
+        if (stored->races[i].meeting_key != 0) continue;
+        int match = stored_schedule_matches(&stored->races[i], &current, stored->year);
+        if (match < 0) return -2;
+        if (match) return (int)i;
+    }
     return -1;
 }
 
 static void load_cache(void)
 {
+    s_reload_pending = true;
     race_cache_t *loaded = calloc(PDKPASS_MAX_RACES, sizeof(*loaded));
     results_store_t *stored = calloc(1, sizeof(*stored));
     if (!loaded || !stored) {
@@ -87,10 +124,12 @@ static void load_cache(void)
         if (valid) {
             for (size_t i = 0; i < race_count; i++) {
                 int match = stored_index(stored, i, &loaded[i]);
+                if (match == -2) { free(loaded); free(stored); return; }
                 if (match < 0) continue;
                 const persisted_race_t *source = &stored->races[match];
                 cached_data |= source->discovered || source->present_mask ||
                                source->cancelled_mask || source->ready_mask;
+                if (source->meeting_key > 0) loaded[i].meeting_key = source->meeting_key;
                 loaded[i].discovered = source->discovered;
                 for (size_t session = 0; session < PDKPASS_SESSION_COUNT;
                      session++) {
@@ -125,6 +164,7 @@ static void load_cache(void)
         memcpy(s_cache, loaded, sizeof(s_cache));
         if (valid) memcpy(s_profiles, stored->profiles, sizeof(s_profiles));
         else memset(s_profiles, 0, sizeof(s_profiles));
+        s_reload_pending = false;
         s_cache_year = pdkpass_season_year();
         s_cache_count = pdkpass_season_race_count();
         s_cache_dirty = false;

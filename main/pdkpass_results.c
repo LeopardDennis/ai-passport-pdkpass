@@ -17,6 +17,7 @@
 #include "pdkpass_season.h"
 
 #include <stdio.h>
+#include <stdatomic.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -138,6 +139,7 @@ static size_t s_history_cursor;
 static unsigned s_cache_year;
 static size_t s_cache_count;
 static bool s_cache_dirty;
+static atomic_bool s_reload_pending;
 // Protected by s_lock; separate from the network scheduler and wall clock.
 static int64_t s_cache_retry_at_us;
 static bool s_has_cached_data;
@@ -589,6 +591,14 @@ static void results_task(void *arg)
     TickType_t delay = pdMS_TO_TICKS(RESULTS_IDLE_DELAY_MS);
     for (;;) {
         xEventGroupWaitBits(s_events, EVENT_WAKE, pdTRUE, pdFALSE, cache_retry_wait_ticks(delay));
+        // Do not save or expose an obsolete cache generation while migration
+        // is waiting for its schedule lock (or a temporary allocation failure).
+        if (s_reload_pending) {
+            pdkpass_http_begin();
+            load_cache();
+            pdkpass_http_end();
+            if (s_reload_pending) { delay = pdMS_TO_TICKS(1000); continue; }
+        }
         retry_cache_if_due();
         // A UI request may arrive inside HTTP work, before that work writes
         // its next deadline. The queued request must override that stale wait.
@@ -702,7 +712,8 @@ void pdkpass_results_season_changed(void)
                 s_cache_count == pdkpass_season_race_count();
     for (size_t i = 0; same && i < s_cache_count; i++) {
         pdkpass_race_t race;
-        same = pdkpass_season_race_get(i, &race) && race.meeting_key == s_cache[i].meeting_key;
+        same = pdkpass_season_race_get(i, &race) &&
+               (race.meeting_key == 0 || race.meeting_key == s_cache[i].meeting_key);
     }
     if (!same) {
         load_cache();
@@ -773,6 +784,11 @@ bool pdkpass_results_manual_status(size_t *race_index,
 bool pdkpass_results_get(size_t race_index, pdkpass_session_kind_t session,
                          pdkpass_result_snapshot_t *snapshot)
 {
+    if (snapshot) {
+        memset(snapshot, 0, sizeof(*snapshot));
+        snapshot->session_start_utc = -1;
+    }
+    if (s_reload_pending) return false;
     if (!snapshot || !s_lock ||
         race_index >= pdkpass_season_race_count() ||
         race_index >= PDKPASS_MAX_RACES || session >= PDKPASS_SESSION_COUNT) {

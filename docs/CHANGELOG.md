@@ -6,6 +6,10 @@
 
 ## Unreleased
 
+- Preserve discovered meeting IDs and match legacy result caches using verified session identities. Reject same-season calendar responses that omit known meetings or shrink the race list. Distinguish busy schedule reads from missing data and retry page rendering without replacing the last complete detail view. Schedule calendar, driver and team automatic refreshes independently; access-restricted calendar/points requests back off for 30 minutes while successful domains retain their normal deadlines.
+
+- Reduce iOS password prompts on the setup page by using a CSS-masked text field where supported. Keep entry disabled until masking is configured; fall back to a native password field on unsupported browsers. Actual iPhone AutoFill behavior remains subject to device verification.
+
 - Resolve cached session start times by year and session ID when the fallback calendar has no meeting ID, so detail and home pages can use already downloaded FP2/FP3 schedules. If a result exists but its start time is unavailable, show RESULT READY instead of TIME TBD. Keep persisted cache formats unchanged.
 
 - Align the Wi-Fi form with FMO: use unnamed inputs and a scripted POST while retaining native password masking, to reduce iOS login/autofill cues. Keep the existing connecting page, prevent duplicate submissions, and allow retry after HTTP errors or interrupted requests. iPhone popup behavior still requires device verification.

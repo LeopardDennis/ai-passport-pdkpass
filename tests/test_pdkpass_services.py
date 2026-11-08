@@ -52,6 +52,12 @@ def compile_run(code, extra=()):
                 'static void pdkpass_cache_forget_namespace(const char *);',
                 'static void pdkpass_cache_forget_namespace(const char *ns) {nvs_handle_t h;if(nvs_open(ns,NVS_READWRITE,&h)==ESP_OK){if(nvs_erase_all(h)==ESP_OK)nvs_commit(h);nvs_close(h);}}'),
         }
+        if 'pdkpass_reminder_round_schedule(' in code and not re.search(r'bool pdkpass_reminder_round_schedule\([^;]*\)\s*\{', code):
+            code = '#include "pdkpass_reminder.h"\n' + code + '\nbool pdkpass_reminder_round_schedule(unsigned y,int32_t k,pdkpass_reminder_entry_t e[PDKPASS_SESSION_COUNT]) {(void)y;(void)k;(void)e;return false;}\n'
+        if 'load_cache();' in code and not re.search(r'void load_cache\([^;]*\)\s*\{', code):
+            code = 'static void load_cache(void);\n' + code + '\nstatic void load_cache(void) {s_reload_pending=false;}\n'
+        if 's_schedule_retry' in code and 'static bool s_schedule_retry' not in code:
+            code = 'static _Bool s_schedule_retry;\n' + code
         declarations, definitions = [], []
         for name, (declaration, definition) in adapters.items():
             if name + '(' in code and not re.search(r'(?:esp_err_t|void) ' + name + r'\([^;]*\)\s*\{', code):
@@ -96,6 +102,11 @@ static void pdkpass_http_release(void) {}
 #define ESP_LOGW(...) ((void)0)
 typedef uint32_t TickType_t;
 static int s_lock;
+static int64_t s_domain_due[3];
+static bool s_auto_sync;
+static bool s_reload_pending;
+static bool access_limited;
+static bool pdkpass_http_access_limited(void) { return access_limited; }
 static int xSemaphoreTake(int lock, unsigned delay) {(void)lock; (void)delay; return 1;}
 static void xSemaphoreGive(int lock) {(void)lock;}
 static pdkpass_race_t races[24];
@@ -467,7 +478,7 @@ static void xEventGroupWaitBits(int e,int bits,int clear,int all,unsigned delay)
 }
 """
         for signature in ['static void reset_race_cache(', 'static bool persisted_matches(',
-                          'static int stored_index(', 'static void load_cache(',
+                          'static int stored_schedule_matches(', 'static int stored_index(', 'static void load_cache(',
                           'static esp_err_t save_cache(', 'static esp_err_t save_cache_with_retry(',
                           'static uint32_t cache_retry_wait_ms(', 'static TickType_t cache_retry_wait_ticks(',
                           'static void retry_cache_if_due(', 'static void finish_manual_race(',
@@ -1704,6 +1715,7 @@ struct fake_client {esp_http_client_config_t config;int status;};
 static struct fake_client client;
 static esp_http_client_handle_t s_client;
 static unsigned s_client_origin;
+static int s_last_status;
 static bool s_transaction_active;
 static esp_err_t esp_http_client_set_url(esp_http_client_handle_t c,const char *url) {c->config.url=url;return ESP_OK;}
 static esp_err_t esp_http_client_set_user_data(esp_http_client_handle_t c,void *data) {c->config.user_data=data;return ESP_OK;}
@@ -2213,7 +2225,7 @@ bool pdkpass_season_driver_by_code(const char *code,pdkpass_driver_t *driver) {
 }
 """
         for sig in ['static bool store_podium_profiles(', 'static void reset_race_cache(',
-                    'static bool persisted_matches(', 'static int stored_index(',
+                    'static bool persisted_matches(', 'static int stored_schedule_matches(', 'static int stored_index(',
                     'static void load_cache(', 'static esp_err_t save_cache(',
                     'bool pdkpass_results_get(']:
             code += function(source, sig)
@@ -2399,14 +2411,14 @@ void pdkpass_sync_mark_success(pdkpass_sync_status_t status,int64_t utc) {
 #define ESP_ERR_NO_MEM 0x101
 static pdkpass_season_snapshot_t s_season;
 static bool s_has_cached_data,calendar_ok,points_ok,save_ok=true;
-static int saves,callbacks,fetches,schedule_publishes;
+static int saves,callbacks,fetches,schedule_publishes,calendar_fetches,team_fetches;
 static bool schedule_ok=true,schedule_changed=true;
 static void callback(void) {callbacks++;}
 static pdkpass_season_callback_t s_callback=callback;
 bool pdkpass_season_snapshot(pdkpass_season_snapshot_t *out) {*out=s_season;return true;}
 static void pdkpass_http_report_data_failure(const char *stage,esp_err_t err,size_t bytes) {(void)stage;(void)err;(void)bytes;}
 static bool build_candidate(unsigned year,const pdkpass_season_snapshot_t *current,pdkpass_season_snapshot_t **out,calendar_sessions_t **sessions) {
- assert(current==&s_season);*out=NULL;*sessions=NULL;if(!calendar_ok)return false;
+ calendar_fetches++;assert(current==&s_season);*out=NULL;*sessions=NULL;if(!calendar_ok)return false;
  *sessions=calloc(1,sizeof(**sessions));
  *out=malloc(sizeof(**out));assert(*out);**out=*current;
  (*out)->year=year;(*out)->races[0].laps=60;return true;
@@ -2420,8 +2432,9 @@ static bool fetch_standings(int64_t now,pdkpass_season_snapshot_t *out) {
  out->drivers[0].points_tenths=2920;strcpy(out->standings_as_of,"26 SEP");return true;
 }
 static esp_err_t save_cache(const pdkpass_season_snapshot_t *out) {(void)out;saves++;return save_ok?ESP_OK:ESP_FAIL;}
-static bool synchronize_teams(unsigned year,int64_t now) {(void)year;(void)now;return true;}
+static bool synchronize_teams(unsigned year,int64_t now) {(void)year;(void)now;team_fetches++;return true;}
 '''
+        code += 'static int64_t next_sync_deadline(int64_t now) {return now+86400;}\n'
         code += function(source, 'static bool synchronize(')
         code += r'''
 int main(void) {
@@ -2448,6 +2461,15 @@ int main(void) {
  s_season.races[0].laps=59;save_ok=false;previous_publishes=schedule_publishes;
  assert(!synchronize(now)&&schedule_publishes==previous_publishes);save_ok=true;
  int previous=fetches;calendar_ok=false;assert(!synchronize(now+366LL*86400));assert(fetches==previous);
+ // An OpenF1 failure must not refetch successful standings on its retry.
+ s_auto_sync=true;memset(s_domain_due,0,sizeof(s_domain_due));calendar_ok=false;points_ok=true;
+ assert(!synchronize(now));
+ int saved_fetches=fetches,saved_teams=team_fetches,saved_cal=calendar_fetches;
+ assert(s_domain_due[0]<s_domain_due[1]&&s_domain_due[1]==s_domain_due[2]);
+ assert(!synchronize(s_domain_due[0]));
+ assert(calendar_fetches==saved_cal+1&&fetches==saved_fetches&&team_fetches==saved_teams);
+ access_limited=true;s_domain_due[0]=0;assert(!synchronize(now));
+ assert(s_domain_due[0]>=(int64_t)time(NULL)+1799);s_auto_sync=false;
  puts("Independent Jolpica sync, retry and persisted atomic publication: PASS");
 }
 '''
@@ -2880,7 +2902,7 @@ uint32_t pdkpass_sync_wait_ms(pdkpass_sync_service_t s) {return pdkpass_sync_pol
 void pdkpass_sync_plan(pdkpass_sync_service_t s,uint32_t delay) {policy.due_ms[s]=now_ms+delay;}
 static void pdkpass_http_begin(void) {transactions++;if(disconnect_on_lock) online=false;}
 static void pdkpass_http_end(void) {}
-static bool synchronize(int64_t now) {(void)now;synchronizations++;return true;}
+static bool synchronize(int64_t now) {synchronizations++;for(unsigned i=0;i<3;i++)s_domain_due[i]=now+3600;return true;}
 void pdkpass_sync_mark_success(pdkpass_sync_status_t service,int64_t utc) {
  (void)utc;assert(service==PDKPASS_SYNC_STATUS_CALENDAR);
 }
@@ -3982,6 +4004,11 @@ int main(void) {
  assert(sizeof(race_build_t)*PDKPASS_MAX_RACES<=6144);
  pdkpass_season_snapshot_t current={.year=2026,.race_count=1},*candidate=NULL;
  calendar_sessions_t *sessions=NULL;bool changed=false;
+ current.race_count=2;
+ assert(!build_candidate(2026,&current,&candidate,&sessions)&&!candidate&&!sessions);
+ current.race_count=1;current.races[0].meeting_key=777;
+ assert(!build_candidate(2026,&current,&candidate,&sessions)&&!candidate&&!sessions);
+ current.races[0].meeting_key=0;requests=0;
  // No "now" or results eligibility gate; the calendar publishes future starts.
  assert(build_candidate(2026,&current,&candidate,&sessions));
  assert(requests==2&&publications==0);
@@ -4119,7 +4146,7 @@ static int nvs_erase_all(int h) {(void)h;return 0;}
 static int nvs_commit(int h) {(void)h;return 0;}
 '''
         for signature in ['static void reset_race_cache(', 'static bool persisted_matches(',
-                          'static int stored_index(', 'static void load_cache(',
+                          'static int stored_schedule_matches(', 'static int stored_index(', 'static void load_cache(',
                           'static void update_session_identity(']:
             code += function(source, signature)
         code += r'''
@@ -4989,6 +5016,55 @@ int main(void) {
         ordered=sorted(entries,key=lambda x:x[1])
         for left,right in zip(ordered,ordered[1:]):
             self.assertLessEqual(left[1]+left[2],right[1])
+
+
+class ConsistencyRegression(unittest.TestCase):
+    def test_verified_identity_migration_and_busy_schedule(self):
+        source = production_source(ROOT / 'main/pdkpass_results.c')
+        types = source[source.index('typedef struct {'):source.index('static const char *TAG')]
+        code = PRELUDE + '#include "pdkpass_reminder.h"\n#define RESULTS_WINDOW_SECONDS 432000LL\n' + types + r'''
+static bool schedule_busy;
+bool pdkpass_reminder_round_schedule(unsigned year,int32_t key,pdkpass_reminder_entry_t e[PDKPASS_SESSION_COUNT]) {
+ if(schedule_busy){e[0].session_key=-1;return false;}
+ if(year!=2026||key!=1300)return false;
+ e[PDKPASS_SESSION_FP2]=(pdkpass_reminder_entry_t){.session_key=123,.start_utc=1790400000LL};return true;
+}
+'''
+        code += function(source, 'static int stored_schedule_matches(')
+        code += function(source, 'static int stored_index(')
+        code += r'''
+int main(void) {
+ results_store_t stored={.year=2026,.race_count=23};race_cache_t current={.meeting_key=1300};
+ races[18].meeting_key=1300;races[18].switch_at_utc=1790500000LL;race_count=23;
+ stored.races[18].ready_mask=1;stored.races[18].session_keys[PDKPASS_SESSION_FP2]=123;
+ assert(stored_index(&stored,18,&current)==18);
+ stored.races[18].session_keys[PDKPASS_SESSION_FP2]=999;
+ assert(stored_index(&stored,18,&current)==-1);
+ stored.races[18].session_keys[PDKPASS_SESSION_FP2]=123;stored.races[18].meeting_key=1300;
+ races[18].meeting_key=current.meeting_key=0;assert(stored_index(&stored,18,&current)==18);
+ schedule_busy=true;assert(stored_index(&stored,18,&current)==-2);schedule_busy=false;
+ races[18].switch_at_utc=1800500000LL;assert(stored_index(&stored,18,&current)==-1);
+ puts("Verified unkeyed/keyed migration, session mismatch and wrong weekend rejection: PASS");
+}
+'''
+        compile_run(code)
+
+    def test_busy_is_distinct_from_missing(self):
+        source = production_source(ROOT / 'main/pdkpass_reminder.c')
+        types = source[source.index('typedef struct {'):source.index('static SemaphoreHandle_t')]
+        code = PRELUDE.replace('return 1;}', 'return 0;}') + '#include "pdkpass_reminder.h"\n' + types + 'static reminder_store_t s_store;\n'
+        code += function(source, 'bool pdkpass_reminder_round_schedule(')
+        code += function(source, 'int64_t pdkpass_reminder_session_start(')
+        code += r'''
+int main(void) {
+ s_lock=1;pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT]={0};
+ assert(!pdkpass_reminder_round_schedule(2026,1300,entries)&&entries[0].session_key==-1);
+ assert(pdkpass_reminder_session_start(2026,PDKPASS_SESSION_FP2,123)==-1);
+ assert(pdkpass_reminder_session_start(2026,PDKPASS_SESSION_FP2,0)==0);
+ puts("Schedule BUSY differs from NOT_FOUND: PASS");
+}
+'''
+        compile_run(code)
 
 
 if __name__ == '__main__':

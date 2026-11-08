@@ -25,6 +25,8 @@ static int64_t s_request_at_us[3];
 // One TLS connection, owned by the shared transaction, never retained while idle.
 static esp_http_client_handle_t s_client;
 static unsigned s_client_origin;
+static int s_last_status;
+bool pdkpass_http_access_limited(void) { return s_last_status == 401 || s_last_status == 403; }
 static bool s_transaction_active;
 
 void pdkpass_http_release(void)
@@ -261,6 +263,7 @@ static bool wait_for_request(unsigned origin, int64_t retry_at, int64_t request_
 
 static esp_err_t perform(const char *url, response_t *r)
 {
+    s_last_status = 0;
     int64_t started_us = esp_timer_get_time();
     int64_t *retry_at = strncmp(url, "https://api.jolpi.ca/", sizeof("https://api.jolpi.ca/") - 1U) == 0
                             ? &s_jolpica_retry_at_us : &s_retry_at_us;
@@ -325,6 +328,7 @@ static esp_err_t perform(const char *url, response_t *r)
             r->error = ESP_ERR_TIMEOUT;
         }
         int status = esp_http_client_get_status_code(client);
+        s_last_status = status;
         esp_err_t err = r->error != ESP_OK ? r->error : transport_err;
         if (err == ESP_OK && (status != 200 || r->length == 0)) err = ESP_ERR_INVALID_RESPONSE;
         if (err == ESP_OK && r->stream && !pdkpass_json_stream_done(r->stream))
