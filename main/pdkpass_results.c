@@ -34,6 +34,7 @@
 #define RESULTS_WINDOW_SECONDS (5LL * 24LL * 60LL * 60LL)
 #define RESULTS_GRACE_SECONDS (24LL * 60LL * 60LL)
 #define RESULTS_FORCE_COOLDOWN_MS 60000U
+#define RESULTS_LOAD_RETRY_MS 5000U
 #define RESULTS_SAVE_RETRY_MS 60000U
 #define RESULTS_SAVE_BUSY_RETRY_MS 1000U
 #define RESULTS_CACHE_MAGIC 0x50444B52U
@@ -192,13 +193,22 @@ static bool cache_complete(size_t race_index, const race_cache_t *cache,
     if (!cache->discovered ||
         now_utc < race.switch_at_utc + RESULTS_GRACE_SECONDS ||
         !cache->sessions[PDKPASS_SESSION_RACE].present) return false;
-    for (size_t i = 0; i < PDKPASS_SESSION_COUNT; i++) {
-        const session_cache_t *session = &cache->sessions[i];
-        if (session->present && !session->cancelled && (!session->ready || !pdkpass_result_profiles_complete(session->profile_ids))) {
-            return false;
-        }
+    int32_t meeting_key = race.meeting_key > 0 ? race.meeting_key : cache->meeting_key;
+    pdkpass_reminder_entry_t schedule[PDKPASS_SESSION_COUNT] = {0};
+    pdkpass_reminder_round_schedule(pdkpass_season_year(), meeting_key, schedule);
+    if (schedule[0].session_key < 0) return false;
+    uint32_t observed = 0, completed = 0;
+    for (size_t kind = 0; kind < PDKPASS_SESSION_COUNT; kind++) {
+        const session_cache_t *session = &cache->sessions[kind];
+        int32_t scheduled_key = schedule[kind].session_key;
+        uint32_t bit = 1U << kind;
+        if (session->present || scheduled_key > 0) observed |= bit;
+        if (session->present && (!scheduled_key || scheduled_key == session->session_key) &&
+            (session->cancelled ||
+             (session->ready && pdkpass_result_profiles_complete(session->profile_ids))))
+            completed |= bit;
     }
-    return true;
+    return completed == pdkpass_round_session_mask(race.session_two_cn, observed);
 }
 
 static bool race_is_eligible(size_t race_index, int64_t now_utc)
@@ -588,7 +598,8 @@ static void results_task(void *arg)
 {
     (void)arg;
     bool manual_connect_requested = false;
-    TickType_t delay = pdMS_TO_TICKS(RESULTS_IDLE_DELAY_MS);
+    TickType_t delay = pdMS_TO_TICKS(s_reload_pending ? RESULTS_LOAD_RETRY_MS
+                                                     : RESULTS_IDLE_DELAY_MS);
     for (;;) {
         xEventGroupWaitBits(s_events, EVENT_WAKE, pdTRUE, pdFALSE, cache_retry_wait_ticks(delay));
         // Do not save or expose an obsolete cache generation while migration
@@ -597,7 +608,7 @@ static void results_task(void *arg)
             pdkpass_http_begin();
             load_cache();
             pdkpass_http_end();
-            if (s_reload_pending) { delay = pdMS_TO_TICKS(1000); continue; }
+            if (s_reload_pending) { delay = pdMS_TO_TICKS(RESULTS_LOAD_RETRY_MS); continue; }
         }
         retry_cache_if_due();
         // A UI request may arrive inside HTTP work, before that work writes
@@ -781,6 +792,48 @@ bool pdkpass_results_manual_status(size_t *race_index,
     return true;
 }
 
+static pdkpass_result_status_t session_status(const session_cache_t *session)
+{
+    if (session->cancelled) return PDKPASS_RESULT_CANCELLED;
+    if (session->ready) return PDKPASS_RESULT_READY;
+    if (session->present) return PDKPASS_RESULT_SCHEDULED;
+    return PDKPASS_RESULT_UNKNOWN;
+}
+
+bool pdkpass_results_round_metadata(size_t race_index, unsigned year, int32_t *meeting_key,
+                                    pdkpass_result_metadata_t sessions[PDKPASS_SESSION_COUNT])
+{
+    memset(sessions, 0, PDKPASS_SESSION_COUNT * sizeof(*sessions));
+    if (!s_lock) return true;
+    if (xSemaphoreTake(s_lock, 0) != pdTRUE) return false;
+    bool pending = s_reload_pending;
+    if (!pending && year == s_cache_year && race_index < s_cache_count) {
+        const race_cache_t *race = &s_cache[race_index];
+        if (*meeting_key <= 0 || race->meeting_key == *meeting_key) {
+            *meeting_key = race->meeting_key;
+            for (size_t kind = 0; kind < PDKPASS_SESSION_COUNT; kind++) {
+                const session_cache_t *session = &race->sessions[kind];
+                sessions[kind] = (pdkpass_result_metadata_t){
+                    .session_key = session->session_key,
+                    .status = session_status(session),
+                    .end_utc = session->end_utc,
+                };
+            }
+        }
+    }
+    xSemaphoreGive(s_lock);
+    if (!pending && *meeting_key <= 0) {
+        // Older unkeyed results may still have exact session IDs.
+        for (unsigned kind = 0; kind < PDKPASS_SESSION_COUNT; kind++) {
+            if (sessions[kind].session_key <= 0) continue;
+            int64_t start = pdkpass_reminder_session_start(year, kind, sessions[kind].session_key);
+            if (start < 0) return false;
+            sessions[kind].start_utc = start;
+        }
+    }
+    return !pending;
+}
+
 bool pdkpass_results_get(size_t race_index, pdkpass_session_kind_t session,
                          pdkpass_result_snapshot_t *snapshot)
 {
@@ -788,16 +841,16 @@ bool pdkpass_results_get(size_t race_index, pdkpass_session_kind_t session,
         memset(snapshot, 0, sizeof(*snapshot));
         snapshot->session_start_utc = -1;
     }
-    if (s_reload_pending) return false;
-    if (!snapshot || !s_lock ||
-        race_index >= pdkpass_season_race_count() ||
-        race_index >= PDKPASS_MAX_RACES || session >= PDKPASS_SESSION_COUNT) {
+    if (!snapshot || !s_lock || session >= PDKPASS_SESSION_COUNT) {
         return false;
     }
-    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    if (xSemaphoreTake(s_lock, 0) != pdTRUE) return false;
+    if (s_reload_pending || race_index >= s_cache_count) {
+        xSemaphoreGive(s_lock);
+        return false;
+    }
     const race_cache_t *race = &s_cache[race_index];
     session_cache_t cached = race->sessions[session];
-    bool discovered = race->discovered;
     unsigned year = s_cache_year;
     memset(snapshot, 0, sizeof(*snapshot));
     for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
@@ -810,8 +863,8 @@ bool pdkpass_results_get(size_t race_index, pdkpass_session_kind_t session,
     snapshot->session_start_utc = pdkpass_reminder_session_start(year, session,
                                                                cached.session_key);
     snapshot->session_end_utc = cached.end_utc;
-    if (cached.ready) {
-        snapshot->status = PDKPASS_RESULT_READY;
+    snapshot->status = session_status(&cached);
+    if (snapshot->status == PDKPASS_RESULT_READY) {
         for (size_t i = 0; i < PDKPASS_PODIUM_SIZE; i++) {
             pdkpass_podium_driver_t *podium = &snapshot->podium[i];
             podium->position = (unsigned)(i + 1U);
@@ -828,14 +881,6 @@ bool pdkpass_results_get(size_t race_index, pdkpass_session_kind_t session,
                 snprintf(podium->team, sizeof(podium->team), "DETAILS PENDING");
             }
         }
-    } else if (cached.cancelled) {
-        snapshot->status = PDKPASS_RESULT_CANCELLED;
-    } else if (cached.present) {
-        snapshot->status = PDKPASS_RESULT_SCHEDULED;
-    } else if (discovered) {
-        snapshot->status = PDKPASS_RESULT_NOT_HELD;
-    } else {
-        snapshot->status = PDKPASS_RESULT_UNKNOWN;
     }
     return true;
 }

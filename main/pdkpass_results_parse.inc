@@ -116,11 +116,12 @@ static bool discover_sessions(size_t race_index, race_cache_t *cache,
 {
     pdkpass_race_t race;
     if (!pdkpass_season_race_get(race_index, &race)) return false;
+    int32_t meeting_key = race.meeting_key > 0 ? race.meeting_key : cache->meeting_key;
     char url[256];
-    if (race.meeting_key > 0) {
+    if (meeting_key > 0) {
         snprintf(url, sizeof(url),
                  "https://api.openf1.org/v1/sessions?meeting_key=%ld",
-                 (long)race.meeting_key);
+                 (long)meeting_key);
     } else {
         snprintf(url, sizeof(url),
                  "https://api.openf1.org/v1/sessions?year=%u&country_name=%s",
@@ -133,7 +134,7 @@ static bool discover_sessions(size_t race_index, race_cache_t *cache,
         .cache = &parsed,
         .valid = true,
         .reminder_valid = true,
-        .meeting_key = race.meeting_key,
+        .meeting_key = meeting_key,
         .window_start = race.switch_at_utc - RESULTS_WINDOW_SECONDS,
         .window_end = race.switch_at_utc,
     };

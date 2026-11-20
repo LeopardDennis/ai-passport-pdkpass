@@ -6,6 +6,11 @@
 
 ## Unreleased
 
+- Keep scheduled sessions and reminders when OpenF1 returns a partial weekend, and continue checking for missing results. Read one set of round metadata for the home, track and results pages and load driver profiles only for the selected podium.
+- Keep the last results cache when flash reads or migration allocations fail and retry the load. Follow up when an automatic sync crosses Beijing midnight or a race deadline, and refresh the calendar and both standings after the year rolls over.
+
+- Accept up to 32 drivers in championship standings and retain earlier cached standings.
+
 - Automatically open the Wi-Fi QR page when the provisioning hotspot becomes active, even after delayed/coalesced status updates. Keep provisioning visible during connection and time-sync updates while the hotspot remains active; repeated updates preserve the manual-info selection.
 
 - Preserve discovered meeting IDs and match legacy result caches using verified session identities. Reject same-season calendar responses that omit known meetings or shrink the race list. Distinguish busy schedule reads from missing data and retry page rendering without replacing the last complete detail view. Schedule calendar, driver and team automatic refreshes independently; access-restricted calendar/points requests back off for 30 minutes while successful domains retain their normal deadlines.

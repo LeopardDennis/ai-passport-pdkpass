@@ -118,8 +118,6 @@ static void test_track_paging(void)
     int64_t now = (int64_t)time(NULL);
     s_test_schedule_active = true;
     memset(s_results, 0, sizeof(s_results));
-    for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++)
-        s_results[0][i].status = PDKPASS_RESULT_NOT_HELD;
     for (unsigned i = 0; i < 5; i++) {
         pdkpass_session_kind_t kind = normal[i];
         s_test_schedule[kind].start_utc = now - 600 + (int64_t)i * 300;
@@ -333,7 +331,7 @@ int main(void)
         // A maximum-length podium name must occupy one line without clipping.
         [s_results_lock lock];
         for (size_t session = 0; session < PDKPASS_SESSION_COUNT; session++)
-            s_results[0][session].status = PDKPASS_RESULT_NOT_HELD;
+            s_results[0][session].status = PDKPASS_RESULT_UNKNOWN;
         pdkpass_result_snapshot_t *sample =
             &s_results[0][PDKPASS_SESSION_FP1];
         sample->status = PDKPASS_RESULT_READY;
@@ -453,10 +451,9 @@ int main(void)
             assert(find_label(lv_screen_active(), pdkpass_session_label(sprint[i])));
             simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
         }
-        // Incoming metadata supersedes the offline format and can remove the
-        // current selection without leaving a blank/nonexistent session page.
+        // Observed practice sessions supersede the bundled sprint format.
         for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++)
-            s_results[1][i].status = PDKPASS_RESULT_NOT_HELD;
+            s_results[1][i].status = PDKPASS_RESULT_UNKNOWN;
         for (unsigned i = 0; i < 5; i++)
             s_results[1][normal[i]].status = PDKPASS_RESULT_SCHEDULED;
         pdkpass_ui_results_update(1);
@@ -465,22 +462,24 @@ int main(void)
         s_results[1][PDKPASS_SESSION_FP2].status = PDKPASS_RESULT_CANCELLED;
         pdkpass_ui_results_update(1);
         assert(find_label(lv_screen_active(), "SESSION CANCELLED"));
-        s_results[1][PDKPASS_SESSION_FP2].status = PDKPASS_RESULT_NOT_HELD;
+        // Unknown FP2 stays selectable while the normal format is known.
+        s_results[1][PDKPASS_SESSION_FP2].status = PDKPASS_RESULT_UNKNOWN;
         pdkpass_ui_results_update(1);
-        assert(find_label(lv_screen_active(), "FP3"));
+        assert(find_label(lv_screen_active(), "FP2"));
+        assert(!find_label(lv_screen_active(), "SESSION CANCELLED"));
         for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++)
-            s_results[1][i].status = PDKPASS_RESULT_NOT_HELD;
+            s_results[1][i].status = PDKPASS_RESULT_UNKNOWN;
         pdkpass_ui_results_update(1);
-        assert(find_label(lv_screen_active(), "NO SESSIONS"));
+        assert(find_label(lv_screen_active(), "SPRINT QUALI"));
         simulator_send_button(BSP_BTN_DOWN, BSP_BTN_CLICK);
-        assert(find_label(lv_screen_active(), "NO SESSIONS"));
+        assert(find_label(lv_screen_active(), "SPRINT"));
         check_memory();
         simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG);
         assert(!find_label(lv_screen_active(), "NO SESSION")); // no absent detail rows
         simulator_send_button(BSP_BTN_OK, BSP_BTN_LONG); // detail -> home
         simulator_send_button(BSP_BTN_UP, BSP_BTN_CLICK); // home R2 -> R1
         for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++)
-            s_results[0][i].status = PDKPASS_RESULT_NOT_HELD;
+            s_results[0][i].status = PDKPASS_RESULT_UNKNOWN;
         sample->status = PDKPASS_RESULT_READY;
         simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // home -> detail
         simulator_send_button(BSP_BTN_OK, BSP_BTN_CLICK); // detail -> results

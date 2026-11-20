@@ -256,8 +256,10 @@ static void results_cache_load(void)
             race >= PDKPASS_MAX_RACES || session >= PDKPASS_SESSION_COUNT ||
             ![entry isKindOfClass:NSDictionary.class]) return;
         pdkpass_result_snapshot_t *snapshot = &s_results[race][session];
-        snapshot->status = (pdkpass_result_status_t)
-            [entry[@"status"] unsignedIntegerValue];
+        NSUInteger status = [entry[@"status"] unsignedIntegerValue];
+        if (status != PDKPASS_RESULT_READY && status != PDKPASS_RESULT_CANCELLED) return;
+        snapshot->status = (pdkpass_result_status_t)status;
+        snapshot->session_start_utc = [entry[@"session_start"] longLongValue];
         snapshot->session_end_utc = [entry[@"session_end"] longLongValue];
         NSArray *podium = entry[@"podium"];
         if (snapshot->status != PDKPASS_RESULT_READY ||
@@ -290,15 +292,11 @@ static void results_cache_save_locked(void)
         for (size_t session = 0; session < PDKPASS_SESSION_COUNT; session++) {
             const pdkpass_result_snapshot_t *snapshot =
                 &s_results[race][session];
-            BOOL raceComplete =
-                s_results[race][PDKPASS_SESSION_RACE].status ==
-                PDKPASS_RESULT_READY;
             if (snapshot->status != PDKPASS_RESULT_READY &&
-                snapshot->status != PDKPASS_RESULT_CANCELLED &&
-                !(snapshot->status == PDKPASS_RESULT_NOT_HELD &&
-                  raceComplete)) continue;
+                snapshot->status != PDKPASS_RESULT_CANCELLED) continue;
             NSMutableDictionary *entry = [@{
                 @"status" : @(snapshot->status),
+                @"session_start" : @(snapshot->session_start_utc),
                 @"session_end" : @(snapshot->session_end_utc),
             } mutableCopy];
             if (snapshot->status == PDKPASS_RESULT_READY) {
@@ -462,16 +460,18 @@ static void results_sync_race(size_t race_index)
         goto complete;
     }
 
-    BOOL present[PDKPASS_SESSION_COUNT] = { NO };
     for (NSDictionary *sessionInfo in sessions) {
         NSString *name = sessionInfo[@"session_name"];
         pdkpass_session_kind_t kind = pdkpass_session_kind_from_name(
             [name isKindOfClass:NSString.class] ? name.UTF8String : NULL);
         if (kind >= PDKPASS_SESSION_COUNT) continue;
-        present[kind] = YES;
-
         pdkpass_result_snapshot_t snapshot;
         memset(&snapshot, 0, sizeof(snapshot));
+        NSString *dateStart = sessionInfo[@"date_start"];
+        if ([dateStart isKindOfClass:NSString.class]) {
+            pdkpass_parse_iso8601_utc(dateStart.UTF8String,
+                                      &snapshot.session_start_utc);
+        }
         NSString *dateEnd = sessionInfo[@"date_end"];
         if ([dateEnd isKindOfClass:NSString.class]) {
             pdkpass_parse_iso8601_utc(dateEnd.UTF8String,
@@ -484,7 +484,8 @@ static void results_sync_race(size_t race_index)
         [s_results_lock lock];
         BOOL alreadyReady =
             s_results[race_index][kind].status == PDKPASS_RESULT_READY;
-        if (!alreadyReady) s_results[race_index][kind] = snapshot;
+        if (!alreadyReady || snapshot.status == PDKPASS_RESULT_CANCELLED)
+            s_results[race_index][kind] = snapshot;
         [s_results_lock unlock];
         results_notify(race_index);
         if (alreadyReady || snapshot.status == PDKPASS_RESULT_CANCELLED ||
@@ -511,14 +512,6 @@ static void results_sync_race(size_t race_index)
     }
 
     [s_results_lock lock];
-    for (size_t kind = 0; kind < PDKPASS_SESSION_COUNT; kind++) {
-        if (!present[kind] &&
-            s_results[race_index][kind].status != PDKPASS_RESULT_READY) {
-            memset(&s_results[race_index][kind], 0,
-                   sizeof(s_results[race_index][kind]));
-            s_results[race_index][kind].status = PDKPASS_RESULT_NOT_HELD;
-        }
-    }
     results_cache_save_locked();
     [s_results_lock unlock];
     results_notify(race_index);
@@ -527,6 +520,26 @@ complete:
     [s_results_lock lock];
     s_results_loading[race_index] = NO;
     [s_results_lock unlock];
+}
+
+bool pdkpass_results_round_metadata(size_t race_index, unsigned year, int32_t *meeting_key,
+                                    pdkpass_result_metadata_t sessions[PDKPASS_SESSION_COUNT])
+{
+    (void)meeting_key;
+    memset(sessions, 0, PDKPASS_SESSION_COUNT * sizeof(*sessions));
+    if (!s_results_lock || year != s_preview_year || race_index >= PDKPASS_MAX_RACES)
+        return true;
+    if (![s_results_lock tryLock]) return false;
+    for (size_t kind = 0; kind < PDKPASS_SESSION_COUNT; kind++) {
+        const pdkpass_result_snapshot_t *result = &s_results[race_index][kind];
+        sessions[kind] = (pdkpass_result_metadata_t){
+            .status = result->status,
+            .start_utc = result->session_start_utc,
+            .end_utc = result->session_end_utc,
+        };
+    }
+    [s_results_lock unlock];
+    return true;
 }
 
 bool pdkpass_results_get(size_t race_index, pdkpass_session_kind_t session,

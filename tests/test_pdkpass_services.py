@@ -95,6 +95,9 @@ void pdkpass_sync_hold(pdkpass_sync_service_t service, bool held) {sync_held[ser
 static void pdkpass_http_release(void) {}
 #define pdTRUE 1
 #define ESP_FAIL -1
+#define ESP_ERR_NVS_NOT_FOUND 0x1102
+#define ESP_ERR_NVS_TYPE_MISMATCH 0x1103
+#define ESP_ERR_NVS_INVALID_LENGTH 0x110c
 #define PDKPASS_PODIUM_SIZE 3
 #define pdMS_TO_TICKS(x) (x)
 #define ESP_LOGI(...) ((void)0)
@@ -541,6 +544,7 @@ static int64_t esp_timer_get_time(void) {return 0;}
 #define portTICK_PERIOD_MS 1
 #define EVENT_WAKE 1
 #define RESULTS_IDLE_DELAY_MS 86400000U
+#define RESULTS_LOAD_RETRY_MS 5000U
 #define RESULTS_BACKFILL_DELAY_MS 5000U
 #define SEASON_MIN_REPEAT_SECONDS 300
 static jmp_buf done;
@@ -2211,15 +2215,15 @@ static bool s_cache_dirty,s_has_cached_data;
 static const char *NVS_NAMESPACE="test",*NVS_KEY="season";
 static unsigned char disk[sizeof(results_store_t)];
 static size_t disk_size;
-static bool fail_write;
+static bool fail_write, fail_read;
 esp_err_t pdkpass_cache_read_blob(const char *ns,const char *key,void *data,size_t *size) {
- (void)ns;(void)key;assert(*size>=disk_size);memcpy(data,disk,disk_size);*size=disk_size;return ESP_OK;
+ (void)ns;(void)key;if(fail_read)return ESP_FAIL;
+ assert(*size>=disk_size);memcpy(data,disk,disk_size);*size=disk_size;return ESP_OK;
 }
 esp_err_t pdkpass_cache_write_blob(const char *ns,const char *key,const void *data,size_t size) {
  (void)ns;(void)key;if(fail_write)return ESP_FAIL;
  assert(size<=sizeof(disk));memcpy(disk,data,size);disk_size=size;return ESP_OK;
 }
-void pdkpass_cache_forget_namespace(const char *ns) {(void)ns;disk_size=0;}
 bool pdkpass_season_driver_by_code(const char *code,pdkpass_driver_t *driver) {
  (void)code;(void)driver;return false; // Reproduce the device: no standings at all.
 }
@@ -2227,11 +2231,12 @@ bool pdkpass_season_driver_by_code(const char *code,pdkpass_driver_t *driver) {
         for sig in ['static bool store_podium_profiles(', 'static void reset_race_cache(',
                     'static bool persisted_matches(', 'static int stored_schedule_matches(', 'static int stored_index(',
                     'static void load_cache(', 'static esp_err_t save_cache(',
-                    'bool pdkpass_results_get(']:
+                    'static pdkpass_result_status_t session_status(',
+                    'bool pdkpass_results_round_metadata(', 'bool pdkpass_results_get(']:
             code += function(source, sig)
         code += r"""
 int main(void) {
- s_lock=1;race_count=2;races[0].meeting_key=10;races[1].meeting_key=20;
+ s_lock=1;race_count=s_cache_count=2;races[0].meeting_key=10;races[1].meeting_key=20;
  pdkpass_podium_driver_t profiles[3]={
   {.code="ANT",.name="KIMI ANTONELLI",.team="MERCEDES",.accent=0x00A19C,.has_accent=true},
   {.code="VER",.name="MAX VERSTAPPEN",.team="RED BULL RACING",.accent=0x3671C6,.has_accent=true},
@@ -2265,6 +2270,25 @@ int main(void) {
  memset(s_cache,0,sizeof(s_cache));memset(s_profiles,0,sizeof(s_profiles));load_cache();
  assert(pdkpass_results_get(0,0,&view)&&!strcmp(view.podium[2].team,"RACING BULLS"));
  assert(pdkpass_results_get(1,0,&view)&&!strcmp(view.podium[2].team,"RED BULL RACING"));
+ pdkpass_result_metadata_t metadata[PDKPASS_SESSION_COUNT];
+ int32_t meeting=0;
+ assert(pdkpass_results_round_metadata(0,2026,&meeting,metadata)&&meeting==10);
+ assert(metadata[0].status==PDKPASS_RESULT_READY&&metadata[0].session_key==100);
+ assert(metadata[PDKPASS_SESSION_FP2].status==PDKPASS_RESULT_UNKNOWN);
+ assert(pdkpass_results_get(0,PDKPASS_SESSION_FP2,&view)&&view.status==PDKPASS_RESULT_UNKNOWN);
+ s_cache[0].meeting_key=0;s_cache[0].sessions[0].session_key=1234;meeting=0;
+ assert(pdkpass_results_round_metadata(0,2026,&meeting,metadata)&&!meeting);
+ assert(metadata[0].start_utc==1793400000LL);
+ s_cache[0].meeting_key=10;s_cache[0].sessions[0].session_key=100;
+ meeting=20;
+ assert(pdkpass_results_round_metadata(0,2026,&meeting,metadata)&&meeting==20);
+ assert(metadata[0].status==PDKPASS_RESULT_UNKNOWN);
+ fail_read=true;
+ load_cache();
+ assert(s_reload_pending&&s_has_cached_data&&disk_size==sizeof(results_store_t));
+ assert(s_cache[0].sessions[0].ready&&!strcmp(s_cache[0].sessions[0].podium_codes[0],"ANT"));
+ fail_read=false;load_cache();
+ assert(!s_reload_pending&&pdkpass_results_get(0,0,&view)&&view.status==PDKPASS_RESULT_READY);
  // A failed save leaves the previously persisted identities intact after reboot.
  strcpy(profiles[0].name,"CORRECTED NAME");assert(store_podium_profiles(profiles,same));
  memcpy(s_cache[0].sessions[0].profile_ids,same,3);fail_write=true;
@@ -2434,11 +2458,16 @@ static bool fetch_standings(int64_t now,pdkpass_season_snapshot_t *out) {
 static esp_err_t save_cache(const pdkpass_season_snapshot_t *out) {(void)out;saves++;return save_ok?ESP_OK:ESP_FAIL;}
 static bool synchronize_teams(unsigned year,int64_t now) {(void)year;(void)now;team_fetches++;return true;}
 '''
-        code += 'static int64_t next_sync_deadline(int64_t now) {return now+86400;}\n'
+        code += r'''
+static time_t fake_now;
+static time_t fake_time(time_t *out) {if(out)*out=fake_now;return fake_now;}
+#define time fake_time
+'''
+        code += function(source, 'static int64_t next_sync_deadline(')
         code += function(source, 'static bool synchronize(')
         code += r'''
 int main(void) {
- int64_t now;assert(pdkpass_parse_iso8601_utc("2026-09-26T16:00:00Z",&now));
+ int64_t now;assert(pdkpass_parse_iso8601_utc("2026-09-26T16:00:00Z",&now));fake_now=now;
  s_season.year=2026;s_season.race_count=1;s_season.driver_count=1;
  s_season.races[0].meeting_key=99;s_season.drivers[0].points_tenths=2420;
  strcpy(s_season.standings_as_of,"31 AUG");pdkpass_season_snapshot_t old=s_season;
@@ -2466,10 +2495,19 @@ int main(void) {
  assert(!synchronize(now));
  int saved_fetches=fetches,saved_teams=team_fetches,saved_cal=calendar_fetches;
  assert(s_domain_due[0]<s_domain_due[1]&&s_domain_due[1]==s_domain_due[2]);
- assert(!synchronize(s_domain_due[0]));
+ fake_now=s_domain_due[0];assert(!synchronize(fake_now));
  assert(calendar_fetches==saved_cal+1&&fetches==saved_fetches&&team_fetches==saved_teams);
  access_limited=true;s_domain_due[0]=0;assert(!synchronize(now));
- assert(s_domain_due[0]>=(int64_t)time(NULL)+1799);s_auto_sync=false;
+ assert(s_domain_due[0]==fake_now+1800);
+ // Successful work that spans midnight or a race-end boundary schedules a follow-up.
+ access_limited=false;calendar_ok=true;
+ int64_t midnight=pdkpass_next_beijing_midnight(now);
+ memset(s_domain_due,0,sizeof(s_domain_due));fake_now=midnight+5;
+ assert(synchronize(midnight-5));
+ for(unsigned i=0;i<3;i++)assert(s_domain_due[i]==midnight);
+ races[0].switch_at_utc=midnight+10000;fake_now=races[0].switch_at_utc+5;
+ assert(synchronize(races[0].switch_at_utc-5));
+ for(unsigned i=0;i<3;i++)assert(s_domain_due[i]==races[0].switch_at_utc);
  puts("Independent Jolpica sync, retry and persisted atomic publication: PASS");
 }
 '''
@@ -2714,10 +2752,12 @@ int main(void) {
  assert(offline_wait(0,1798732799LL)==1000);
  assert(offline_wait(500,1798732799LL)==500);
  refresh_builtin_year(1798732799LL);assert(s_season.year==2026);
+ for(unsigned i=0;i<3;i++)s_domain_due[i]=1798736400LL;
  refresh_builtin_year(1798732800LL);
  assert(s_season.year==2027&&s_season.race_count==24&&s_season.driver_count==0);
  assert(!s_has_cached_data);
  assert(callbacks==1&&plans==1&&transactions==0);
+ for(unsigned i=0;i<3;i++)assert(!s_domain_due[i]);
  s_season.races[0].meeting_key=999; // Accepted online data must survive.
  refresh_builtin_year(1798732801LL);
  assert(s_season.races[0].meeting_key==999&&callbacks==1);
@@ -3347,6 +3387,12 @@ int main(void) {
  assert(s_has_cached_data);
  assert(s_season.drivers[0].points_tenths==999);
  assert(strcmp(s_season.standings_as_of,"15 SEP")==0);
+ current.version=SEASON_CACHE_PREVIOUS_VERSION;
+ payload_size=offsetof(season_cache_t,season)+offsetof(pdkpass_season_snapshot_t,drivers)+
+              24*sizeof(pdkpass_driver_t);
+ load_cache();
+ assert(s_has_cached_data&&s_season.driver_count==1&&s_season.drivers[0].points_tenths==999);
+ current.version=SEASON_CACHE_VERSION;payload_size=sizeof(current);
  current.season.year=2027;load_cache();assert(s_season.race_count==11);
  legacy.magic=SEASON_CACHE_MAGIC;
  legacy.version=SEASON_CACHE_LEGACY_VERSION;
@@ -3891,6 +3937,19 @@ int main(void) {
   process_race(0,fake_now+5*(int64_t)j);
  }
  assert(select_race(fake_now+100)==1); // Completed focus no longer blocks others.
+ // A missing session in a regular weekend still needs discovery even when all
+ // returned podiums are available. Explicit cancellation completes the session.
+ strcpy(races[0].session_two_cn,"QUALI");
+ race_cache_t regular=s_cache[0];
+ for(size_t j=0;j<PDKPASS_SESSION_COUNT;j++)
+  memset(regular.sessions[j].profile_ids,1,PDKPASS_PODIUM_SIZE);
+ regular.sessions[PDKPASS_SESSION_SPRINT]=(session_cache_t){0};
+ regular.sessions[PDKPASS_SESSION_SPRINT_QUALIFYING]=(session_cache_t){0};
+ regular.sessions[PDKPASS_SESSION_FP2]=(session_cache_t){0};
+ assert(!cache_complete(0,&regular,fake_now+100));
+ regular.sessions[PDKPASS_SESSION_FP2]=(session_cache_t){
+  .present=1,.session_key=101,.cancelled=1};
+ assert(cache_complete(0,&regular,fake_now+100));
  for(size_t j=0;j<PDKPASS_SESSION_COUNT;j++) s_cache[0].sessions[j].ready=0;
 
  // An immediate selection after a failed history request schedules its retry
@@ -4142,8 +4201,9 @@ static int nvs_get_blob(int h,const char *key,void *out,size_t *size) {
  (void)h;(void)key; assert(*size>=payload_size);memcpy(out,payload,payload_size);*size=payload_size;return 0;
 }
 static void nvs_close(int h) {(void)h;}
-static int nvs_erase_all(int h) {(void)h;return 0;}
-static int nvs_commit(int h) {(void)h;return 0;}
+static bool fail_legacy_alloc;
+static void *migration_alloc(size_t size) {return fail_legacy_alloc ? NULL : malloc(size);}
+#define malloc migration_alloc
 '''
         for signature in ['static void reset_race_cache(', 'static bool persisted_matches(',
                           'static int stored_schedule_matches(', 'static int stored_index(', 'static void load_cache(',
@@ -4156,7 +4216,11 @@ int main(void) {
  legacy.races[0].meeting_key=10;legacy.races[1].meeting_key=20;
  legacy.races[0].present_mask=1;legacy.races[0].ready_mask=1;
  memcpy(legacy.races[0].podium_codes[0][0],"AAA",4);
- payload=&legacy;payload_size=sizeof(legacy);load_cache();
+ payload=&legacy;payload_size=sizeof(legacy);
+ fail_legacy_alloc=true;load_cache();
+ assert(s_reload_pending && !s_has_cached_data && payload_size==sizeof(legacy));
+ fail_legacy_alloc=false;load_cache();
+ assert(!s_reload_pending);
  assert(s_cache[0].sessions[0].ready);
  assert(s_has_cached_data);
  update_session_identity(&s_cache[0].sessions[0],100,false,1788688800);
@@ -4723,6 +4787,7 @@ int main(void) {
 #define portTICK_PERIOD_MS 1
 #define EVENT_WAKE 1
 #define RESULTS_IDLE_DELAY_MS 86400000U
+#define RESULTS_LOAD_RETRY_MS 5000U
 #define RESULTS_BACKFILL_DELAY_MS 5000U
 #define SEASON_MIN_REPEAT_SECONDS 300
 static jmp_buf done;
@@ -5045,6 +5110,70 @@ int main(void) {
  schedule_busy=true;assert(stored_index(&stored,18,&current)==-2);schedule_busy=false;
  races[18].switch_at_utc=1800500000LL;assert(stored_index(&stored,18,&current)==-1);
  puts("Verified unkeyed/keyed migration, session mismatch and wrong weekend rejection: PASS");
+}
+'''
+        compile_run(code)
+
+    def test_round_ui_merges_partial_schedule_and_result_metadata_once(self):
+        source = production_source(ROOT / 'main/pdkpass_ui.c')
+        code = PRELUDE + r'''
+#include "pdkpass_model.h"
+#include "pdkpass_reminder.h"
+static pdkpass_season_snapshot_t s_season;
+static bool s_schedule_retry, schedule_busy;
+static unsigned result_reads, schedule_reads;
+static pdkpass_result_metadata_t metadata[PDKPASS_SESSION_COUNT];
+static pdkpass_reminder_entry_t published[PDKPASS_SESSION_COUNT];
+bool pdkpass_results_round_metadata(size_t index,unsigned year,int32_t *meeting,
+                                    pdkpass_result_metadata_t sessions[PDKPASS_SESSION_COUNT]) {
+ assert(index==0&&year==2026&&*meeting==0);
+ result_reads++;*meeting=42;memcpy(sessions,metadata,sizeof(metadata));return true;
+}
+bool pdkpass_reminder_round_schedule(unsigned year,int32_t meeting,
+                                    pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT]) {
+ assert(year==2026&&meeting==42);
+ schedule_reads++;
+ if(schedule_busy){entries[0].session_key=-1;return false;}
+ memcpy(entries,published,sizeof(published));return true;
+}
+static int64_t home_calendar_start(const char *line) {
+ if (!strncmp(line,"FP1",3)) return 100;
+ if (!strncmp(line,"QUALI",5)) return 500;
+ return 600;
+}
+'''
+        for signature in ['static pdkpass_session_kind_t detail_middle_session(',
+                          'static bool read_round_sessions(']:
+            code += function(source, signature)
+        code += r'''
+int main(void) {
+ s_season.year=2026;s_season.race_count=1;
+ pdkpass_race_t *race=&s_season.races[0];
+ strcpy(race->session_one_cn,"FP1");strcpy(race->session_two_cn,"QUALI");
+ strcpy(race->race_cn,"RACE");
+ published[PDKPASS_SESSION_FP2]=(pdkpass_reminder_entry_t){.session_key=102,.start_utc=200};
+ published[PDKPASS_SESSION_FP3]=(pdkpass_reminder_entry_t){
+  .session_key=103,.flags=PDKPASS_REMINDER_CANCELLED};
+ metadata[PDKPASS_SESSION_RACE]=(pdkpass_result_metadata_t){
+  .session_key=106,.status=PDKPASS_RESULT_READY,.end_utc=700};
+ metadata[PDKPASS_SESSION_FP2]=(pdkpass_result_metadata_t){
+  .session_key=110,.status=PDKPASS_RESULT_READY,.end_utc=250};
+ pdkpass_detail_session_t sessions[PDKPASS_SESSION_COUNT];uint32_t mask;
+ assert(read_round_sessions(0,sessions,&mask));
+ assert(result_reads==1&&schedule_reads==1);
+ assert((mask&(1U<<PDKPASS_SESSION_FP2))&&!(mask&(1U<<PDKPASS_SESSION_SPRINT)));
+ assert(sessions[PDKPASS_SESSION_FP1].start_utc==100&&sessions[PDKPASS_SESSION_FP2].start_utc==200);
+ assert(!sessions[PDKPASS_SESSION_FP2].result_ready&&!sessions[PDKPASS_SESSION_FP2].end_utc);
+ assert(sessions[PDKPASS_SESSION_FP3].cancelled);
+ assert(sessions[PDKPASS_SESSION_QUALIFYING].start_utc==500&&sessions[PDKPASS_SESSION_RACE].result_ready);
+ schedule_busy=true;
+ assert(!read_round_sessions(0,sessions,&mask)&&s_schedule_retry);
+ assert(sessions[PDKPASS_SESSION_FP2].start_utc==200&&sessions[PDKPASS_SESSION_RACE].result_ready);
+ schedule_busy=false;memset(published,0,sizeof(published));memset(metadata,0,sizeof(metadata));
+ published[PDKPASS_SESSION_SPRINT]=(pdkpass_reminder_entry_t){.session_key=105,.start_utc=400};
+ assert(read_round_sessions(0,sessions,&mask));
+ assert(!(mask&(1U<<PDKPASS_SESSION_FP2))&&(mask&(1U<<PDKPASS_SESSION_SPRINT_QUALIFYING)));
+ puts("Round metadata: partial schedule, changed session ID, sprint and busy retry: PASS");
 }
 '''
         compile_run(code)

@@ -17,7 +17,7 @@ static bool restore_legacy_cache(const legacy_season_cache_t *stored)
     if (!stored || stored->season.year < 2026U ||
         stored->season.year > 2100U || stored->season.race_count == 0U ||
         stored->season.race_count > PDKPASS_MAX_RACES ||
-        stored->season.driver_count > PDKPASS_MAX_DRIVERS) return false;
+        stored->season.driver_count > SEASON_CACHE_PREVIOUS_MAX_DRIVERS) return false;
     const legacy_season_snapshot_t *old = &stored->season;
     for (size_t i = 0; i < old->race_count; i++) {
         if (old->races[i].round == 0U ||
@@ -73,16 +73,20 @@ static void load_cache(void)
 {
     initialize_fallback();
     s_has_cached_data = false;
-    season_cache_t *stored = malloc(sizeof(*stored));
+    season_cache_t *stored = calloc(1, sizeof(*stored));
     if (!stored) return;
     size_t size = sizeof(*stored);
     esp_err_t err = pdkpass_cache_read_blob(NVS_NAMESPACE, NVS_KEY, stored, &size);
+    const size_t previous_size = offsetof(season_cache_t, season) +
+        offsetof(pdkpass_season_snapshot_t, drivers) +
+        SEASON_CACHE_PREVIOUS_MAX_DRIVERS * sizeof(pdkpass_driver_t);
     bool loaded = false;
     if (err == ESP_OK &&
-        (size == sizeof(*stored) || size == sizeof(legacy_season_cache_t)) &&
+        (size == sizeof(*stored) || size == previous_size || size == sizeof(legacy_season_cache_t)) &&
         stored->magic == SEASON_CACHE_MAGIC) {
-        if (size == sizeof(*stored) &&
-            stored->version == SEASON_CACHE_VERSION &&
+        if (((size == sizeof(*stored) && stored->version == SEASON_CACHE_VERSION) ||
+             (size == previous_size && stored->version == SEASON_CACHE_PREVIOUS_VERSION &&
+              stored->season.driver_count <= SEASON_CACHE_PREVIOUS_MAX_DRIVERS)) &&
             snapshot_valid(&stored->season)) {
             s_season = stored->season;
             loaded = true;

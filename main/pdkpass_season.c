@@ -28,7 +28,9 @@
 #define SEASON_TASK_STACK 9216
 #define SEASON_TASK_PRIORITY 3
 #define SEASON_CACHE_MAGIC 0x50444B53U
-#define SEASON_CACHE_VERSION 2U
+#define SEASON_CACHE_VERSION 3U
+#define SEASON_CACHE_PREVIOUS_VERSION 2U
+#define SEASON_CACHE_PREVIOUS_MAX_DRIVERS 24U
 #define SEASON_CACHE_LEGACY_VERSION 1U
 #define SEASON_MIN_REPEAT_SECONDS (5LL * 60LL)
 #define POINTS_FORCE_COOLDOWN_MS 60000U
@@ -58,7 +60,7 @@ typedef struct {
     uint8_t driver_count;
     char standings_as_of[12];
     pdkpass_race_t races[PDKPASS_MAX_RACES];
-    legacy_driver_t drivers[PDKPASS_MAX_DRIVERS];
+    legacy_driver_t drivers[SEASON_CACHE_PREVIOUS_MAX_DRIVERS];
 } legacy_season_snapshot_t;
 
 typedef struct {
@@ -114,7 +116,7 @@ static pdkpass_manual_status_t s_points_force_status[PDKPASS_POINTS_TARGET_COUNT
 static TickType_t s_points_force_last_tick[PDKPASS_POINTS_TARGET_COUNT];
 static bool s_points_force_has_last_tick[PDKPASS_POINTS_TARGET_COUNT];
 
-_Static_assert(sizeof(season_cache_t) <= 6144,
+_Static_assert(sizeof(season_cache_t) <= 6656,
                "Season snapshot no longer fits the NVS budget");
 _Static_assert(sizeof(legacy_driver_t) == 48,
                "Legacy driver cache layout changed");
@@ -592,7 +594,7 @@ static bool synchronize(int64_t now_utc)
     bool teams_ok = !teams_requested || synchronize_teams(target_year, now_utc);
     bool teams_limited = teams_requested && !teams_ok && pdkpass_http_access_limited();
     if (s_auto_sync) {
-        int64_t normal = next_sync_deadline((int64_t)time(NULL));
+        int64_t normal = next_sync_deadline(now_utc);
         int64_t finished = (int64_t)time(NULL);
         if (calendar_requested) s_domain_due[0] = calendar_ok ? normal : finished + (calendar_limited ? 1800 : 300);
         if (drivers_requested) s_domain_due[1] = standings_ok ? normal : finished + (drivers_limited ? 1800 : 300);
@@ -757,6 +759,7 @@ static void refresh_builtin_year(int64_t now_utc)
     }
     if (changed) {
         s_last_attempt_utc = 0;
+        memset(s_domain_due, 0, sizeof(s_domain_due));
         pdkpass_sync_plan(PDKPASS_SYNC_SEASON, 0);
         if (s_callback) s_callback();
     }

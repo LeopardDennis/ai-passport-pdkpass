@@ -21,11 +21,16 @@ static inline bool pdkpass_result_profiles_complete(const uint8_t ids[PDKPASS_PO
 
 typedef enum {
     PDKPASS_RESULT_UNKNOWN = 0,
-    PDKPASS_RESULT_NOT_HELD,
-    PDKPASS_RESULT_SCHEDULED,
+    PDKPASS_RESULT_SCHEDULED = 2, // Preserve on-disk simulator status values.
     PDKPASS_RESULT_CANCELLED,
     PDKPASS_RESULT_READY,
 } pdkpass_result_status_t;
+
+typedef struct {
+    int32_t session_key;
+    pdkpass_result_status_t status;
+    int64_t start_utc, end_utc;
+} pdkpass_result_metadata_t;
 
 typedef struct {
     unsigned position;
@@ -73,7 +78,13 @@ pdkpass_manual_state_t pdkpass_results_force_session(size_t race_index,
 bool pdkpass_results_manual_status(size_t *race_index,
                                    pdkpass_manual_status_t *status);
 
-// Copy one thread-safe result snapshot for rendering.
+// Copy an entire round with one non-blocking lock. The input is the calendar's
+// meeting ID, or zero to resolve it from the result cache for the same season.
+// False means the cache is busy; a successful read can contain unknown sessions.
+bool pdkpass_results_round_metadata(size_t race_index, unsigned year, int32_t *meeting_key,
+                                    pdkpass_result_metadata_t sessions[PDKPASS_SESSION_COUNT]);
+
+// Copy one thread-safe result snapshot, including podium profiles.
 bool pdkpass_results_get(size_t race_index, pdkpass_session_kind_t session,
                          pdkpass_result_snapshot_t *snapshot);
 // True when the active season has persisted session/discovery information.

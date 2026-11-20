@@ -421,41 +421,6 @@ static const char *detail_session_short_label(pdkpass_session_kind_t session)
     }
 }
 
-static uint32_t race_session_mask(size_t race_index)
-{
-    if (race_index >= s_season.race_count) return 0;
-    const pdkpass_race_t *race = &s_season.races[race_index];
-    uint32_t fallback = (1U << PDKPASS_SESSION_FP1) |
-                        (1U << PDKPASS_SESSION_QUALIFYING) |
-                        (1U << PDKPASS_SESSION_RACE);
-    if (strncmp(race->session_two_cn, "SPR Q", 5U) == 0) {
-        fallback |= (1U << PDKPASS_SESSION_SPRINT_QUALIFYING) |
-                    (1U << PDKPASS_SESSION_SPRINT);
-    } else if (strncmp(race->session_two_cn, "QUALI", 5U) == 0) {
-        fallback |= (1U << PDKPASS_SESSION_FP2) | (1U << PDKPASS_SESSION_FP3);
-    }
-    pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT] = {0};
-    if (pdkpass_reminder_round_schedule(s_season.year, race->meeting_key, entries)) {
-        fallback = 0;
-        for (unsigned kind = 0; kind < PDKPASS_SESSION_COUNT; kind++)
-            if (entries[kind].session_key > 0) fallback |= 1U << kind;
-    }
-    uint32_t mask = 0;
-    for (unsigned kind = 0; kind < PDKPASS_SESSION_COUNT; kind++) {
-        pdkpass_result_snapshot_t result;
-        bool known = pdkpass_results_get(race_index,
-            (pdkpass_session_kind_t)kind, &result) &&
-            result.status != PDKPASS_RESULT_UNKNOWN;
-        // Cached/API metadata wins over the bundled weekend format. A session
-        // need not have a downloaded podium to remain visible. Cancellation
-        // remains visible as an explanation, unlike an unscheduled session.
-        if (known ? result.status != PDKPASS_RESULT_NOT_HELD
-                  : (fallback & (1U << kind)) != 0)
-            mask |= 1U << kind;
-    }
-    return mask;
-}
-
 static pdkpass_session_kind_t detail_middle_session(const pdkpass_race_t *race)
 {
     return race && strncmp(race->session_two_cn, "SPR Q", 5U) == 0
@@ -747,6 +712,55 @@ static int64_t home_calendar_start(const char *line)
     return pdkpass_parse_iso8601_utc(iso, &start) ? start : 0;
 }
 
+static bool read_round_sessions(size_t race_index, pdkpass_detail_session_t *sessions,
+                                uint32_t *mask)
+{
+    if (race_index >= s_season.race_count) return false;
+    const pdkpass_race_t *race = &s_season.races[race_index];
+    int32_t meeting_key = race->meeting_key;
+    pdkpass_result_metadata_t results[PDKPASS_SESSION_COUNT];
+    if (!pdkpass_results_round_metadata(race_index, s_season.year, &meeting_key, results)) {
+        s_schedule_retry = true;
+        return false;
+    }
+    pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT] = {0};
+    pdkpass_reminder_round_schedule(s_season.year, meeting_key, entries);
+    if (entries[0].session_key < 0) {
+        s_schedule_retry = true;
+        return false;
+    }
+    if (sessions) {
+        memset(sessions, 0, PDKPASS_SESSION_COUNT * sizeof(*sessions));
+        pdkpass_session_kind_t middle = detail_middle_session(race);
+        if (!entries[PDKPASS_SESSION_FP1].session_key)
+            sessions[PDKPASS_SESSION_FP1].start_utc = home_calendar_start(race->session_one_cn);
+        if (!entries[middle].session_key)
+            sessions[middle].start_utc = home_calendar_start(race->session_two_cn);
+        if (!entries[PDKPASS_SESSION_RACE].session_key)
+            sessions[PDKPASS_SESSION_RACE].start_utc = home_calendar_start(race->race_cn);
+    }
+    uint32_t observed = 0;
+    for (unsigned kind = 0; kind < PDKPASS_SESSION_COUNT; kind++) {
+        const pdkpass_reminder_entry_t *entry = &entries[kind];
+        bool scheduled = entry->session_key > 0;
+        const pdkpass_result_metadata_t *result = &results[kind];
+        pdkpass_result_status_t status = result->status;
+        if (scheduled && result->session_key > 0 && result->session_key != entry->session_key)
+            status = PDKPASS_RESULT_UNKNOWN;
+        if (scheduled || status != PDKPASS_RESULT_UNKNOWN) observed |= 1U << kind;
+        if (!sessions) continue;
+        pdkpass_detail_session_t *session = &sessions[kind];
+        if (scheduled) session->start_utc = entry->start_utc;
+        else if (result->start_utc > 0) session->start_utc = result->start_utc;
+        session->cancelled = status == PDKPASS_RESULT_CANCELLED ||
+                             (scheduled && (entry->flags & PDKPASS_REMINDER_CANCELLED));
+        session->result_ready = status == PDKPASS_RESULT_READY && !session->cancelled;
+        if (status != PDKPASS_RESULT_UNKNOWN) session->end_utc = result->end_utc;
+    }
+    if (mask) *mask = pdkpass_round_session_mask(race->session_two_cn, observed);
+    return true;
+}
+
 static int64_t home_next_session(char *output, size_t capacity)
 {
     if (!s_time_valid) {
@@ -754,49 +768,38 @@ static int64_t home_next_session(char *output, size_t capacity)
         return 0;
     }
     const pdkpass_race_t *race = &s_season.races[s_state.selected_race];
-    pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT] = {0};
-    bool complete = pdkpass_reminder_round_schedule(s_season.year,
-                                                   race->meeting_key, entries);
-    if (entries[0].session_key == -1) {
-        s_schedule_retry = true;
+    pdkpass_detail_session_t sessions[PDKPASS_SESSION_COUNT];
+    uint32_t mask;
+    if (!read_round_sessions(s_state.selected_race, sessions, &mask)) {
         snprintf(output, capacity, "LOADING SCHEDULE");
         return 0;
     }
-    if (!complete) {
-        entries[PDKPASS_SESSION_FP1].start_utc = home_calendar_start(race->session_one_cn);
-        entries[detail_middle_session(race)].start_utc = home_calendar_start(race->session_two_cn);
-        entries[PDKPASS_SESSION_RACE].start_utc = home_calendar_start(race->race_cn);
-        for (unsigned i = 0; i < PDKPASS_SESSION_COUNT; i++) {
-            pdkpass_result_snapshot_t result = {0};
-            bool available = pdkpass_results_get(s_state.selected_race, i, &result);
-            if (result.session_start_utc < 0) {
-                s_schedule_retry = true;
-                snprintf(output, capacity, "LOADING SCHEDULE");
-                return 0;
-            }
-            if (available) {
-                if (result.session_start_utc > 0)
-                    entries[i].start_utc = result.session_start_utc;
-                if (result.status == PDKPASS_RESULT_CANCELLED ||
-                    result.status == PDKPASS_RESULT_NOT_HELD ||
-                    result.status == PDKPASS_RESULT_READY)
-                    entries[i].flags |= PDKPASS_REMINDER_CANCELLED;
-            }
+    int64_t now = (int64_t)time(NULL);
+    pdkpass_session_kind_t next = PDKPASS_SESSION_COUNT;
+    int64_t start = 0;
+    bool complete = true;
+    for (unsigned kind = 0; kind < PDKPASS_SESSION_COUNT; kind++) {
+        if (!(mask & (1U << kind))) continue;
+        const pdkpass_detail_session_t *session = &sessions[kind];
+        if (session->cancelled || session->result_ready) continue;
+        if (!session->start_utc) complete = false;
+        if (session->start_utc <= now) continue;
+        if (!start || session->start_utc < start) {
+            next = kind;
+            start = session->start_utc;
         }
     }
-    int64_t now = (int64_t)time(NULL);
-    int next = pdkpass_reminder_next_session(entries, now);
-    if (next < 0) {
+    if (next == PDKPASS_SESSION_COUNT) {
         snprintf(output, capacity, "%s", complete || now >= race->switch_at_utc
                                          ? "COMPLETED" : "SCHEDULE TBD");
         return 0;
     }
-    time_t local = (time_t)(entries[next].start_utc + BEIJING_OFFSET_SECONDS);
+    time_t local = (time_t)(start + BEIJING_OFFSET_SECONDS);
     struct tm tm;
     gmtime_r(&local, &tm);
     snprintf(output, capacity, "%s %02d:%02d CST",
              detail_session_short_label(next), tm.tm_hour, tm.tm_min);
-    return entries[next].start_utc;
+    return start;
 }
 
 static void render_home(void)
@@ -1139,40 +1142,9 @@ static bool refresh_detail_sessions(void)
     const pdkpass_race_t *race = &s_season.races[s_state.selected_race];
     bool choose_default = s_detail_default_pending || s_detail_year != s_season.year ||
         s_detail_meeting != race->meeting_key || s_detail_race != s_state.selected_race;
-    pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT] = {0};
-    bool discovered = pdkpass_reminder_round_schedule(s_season.year,
-                                                      race->meeting_key, entries);
-    if (entries[0].session_key == -1) { s_schedule_retry = true; return false; }
-    pdkpass_detail_session_t pending[PDKPASS_SESSION_COUNT] = {0};
-    if (!discovered) {
-        // Bundled calendars have only three known starts. All other visible
-        // sessions remain TIME TBD until their real schedule has been cached.
-        pending[PDKPASS_SESSION_FP1].start_utc = home_calendar_start(race->session_one_cn);
-        pending[detail_middle_session(race)].start_utc = home_calendar_start(race->session_two_cn);
-        pending[PDKPASS_SESSION_RACE].start_utc = home_calendar_start(race->race_cn);
-    }
-    uint32_t mask = race_session_mask(s_state.selected_race);
-    for (unsigned kind = 0; kind < PDKPASS_SESSION_COUNT; kind++) {
-        pdkpass_detail_session_t *session = &pending[kind];
-        if (discovered) {
-            session->start_utc = entries[kind].start_utc;
-            session->cancelled = (entries[kind].flags & PDKPASS_REMINDER_CANCELLED) != 0;
-            if (entries[kind].session_key > 0) mask |= 1U << kind;
-            else mask &= ~(1U << kind);
-        }
-        pdkpass_result_snapshot_t result = {0};
-        bool available = pdkpass_results_get(s_state.selected_race, kind, &result);
-        if (result.session_start_utc < 0) { s_schedule_retry = true; return false; }
-        if (available && result.status != PDKPASS_RESULT_UNKNOWN) {
-            if (result.session_start_utc > 0)
-                session->start_utc = result.session_start_utc;
-            session->end_utc = result.session_end_utc;
-            session->result_ready = result.status == PDKPASS_RESULT_READY;
-            session->cancelled |= result.status == PDKPASS_RESULT_CANCELLED;
-            if (result.status == PDKPASS_RESULT_NOT_HELD) mask &= ~(1U << kind);
-            else mask |= 1U << kind;
-        }
-    }
+    pdkpass_detail_session_t pending[PDKPASS_SESSION_COUNT];
+    uint32_t mask;
+    if (!read_round_sessions(s_state.selected_race, pending, &mask)) return false;
     memcpy(s_detail_sessions, pending, sizeof(pending));
     pdkpass_state_set_detail_sessions(&s_state, mask, s_detail_sessions,
                                       choose_default, s_time_valid, (int64_t)time(NULL));
@@ -1253,15 +1225,26 @@ static void render_results(void)
 {
     if (s_state.selected_race >= s_season.race_count) return;
     const pdkpass_race_t *race = &s_season.races[s_state.selected_race];
+    pdkpass_detail_session_t sessions[PDKPASS_SESSION_COUNT];
+    uint32_t mask;
+    if (!read_round_sessions(s_state.selected_race, sessions, &mask)) return;
+    pdkpass_state_set_sessions(&s_state, mask);
+    const pdkpass_detail_session_t *session = s_state.selected_session < PDKPASS_SESSION_COUNT
+        ? &sessions[s_state.selected_session] : NULL;
+    pdkpass_result_snapshot_t result;
+    bool ready = session && session->result_ready;
+    if (ready && !pdkpass_results_get(s_state.selected_race, s_state.selected_session, &result)) {
+        s_schedule_retry = true;
+        return;
+    }
     ui_pixel_screen_set_round_title(s_screen, race->country, race->round);
-    pdkpass_state_set_sessions(&s_state, race_session_mask(s_state.selected_race));
     pdkpass_theme_t theme = theme_for_race(race);
     uint32_t ink = readable_text_color(theme.top);
     uint32_t notice_ink = has_text_contrast(theme.top, UI_YELLOW) &&
                           has_text_contrast(theme.bottom, UI_YELLOW) ? UI_YELLOW : ink;
     ui_pixel_screen_set_theme(s_screen, theme.top, theme.bottom);
     content_reset(theme.top, theme.bottom);
-    if (s_state.selected_session >= PDKPASS_SESSION_COUNT) {
+    if (!session) {
         set_status("SESSIONS", race->accent);
         make_medium_label(s_content, "NO SESSIONS", 0, 42, INNER_W, notice_ink);
         make_medium_label(s_content, "CHECK SCHEDULE", 0, 95, INNER_W, ink);
@@ -1270,19 +1253,12 @@ static void render_results(void)
     }
     set_status(pdkpass_session_label(s_state.selected_session), race->accent);
 
-    pdkpass_result_snapshot_t result;
-    bool available = pdkpass_results_get(s_state.selected_race,
-                                         s_state.selected_session, &result);
-    if (!available || result.status != PDKPASS_RESULT_READY) {
+    if (!ready || result.status != PDKPASS_RESULT_READY) {
         bool online = s_network_state == PDKPASS_NETWORK_ONLINE;
         const char *state = online ? "SYNC PENDING" : "CONNECT TO UPDATE";
         const char *detail = "NO RESULT CACHED";
         const char *note = online ? "AUTO RETRY ENABLED" : "NETWORK: RETRY";
-        if (available && result.status == PDKPASS_RESULT_NOT_HELD) {
-            state = "NO SESSION";
-            detail = "NOT ON THIS WEEKEND";
-            note = "";
-        } else if (available && result.status == PDKPASS_RESULT_CANCELLED) {
+        if (session->cancelled) {
             state = "SESSION CANCELLED";
             detail = "NO CLASSIFICATION";
             note = "";
@@ -1290,10 +1266,9 @@ static void render_results(void)
             state = "SYNC CLOCK";
             detail = "CONNECT FOR TIME";
             note = "NETWORK: RETRY";
-        } else if (available && result.status == PDKPASS_RESULT_SCHEDULED &&
-                   result.session_end_utc > 0) {
+        } else if (session->end_utc > 0) {
             if (!pdkpass_session_result_due((int64_t)time(NULL),
-                                            result.session_end_utc)) {
+                                            session->end_utc)) {
                 state = "RESULT PENDING";
                 detail = "SYNC AFTER SESSION";
                 note = "SYNC ABOUT +30 MIN";
@@ -1982,8 +1957,11 @@ void pdkpass_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         }
         return;
     }
-    if (s_state.page == PDKPASS_PAGE_RESULTS)
-        pdkpass_state_set_sessions(&s_state, race_session_mask(s_state.selected_race));
+    if (s_state.page == PDKPASS_PAGE_RESULTS) {
+        uint32_t mask;
+        if (read_round_sessions(s_state.selected_race, NULL, &mask))
+            pdkpass_state_set_sessions(&s_state, mask);
+    }
     pdkpass_state_handle(&s_state, input,
                          s_season.race_count, s_season.driver_count, s_team_standings.count);
     if (s_state.page == PDKPASS_PAGE_RACE_DETAIL &&

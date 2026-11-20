@@ -95,23 +95,26 @@ static void load_cache(void)
     {
         size_t size = sizeof(*stored);
         esp_err_t err = pdkpass_cache_read_blob(NVS_NAMESPACE, NVS_KEY, stored, &size);
+        // A transient read failure can leave a valid snapshot in flash.
+        // Retry without publishing an empty generation or touching NVS.
+        if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND &&
+            err != ESP_ERR_NVS_INVALID_LENGTH && err != ESP_ERR_NVS_TYPE_MISMATCH) goto done;
         if (err == ESP_OK && size == sizeof(legacy_store_t)) {
             legacy_store_t *legacy = malloc(sizeof(*legacy));
-            if (legacy) {
-                memcpy(legacy, stored, sizeof(*legacy));
-                if (legacy->magic == RESULTS_CACHE_MAGIC && legacy->version == 2U) {
-                    memset(stored, 0, sizeof(*stored));
-                    stored->magic = legacy->magic;
-                    stored->version = RESULTS_CACHE_VERSION;
-                    stored->year = legacy->year;
-                    stored->race_count = legacy->race_count;
-                    for (size_t i = 0; i < PDKPASS_MAX_RACES; i++) {
-                        memcpy(&stored->races[i], &legacy->races[i], sizeof(legacy_race_t));
-                    }
-                    size = sizeof(*stored);
+            if (!legacy) goto done;
+            memcpy(legacy, stored, sizeof(*legacy));
+            if (legacy->magic == RESULTS_CACHE_MAGIC && legacy->version == 2U) {
+                memset(stored, 0, sizeof(*stored));
+                stored->magic = legacy->magic;
+                stored->version = RESULTS_CACHE_VERSION;
+                stored->year = legacy->year;
+                stored->race_count = legacy->race_count;
+                for (size_t i = 0; i < PDKPASS_MAX_RACES; i++) {
+                    memcpy(&stored->races[i], &legacy->races[i], sizeof(legacy_race_t));
                 }
-                free(legacy);
+                size = sizeof(*stored);
             }
+            free(legacy);
         }
         if (err == ESP_OK && size == sizeof(v3_store_t) &&
             stored->magic == RESULTS_CACHE_MAGIC && stored->version == 3U) {
@@ -124,7 +127,7 @@ static void load_cache(void)
         if (valid) {
             for (size_t i = 0; i < race_count; i++) {
                 int match = stored_index(stored, i, &loaded[i]);
-                if (match == -2) { free(loaded); free(stored); return; }
+                if (match == -2) goto done;
                 if (match < 0) continue;
                 const persisted_race_t *source = &stored->races[match];
                 cached_data |= source->discovered || source->present_mask ||
@@ -175,7 +178,8 @@ static void load_cache(void)
         s_priority_until_utc = 0;
         xSemaphoreGive(s_lock);
     }
-    if (!valid) pdkpass_cache_forget_namespace(NVS_NAMESPACE);
+    // Incompatible snapshots can be replaced by the next successful save.
+done:
     free(loaded);
     free(stored);
 }

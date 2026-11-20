@@ -120,9 +120,10 @@ void pdkpass_reminder_update_round(unsigned year, unsigned round, int32_t meetin
     const pdkpass_reminder_entry_t entries[PDKPASS_SESSION_COUNT])
 {
     if (!s_lock || xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return;
-    if (pdkpass_reminder_merge(&s_store.schedule, year, round, meeting_key, entries)) s_dirty = true;
+    bool changed = pdkpass_reminder_merge(&s_store.schedule, year, round, meeting_key, entries);
+    if (changed) s_dirty = true;
     xSemaphoreGive(s_lock);
-    if (s_wake) s_wake();
+    if (changed && s_wake) s_wake();
 }
 
 bool pdkpass_reminder_update_calendar_round(unsigned year, unsigned round, int32_t meeting_key,
@@ -131,18 +132,7 @@ bool pdkpass_reminder_update_calendar_round(unsigned year, unsigned round, int32
     if (changed_out) *changed_out = false;
     if (!entries || !s_lock || xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE)
         return false;
-    pdkpass_reminder_entry_t merged[PDKPASS_SESSION_COUNT] = {0};
-    if (s_store.schedule.year == year) {
-        for (size_t i = 0; i < PDKPASS_MAX_RACES; i++) {
-            if (s_store.schedule.meeting_keys[i] == meeting_key) {
-                memcpy(merged, &s_store.schedule.entries[i * PDKPASS_SESSION_COUNT], sizeof(merged));
-                break;
-            }
-        }
-    }
-    for (unsigned kind = 0; kind < PDKPASS_SESSION_COUNT; kind++)
-        if (entries[kind].session_key) merged[kind] = entries[kind];
-    bool changed = pdkpass_reminder_merge(&s_store.schedule, year, round, meeting_key, merged);
+    bool changed = pdkpass_reminder_merge(&s_store.schedule, year, round, meeting_key, entries);
     if (changed) s_dirty = true;
     bool accepted = false;
     if (s_store.schedule.year == year) {

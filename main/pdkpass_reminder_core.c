@@ -7,25 +7,30 @@ bool pdkpass_reminder_merge(pdkpass_reminder_schedule_t *s, unsigned year,
 {
     if (!s || !entries || year < 2026 || year > 2100 || year < s->year ||
         round == 0 || round > PDKPASS_MAX_RACES || meeting_key <= 0) return false;
-    // Validate before mutating, including the year transition.
+    bool new_year = year != s->year;
+    size_t slot = PDKPASS_MAX_RACES;
+    for (size_t i = 0; !new_year && i < PDKPASS_MAX_RACES; i++)
+        if (s->meeting_keys[i] == meeting_key) { slot = i; break; }
+    const pdkpass_reminder_entry_t *previous = slot < PDKPASS_MAX_RACES
+        ? &s->entries[slot * PDKPASS_SESSION_COUNT] : NULL;
+    // Validate the combined keys before mutating, including the year transition.
+    int32_t keys[PDKPASS_SESSION_COUNT];
     for (size_t i = 0; i < PDKPASS_SESSION_COUNT; i++) {
         if (entries[i].session_key < 0 ||
             (entries[i].session_key && !(entries[i].flags & PDKPASS_REMINDER_CANCELLED) &&
              entries[i].start_utc < 1767225600LL))
             return false;
+        keys[i] = !entries[i].session_key && previous ? previous[i].session_key : entries[i].session_key;
         for (size_t j = 0; j < i; j++)
-            if (entries[i].session_key && entries[i].session_key == entries[j].session_key)
+            if (keys[i] && keys[i] == keys[j])
                 return false;
     }
-    bool changed = year != s->year;
-    if (changed) {
+    bool changed = new_year;
+    if (new_year) {
         memset(s->entries, 0, sizeof(s->entries));
         memset(s->meeting_keys, 0, sizeof(s->meeting_keys));
         s->year = (uint16_t)year;
     }
-    size_t slot = PDKPASS_MAX_RACES;
-    for (size_t i = 0; i < PDKPASS_MAX_RACES; i++)
-        if (s->meeting_keys[i] == meeting_key) { slot = i; break; }
     if (slot == PDKPASS_MAX_RACES) {
         if (s->meeting_keys[round - 1U] == 0) slot = round - 1U;
         else for (size_t i = 0; i < PDKPASS_MAX_RACES; i++)
@@ -36,19 +41,21 @@ bool pdkpass_reminder_merge(pdkpass_reminder_schedule_t *s, unsigned year,
     for (size_t i = 0; i < PDKPASS_SESSION_COUNT; i++) {
         pdkpass_reminder_entry_t *old = &s->entries[slot * PDKPASS_SESSION_COUNT + i];
         pdkpass_reminder_entry_t next = entries[i];
+        if (!next.session_key) {
+            // An omitted session can still be scheduled and eligible for an alert.
+            if (old->session_key && old->round != round) {
+                old->round = (uint8_t)round;
+                changed = true;
+            }
+            continue;
+        }
         next.round = (uint8_t)round;
         next.kind = (uint8_t)i;
         next.reserved = 0;
         next.flags &= PDKPASS_REMINDER_CANCELLED;
-        if (next.session_key) {
-            for (size_t j = 0; j < PDKPASS_REMINDER_CAPACITY; j++)
-                if (s->entries[j].session_key == next.session_key)
-                    next.flags |= s->entries[j].flags & PDKPASS_REMINDER_FIRED;
-        } else {
-            // Keep a delivered identity if a cancelled session later reappears.
-            next = *old;
-            next.flags |= PDKPASS_REMINDER_CANCELLED;
-        }
+        for (size_t j = 0; j < PDKPASS_REMINDER_CAPACITY; j++)
+            if (s->entries[j].session_key == next.session_key)
+                next.flags |= s->entries[j].flags & PDKPASS_REMINDER_FIRED;
         if (memcmp(old, &next, sizeof(next))) { *old = next; changed = true; }
     }
     return changed;

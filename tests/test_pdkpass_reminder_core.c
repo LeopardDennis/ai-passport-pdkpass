@@ -52,8 +52,19 @@ int main(void)
     entries[0].flags = PDKPASS_REMINDER_CANCELLED;entries[0].start_utc = 0;
     assert(pdkpass_reminder_merge(&s, 2026, 15, 1295, entries));
     assert(pdkpass_reminder_due(&s, true, start + 1200) == -1);
-    // Missing FP3 on a sprint weekend is removed; no made-up sessions.
+    // A partial response leaves previously scheduled FP3 eligible.
     entries[PDKPASS_SESSION_FP3] = (pdkpass_reminder_entry_t){0};
+    assert(!pdkpass_reminder_merge(&s, 2026, 15, 1295, entries));
+    assert(pdkpass_reminder_due(&s, true, start + 2*7200 - 600) ==
+           14 * PDKPASS_SESSION_COUNT + PDKPASS_SESSION_FP3);
+    pdkpass_reminder_entry_t partial[PDKPASS_SESSION_COUNT] = {0};
+    partial[PDKPASS_SESSION_FP2] = s.entries[14 * PDKPASS_SESSION_COUNT + PDKPASS_SESSION_FP3];
+    assert(!pdkpass_reminder_merge(&s, 2026, 15, 1295, partial));
+    assert(s.entries[14 * PDKPASS_SESSION_COUNT + PDKPASS_SESSION_FP2].session_key ==
+           entries[PDKPASS_SESSION_FP2].session_key);
+    entries[PDKPASS_SESSION_FP3] = (pdkpass_reminder_entry_t){
+        .session_key = 100 + PDKPASS_SESSION_FP3, .flags = PDKPASS_REMINDER_CANCELLED,
+    };
     assert(pdkpass_reminder_merge(&s, 2026, 15, 1295, entries));
     assert(pdkpass_reminder_due(&s, true, start + 2*7200 - 600) == -1);
     s.enabled=0;

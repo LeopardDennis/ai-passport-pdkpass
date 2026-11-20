@@ -3,7 +3,7 @@
 #include "esp_err.h"
 
 // No additional task or network polling. poll/wait run on the existing UI I/O
-// worker, outside the LVGL lock. HTTP workers publish complete round schedules.
+// worker, outside the LVGL lock. HTTP workers merge published session entries.
 esp_err_t pdkpass_reminder_init(void (*wake_worker)(void));
 void pdkpass_reminder_set_time_valid(bool valid);
 void pdkpass_reminder_season_changed(void);
