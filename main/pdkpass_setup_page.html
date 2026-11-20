@@ -24,7 +24,7 @@
     #manual { min-height: 48px; padding: 10px 14px; font-size: 17px; }
     .network { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 65px; flex-shrink: 0; margin: 0; padding: 12px 16px; border: 2px solid #d1dadc; border-radius: 12px; background: white; color: #46545c; font: 21px system-ui, -apple-system, sans-serif; text-align: left; overflow-wrap: anywhere; }
     .network.selected { border-color: #17202a; background: #ffd928; color: #17202a; }
-    .network:focus-visible, input:focus-visible, .connect:focus-visible { outline: 3px solid #0872c9; outline-offset: 2px; }
+    .network:focus-visible, input:focus-visible, textarea:focus-visible, .connect:focus-visible { outline: 3px solid #0872c9; outline-offset: 2px; }
     .radio { width: 20px; height: 20px; flex: none; margin-left: 10px; border: 2px solid currentColor; border-radius: 50%; }
     .selected .radio::after { content: ""; display: block; width: 10px; height: 10px; margin: 3px; border-radius: 50%; background: currentColor; }
     .scan-note { margin: 0 0 12px; color: #697b84; font-size: 14px; }
@@ -32,8 +32,14 @@
     .nearby:not(:empty) { margin-bottom: 12px; }
     .manual-field, .password-field { display: block; margin: 24px 0 0; }
     .field-label { display: block; margin: 0 0 8px; font-size: 18px; }
-    input { display: block; width: 100%; min-height: 59px; padding: 12px 16px; border: 2px solid #d1dadc; border-radius: 11px; background: white; color: #17202a; font: 20px system-ui, -apple-system, sans-serif; }
-    #pass { -webkit-text-security: disc; }
+    #ssid, #network-key { display: block; width: 100%; min-height: 59px; padding: 12px 16px; border: 2px solid #d1dadc; border-radius: 11px; background: white; color: #17202a; font: 20px system-ui, -apple-system, sans-serif; }
+    .key-entry { position: relative; }
+    #network-key, .key-mask { font: 20px/31px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; overflow: hidden; }
+    #network-key { height: 59px; resize: none; }
+    #network-key.masked { color: transparent; -webkit-text-fill-color: transparent; caret-color: #17202a; }
+    .key-mask { position: absolute; inset: 2px; padding: 12px 16px; pointer-events: none; }
+    .key-visibility { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 14px; }
+    .key-visibility input { width: 16px; height: 16px; margin: 0; }
     .error { margin: 12px 0 0; color: #b5261f; font-size: 14px; }
     .error:empty { display: none; }
     .connect { width: 100%; min-height: 67px; margin-top: 24px; border: 3px solid #17202a; border-radius: 10px; background: #ffd928; color: #17202a; font: 700 22px ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -48,15 +54,22 @@
     <div class="status"><span class="status-mark" aria-hidden="true"></span>Connected to device hotspot</div>
     <h1>Select a 2.4 GHz Network</h1>
     <p class="eyebrow">NEARBY NETWORKS</p>
-    <form id="setup-form" autocomplete="off">
+    <div id="setup-controls">
       <div id="nearby" class="nearby" role="group" aria-label="Nearby networks"></div>
       <p id="scan-note" class="scan-note" role="status">Scanning nearby networks...</p>
       <button id="manual" class="network selected" type="button" aria-pressed="true"><span>Enter Network Manually</span><span class="radio" aria-hidden="true"></span></button>
-      <label id="manual-field" class="manual-field"><span class="field-label">Network Name</span><input id="ssid" maxlength="32" autocomplete="off" spellcheck="false" required></label>
-      <label class="password-field"><span class="field-label">Wi-Fi Password</span><input id="pass" type="text" disabled maxlength="63" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"></label>
+      <label id="manual-field" class="manual-field"><span class="field-label">Network Name</span><input id="ssid" maxlength="32" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" enterkeyhint="go"></label>
+      <div class="password-field">
+        <label class="field-label" for="network-key">Wi-Fi Password</label>
+        <div class="key-entry">
+          <textarea id="network-key" class="masked" rows="1" maxlength="63" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" enterkeyhint="go" disabled></textarea>
+          <span id="key-mask" class="key-mask" aria-hidden="true"></span>
+        </div>
+        <label class="key-visibility"><input id="show-key" type="checkbox" disabled>Show password</label>
+      </div>
       <p id="error" class="error" role="alert"></p>
-      <button class="connect" type="submit">Connect</button>
-    </form>
+      <button id="connect" class="connect" type="button" disabled>Connect</button>
+    </div>
   </main>
   <script>
     const nearby = document.getElementById('nearby');
@@ -64,17 +77,28 @@
     const manual = document.getElementById('manual');
     const manualField = document.getElementById('manual-field');
     const ssid = document.getElementById('ssid');
-    const password = document.getElementById('pass');
-    // A native password field still triggers iOS AutoFill despite autocomplete=off.
-    // Keep entry disabled until masking support or a safe native fallback is set.
-    if (!window.CSS || !CSS.supports('-webkit-text-security', 'disc')) {
-      password.type = 'password';
-    }
-    password.disabled = false;
+    const password = document.getElementById('network-key');
+    const mask = document.getElementById('key-mask');
+    const reveal = document.getElementById('show-key');
+    const connect = document.getElementById('connect');
     const error = document.getElementById('error');
-    const form = document.getElementById('setup-form');
+    const controls = document.getElementById('setup-controls');
     let manualTouched = false;
     let submitting = false;
+
+    // Mask the ordinary editor visually while keeping its value available to POST.
+    function updateMask() {
+      password.classList.toggle('masked', !reveal.checked);
+      mask.hidden = reveal.checked;
+      mask.textContent = '•'.repeat(Array.from(password.value).length);
+      mask.scrollLeft = password.scrollLeft;
+    }
+
+    function clearPassword() {
+      password.value = '';
+      reveal.checked = false;
+      updateMask();
+    }
 
     function select(button, name) {
       for (const row of document.querySelectorAll('.network')) {
@@ -84,12 +108,27 @@
       }
       const isManual = button === manual;
       manualField.hidden = !isManual;
-      ssid.value = isManual ? '' : name;
+      if (ssid.value !== name) clearPassword();
+      ssid.value = name;
       error.textContent = '';
       if (isManual) ssid.focus();
     }
     manual.addEventListener('click', () => { manualTouched = true; select(manual, ''); });
-    ssid.addEventListener('input', () => { manualTouched = true; });
+    ssid.addEventListener('input', () => { manualTouched = true; clearPassword(); });
+    password.addEventListener('input', event => {
+      if (!event.isComposing) {
+        const singleLine = password.value.replace(/[\r\n]/g, '');
+        if (password.value !== singleLine) password.value = singleLine;
+      }
+      updateMask();
+    });
+    password.addEventListener('scroll', () => { mask.scrollLeft = password.scrollLeft; });
+    reveal.addEventListener('change', updateMask);
+    for (const event of ['copy', 'cut']) {
+      password.addEventListener(event, action => {
+        if (!reveal.checked) action.preventDefault();
+      });
+    }
 
     fetch('/networks', { cache: 'no-store' })
       .then(response => { if (!response.ok) throw new Error('scan'); return response.json(); })
@@ -116,9 +155,8 @@
       })
       .catch(() => { note.textContent = 'Nearby network scan unavailable.'; });
 
-    // Keep credentials out of native form navigation and browser history.
-    form.addEventListener('submit', async event => {
-      event.preventDefault();
+    // FMO submits the edited values with JavaScript and keeps the page open on errors.
+    async function submit() {
       if (submitting) return;
       const length = value => new TextEncoder().encode(value).length;
       const nameLength = length(ssid.value);
@@ -131,8 +169,8 @@
       const body = new URLSearchParams({ ssid: ssid.value, password: password.value });
       submitting = true;
       error.textContent = '';
-      form.setAttribute('aria-busy', 'true');
-      for (const control of form.querySelectorAll('input, button')) control.disabled = true;
+      controls.setAttribute('aria-busy', 'true');
+      for (const control of controls.querySelectorAll('input, textarea, button')) control.disabled = true;
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 15000);
       try {
@@ -150,7 +188,7 @@
         const main = statusPage.querySelector('main');
         const style = statusPage.querySelector('style');
         if (!main || !style) throw new Error('Invalid status page');
-        password.value = '';
+        clearPassword();
         document.querySelector('style').replaceWith(style);
         document.querySelector('main').replaceWith(main);
         window.scrollTo(0, 0);
@@ -158,13 +196,27 @@
         error.textContent = 'Submission interrupted. Check the device screen before retrying.';
       } finally {
         clearTimeout(timeout);
-        if (form.isConnected) {
+        if (controls.isConnected) {
           submitting = false;
-          form.removeAttribute('aria-busy');
-          for (const control of form.querySelectorAll('input, button')) control.disabled = false;
+          controls.removeAttribute('aria-busy');
+          for (const control of controls.querySelectorAll('input, textarea, button')) control.disabled = false;
         }
       }
+    }
+    connect.addEventListener('click', submit);
+    password.addEventListener('beforeinput', event => {
+      if (event.isComposing || !['insertLineBreak', 'insertParagraph'].includes(event.inputType)) return;
+      event.preventDefault();
+      submit();
     });
+    for (const field of [ssid, password]) {
+      field.addEventListener('keydown', event => {
+        if (event.key !== 'Enter' || event.isComposing) return;
+        event.preventDefault();
+        submit();
+      });
+    }
+    password.disabled = reveal.disabled = connect.disabled = false;
   </script>
 </body>
 </html>

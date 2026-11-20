@@ -6,10 +6,12 @@
 
 ## Unreleased
 
+- Use a masked single-line editor for setup Wi-Fi passwords with a Show password option. Follow FMO's scripted submission and clear the previous password when switching networks. Verify the strong-password prompt on an iPhone after installing the update.
+
 - Keep scheduled sessions and reminders when OpenF1 returns a partial weekend, and continue checking for missing results. Read one set of round metadata for the home, track and results pages and load driver profiles only for the selected podium.
 - Keep the last results cache when flash reads or migration allocations fail and retry the load. Follow up when an automatic sync crosses Beijing midnight or a race deadline, and refresh the calendar and both standings after the year rolls over.
 
-- Accept up to 32 drivers in championship standings and retain earlier cached standings.
+- Accept up to 32 drivers in championship standings and retain earlier cached standings. Exclude the Wi-Fi password field from native form submission while still sending it through the setup script.
 
 - Automatically open the Wi-Fi QR page when the provisioning hotspot becomes active, even after delayed/coalesced status updates. Keep provisioning visible during connection and time-sync updates while the hotspot remains active; repeated updates preserve the manual-info selection.
 
